@@ -1,0 +1,32 @@
+# Local-only project material
+local/
+
+# Python and uv
+.venv/
+.uv-cache/
+__pycache__/
+*.py[cod]
+.python-version.local
+
+# Test and analysis caches
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+coverage.xml
+htmlcov/
+
+# Build outputs
+build/
+dist/
+*.egg-info/
+
+# Environment and secrets
+.env
+.env.*
+!.env.example
+
+# OS and editor noise
+.DS_Store
+Thumbs.db
+*.swp

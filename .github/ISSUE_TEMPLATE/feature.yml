@@ -1,0 +1,26 @@
+name: 功能任务
+description: 创建一个可独立开发和验收的功能任务
+title: "[Feature] "
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: goal
+    attributes:
+      label: 目标
+      description: 说明要解决的问题和预期结果。
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: 验收标准
+      description: 列出可测试、可复现的验收条件。
+    validations:
+      required: true
+  - type: textarea
+    id: privacy
+    attributes:
+      label: 数据与隐私影响
+      description: 说明是否涉及学生材料、AI 轨迹或公共 Schema。
+    validations:
+      required: true

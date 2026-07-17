@@ -1,0 +1,39 @@
+[project]
+name = "learntrace"
+version = "0.1.0"
+description = "Build traceable learning portfolios from AI-assisted course projects."
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = []
+
+[project.scripts]
+learntrace = "learntrace.cli:main"
+
+[build-system]
+requires = ["uv_build>=0.11.0,<0.12.0"]
+build-backend = "uv_build"
+
+[dependency-groups]
+dev = [
+    "pre-commit>=4.0,<5",
+    "pyright>=1.1,<2",
+    "pytest>=8.0,<10",
+    "pytest-cov>=6.0,<8",
+    "ruff>=0.12,<1",
+]
+
+[tool.pytest.ini_options]
+addopts = "-ra --strict-config --strict-markers"
+testpaths = ["tests"]
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+
+[tool.pyright]
+include = ["src", "tests"]
+pythonVersion = "3.11"
+typeCheckingMode = "strict"
