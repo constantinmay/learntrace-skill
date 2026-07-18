@@ -1,0 +1,71 @@
+{
+  "description": "金标样例预期结果清单：契约回归测试逐项校验，文件、record_type、valid 必须与样例一致。",
+  "cases": [
+    {
+      "file": "normal/observable-event-commit.json",
+      "record_type": "observable_event",
+      "valid": true,
+      "notes": "Git 提交事实，含单项 source_refs 与合法 occurred_at"
+    },
+    {
+      "file": "normal/observable-event-testlog.json",
+      "record_type": "observable_event",
+      "valid": true,
+      "notes": "测试日志事实，含多项 source_refs"
+    },
+    {
+      "file": "normal/learning-node-candidate.json",
+      "record_type": "learning_node_candidate",
+      "valid": true,
+      "notes": "候选推断：带依据事件、不确定性与问题；status=resolved 且存在对应确认记录"
+    },
+    {
+      "file": "normal/student-confirmation.json",
+      "record_type": "student_confirmation",
+      "valid": true,
+      "notes": "学生确认：decision=confirmed，独立于候选记录保存"
+    },
+    {
+      "file": "insufficient_evidence/observable-event-testlog.json",
+      "record_type": "observable_event",
+      "valid": true,
+      "notes": "证据不足场景唯一的事实；无授权轨迹时不产生任何 trace_record 事实"
+    },
+    {
+      "file": "insufficient_evidence/learning-node-candidate.json",
+      "record_type": "learning_node_candidate",
+      "valid": true,
+      "notes": "仅基于测试日志的候选；uncertainty 明确说明缺少授权轨迹；学生已作答，status=resolved"
+    },
+    {
+      "file": "insufficient_evidence/student-confirmation-denied.json",
+      "record_type": "student_confirmation",
+      "valid": true,
+      "notes": "学生否认且未补充说明：student_statement 使用 missing_info 结构化缺失状态"
+    },
+    {
+      "file": "invalid/event-missing-source-refs.json",
+      "record_type": "observable_event",
+      "valid": false,
+      "notes": "事实缺少 source_refs，必须被拒绝"
+    },
+    {
+      "file": "invalid/candidate-missing-uncertainty.json",
+      "record_type": "learning_node_candidate",
+      "valid": false,
+      "notes": "候选缺少 uncertainty，必须被拒绝"
+    },
+    {
+      "file": "invalid/event-bad-datetime.json",
+      "record_type": "observable_event",
+      "valid": false,
+      "notes": "occurred_at 非合法 date-time，FormatChecker 必须拒绝"
+    },
+    {
+      "file": "invalid/confirmation-bad-decision.json",
+      "record_type": "student_confirmation",
+      "valid": false,
+      "notes": "decision 不在枚举内，必须被拒绝"
+    }
+  ]
+}

@@ -1,0 +1,9 @@
+{
+  "schema_version": "v0",
+  "id": "cand-bad-0001",
+  "evidence_level": "candidate_inference",
+  "statement": "缺少 uncertainty 的候选推断，必须校验失败。",
+  "basis_event_ids": ["evt-0001"],
+  "question_to_student": "占位问题",
+  "status": "proposed"
+}

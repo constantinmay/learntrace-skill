@@ -1,0 +1,67 @@
+{
+  "$id": "common.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "LearnTrace v0 公共定义",
+  "description": "所有 LearnTrace v0 记录类型共享的字段定义。",
+  "$defs": {
+    "schema_version": {
+      "const": "v0",
+      "description": "契约版本标识，M1 冻结为 \"v0\"。"
+    },
+    "record_id": {
+      "type": "string",
+      "minLength": 1,
+      "description": "记录在单次分析运行内的唯一标识。"
+    },
+    "source_ref": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "ref"],
+      "properties": {
+        "type": {
+          "enum": ["git_commit", "file", "document", "test_log", "trace_record"],
+          "description": "引用指向的来源类型。"
+        },
+        "ref": {
+          "type": "string",
+          "minLength": 1,
+          "description": "来源定位符，如提交哈希、带行号的文件路径或轨迹记录 id。"
+        },
+        "note": {
+          "type": "string",
+          "description": "可选的人工可读补充说明。"
+        }
+      },
+      "description": "一条可追溯的证据来源指针。"
+    },
+    "source_refs": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/source_ref" },
+      "minItems": 1,
+      "description": "一条或多条来源引用；每条可观察事实必须至少携带一条。"
+    },
+    "missing_info": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status"],
+      "properties": {
+        "status": {
+          "const": "not_recorded",
+          "description": "证据缺失的显式标记，展示为“未记录”。"
+        },
+        "note": {
+          "type": "string",
+          "description": "可选的缺失原因说明。"
+        }
+      },
+      "description": "结构化的证据缺失状态，用于替代编造内容。"
+    },
+    "text_or_missing": {
+      "anyOf": [
+        { "type": "string", "minLength": 1 },
+        { "$ref": "#/$defs/missing_info" }
+      ],
+      "description": "已记录的文本，或显式的证据缺失状态。"
+    }
+  }
+}

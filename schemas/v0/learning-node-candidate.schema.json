@@ -1,0 +1,50 @@
+{
+  "$id": "learning-node-candidate.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "LearningNodeCandidate",
+  "description": "系统提出的候选学习节点。在学生通过 StudentConfirmation 记录作答之前，绝不能作为学习结论。",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "id",
+    "evidence_level",
+    "statement",
+    "basis_event_ids",
+    "uncertainty",
+    "question_to_student",
+    "status"
+  ],
+  "properties": {
+    "schema_version": { "$ref": "common.schema.json#/$defs/schema_version" },
+    "id": { "$ref": "common.schema.json#/$defs/record_id" },
+    "evidence_level": {
+      "const": "candidate_inference",
+      "description": "本记录类型固定的证据等级。"
+    },
+    "statement": {
+      "type": "string",
+      "minLength": 1,
+      "description": "系统提出的候选解释。"
+    },
+    "basis_event_ids": {
+      "type": "array",
+      "items": { "$ref": "common.schema.json#/$defs/record_id" },
+      "minItems": 1,
+      "description": "本推断所依据的 ObservableEvent 记录 id。"
+    },
+    "uncertainty": {
+      "type": "string",
+      "minLength": 1,
+      "description": "系统不确定的原因，如缺少授权轨迹或证据存在歧义。"
+    },
+    "question_to_student": {
+      "$ref": "common.schema.json#/$defs/text_or_missing",
+      "description": "需要学生回答的问题；若系统无法形成问题，则使用显式 not_recorded 状态。"
+    },
+    "status": {
+      "enum": ["proposed", "resolved"],
+      "description": "仅表示生命周期：存在对应 StudentConfirmation 记录作答后为 resolved。学生的决定只存放在确认记录中，禁止写在此处。"
+    }
+  }
+}

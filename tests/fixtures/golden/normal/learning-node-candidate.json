@@ -1,0 +1,10 @@
+{
+  "schema_version": "v0",
+  "id": "cand-0001",
+  "evidence_level": "candidate_inference",
+  "statement": "学生可能在测试失败后修改了 CSV 解析的边界处理逻辑。",
+  "basis_event_ids": ["evt-0001", "evt-0002"],
+  "uncertainty": "提交时间晚于测试日志，但提交说明未明确提及失败用例，无法排除改动与失败无关。",
+  "question_to_student": "这次提交是否是为了修复测试日志中的边界用例失败？",
+  "status": "resolved"
+}

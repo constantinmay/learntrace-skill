@@ -4,7 +4,10 @@ version = "0.1.0"
 description = "Build traceable learning portfolios from AI-assisted course projects."
 readme = "README.md"
 requires-python = ">=3.11"
-dependencies = []
+dependencies = [
+    "jsonschema>=4.23,<5",
+    "rfc3339-validator>=0.1.4,<1",
+]
 
 [project.scripts]
 learntrace = "learntrace.cli:main"

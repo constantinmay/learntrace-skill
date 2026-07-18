@@ -1,0 +1,10 @@
+{
+  "schema_version": "v0",
+  "id": "cand-1001",
+  "evidence_level": "candidate_inference",
+  "statement": "学生可能在开发后期回归运行了完整测试套件。",
+  "basis_event_ids": ["evt-1001"],
+  "uncertainty": "仅有测试日志快照，没有授权 AI 轨迹，无法判断测试由谁触发、是否修复过失败用例。",
+  "question_to_student": "这次全量测试通过之前，是否经历过失败并修复？",
+  "status": "resolved"
+}
