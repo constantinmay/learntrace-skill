@@ -66,6 +66,192 @@
       "record_type": "student_confirmation",
       "valid": false,
       "notes": "decision 不在枚举内，必须被拒绝"
+    },
+    {
+      "file": "scenarios/01-revise-ai-suggestion-confirmed/learning-node-candidate.json",
+      "record_type": "learning_node_candidate",
+      "valid": true,
+      "notes": "场景1：修改AI建议，学生确认"
+    },
+    {
+      "file": "scenarios/01-revise-ai-suggestion-confirmed/observable-event-commit.json",
+      "record_type": "observable_event",
+      "valid": true,
+      "notes": "场景1：修改AI建议，学生确认"
+    },
+    {
+      "file": "scenarios/01-revise-ai-suggestion-confirmed/observable-event-trace.json",
+      "record_type": "observable_event",
+      "valid": true,
+      "notes": "场景1：修改AI建议，学生确认"
+    },
+    {
+      "file": "scenarios/01-revise-ai-suggestion-confirmed/student-confirmation.json",
+      "record_type": "student_confirmation",
+      "valid": true,
+      "notes": "场景1：修改AI建议，学生确认"
+    },
+    {
+      "file": "scenarios/02-revise-ai-suggestion-denied/learning-node-candidate.json",
+      "record_type": "learning_node_candidate",
+      "valid": true,
+      "notes": "场景2：修改AI建议候选被学生否认，陈述用missing_info"
+    },
+    {
+      "file": "scenarios/02-revise-ai-suggestion-denied/observable-event-commit.json",
+      "record_type": "observable_event",
+      "valid": true,
+      "notes": "场景2：修改AI建议候选被学生否认，陈述用missing_info"
+    },
+    {
+      "file": "scenarios/02-revise-ai-suggestion-denied/observable-event-trace.json",
+      "record_type": "observable_event",
+      "valid": true,
+      "notes": "场景2：修改AI建议候选被学生否认，陈述用missing_info"
+    },
+    {
+      "file": "scenarios/02-revise-ai-suggestion-denied/student-confirmation.json",
+      "record_type": "student_confirmation",
+      "valid": true,
+      "notes": "场景2：修改AI建议候选被学生否认，陈述用missing_info"
+    },
+    {
+      "file": "scenarios/03-fix-failed-approach-supplemented/learning-node-candidate.json",
+      "record_type": "learning_node_candidate",
+      "valid": true,
+      "notes": "场景3：修复失败方案，学生补充说明"
+    },
+    {
+      "file": "scenarios/03-fix-failed-approach-supplemented/observable-event-commit.json",
+      "record_type": "observable_event",
+      "valid": true,
+      "notes": "场景3：修复失败方案，学生补充说明"
+    },
+    {
+      "file": "scenarios/03-fix-failed-approach-supplemented/observable-event-testlog.json",
+      "record_type": "observable_event",
+      "valid": true,
+      "notes": "场景3：修复失败方案，学生补充说明"
+    },
+    {
+      "file": "scenarios/03-fix-failed-approach-supplemented/student-confirmation.json",
+      "record_type": "student_confirmation",
+      "valid": true,
+      "notes": "场景3：修复失败方案，学生补充说明"
+    },
+    {
+      "file": "scenarios/04-fix-failed-approach-missing-evidence/learning-node-candidate.json",
+      "record_type": "learning_node_candidate",
+      "valid": true,
+      "notes": "场景4：仅提交证据，uncertainty注明无测试日志；确认陈述为missing_info"
+    },
+    {
+      "file": "scenarios/04-fix-failed-approach-missing-evidence/observable-event-commit.json",
+      "record_type": "observable_event",
+      "valid": true,
+      "notes": "场景4：仅提交证据，uncertainty注明无测试日志；确认陈述为missing_info"
+    },
+    {
+      "file": "scenarios/04-fix-failed-approach-missing-evidence/student-confirmation.json",
+      "record_type": "student_confirmation",
+      "valid": true,
+      "notes": "场景4：仅提交证据，uncertainty注明无测试日志；确认陈述为missing_info"
+    },
+    {
+      "file": "scenarios/05-add-tests-confirmed/learning-node-candidate.json",
+      "record_type": "learning_node_candidate",
+      "valid": true,
+      "notes": "场景5：补充测试，学生确认"
+    },
+    {
+      "file": "scenarios/05-add-tests-confirmed/observable-event-commit.json",
+      "record_type": "observable_event",
+      "valid": true,
+      "notes": "场景5：补充测试，学生确认"
+    },
+    {
+      "file": "scenarios/05-add-tests-confirmed/observable-event-testlog.json",
+      "record_type": "observable_event",
+      "valid": true,
+      "notes": "场景5：补充测试，学生确认"
+    },
+    {
+      "file": "scenarios/05-add-tests-confirmed/student-confirmation.json",
+      "record_type": "student_confirmation",
+      "valid": true,
+      "notes": "场景5：补充测试，学生确认"
+    },
+    {
+      "file": "scenarios/06-follow-up-confirmed/learning-node-candidate.json",
+      "record_type": "learning_node_candidate",
+      "valid": true,
+      "notes": "场景6：多轮追问（两条trace事件），学生确认"
+    },
+    {
+      "file": "scenarios/06-follow-up-confirmed/observable-event-trace-1.json",
+      "record_type": "observable_event",
+      "valid": true,
+      "notes": "场景6：多轮追问（两条trace事件），学生确认"
+    },
+    {
+      "file": "scenarios/06-follow-up-confirmed/observable-event-trace-2.json",
+      "record_type": "observable_event",
+      "valid": true,
+      "notes": "场景6：多轮追问（两条trace事件），学生确认"
+    },
+    {
+      "file": "scenarios/06-follow-up-confirmed/student-confirmation.json",
+      "record_type": "student_confirmation",
+      "valid": true,
+      "notes": "场景6：多轮追问（两条trace事件），学生确认"
+    },
+    {
+      "file": "scenarios/07-adjust-constraints-supplemented/learning-node-candidate.json",
+      "record_type": "learning_node_candidate",
+      "valid": true,
+      "notes": "场景7：调整设计约束，学生补充"
+    },
+    {
+      "file": "scenarios/07-adjust-constraints-supplemented/observable-event-commit.json",
+      "record_type": "observable_event",
+      "valid": true,
+      "notes": "场景7：调整设计约束，学生补充"
+    },
+    {
+      "file": "scenarios/07-adjust-constraints-supplemented/observable-event-document.json",
+      "record_type": "observable_event",
+      "valid": true,
+      "notes": "场景7：调整设计约束，学生补充"
+    },
+    {
+      "file": "scenarios/07-adjust-constraints-supplemented/student-confirmation.json",
+      "record_type": "student_confirmation",
+      "valid": true,
+      "notes": "场景7：调整设计约束，学生补充"
+    },
+    {
+      "file": "scenarios/08-no-trace-degraded/observable-event-commit.json",
+      "record_type": "observable_event",
+      "valid": true,
+      "notes": "场景8：无授权轨迹降级，仅事件无候选无确认"
+    },
+    {
+      "file": "scenarios/08-no-trace-degraded/observable-event-testlog.json",
+      "record_type": "observable_event",
+      "valid": true,
+      "notes": "场景8：无授权轨迹降级，仅事件无候选无确认"
+    },
+    {
+      "file": "scenarios/09-sparse-evidence-high-uncertainty/learning-node-candidate.json",
+      "record_type": "learning_node_candidate",
+      "valid": true,
+      "notes": "场景9：证据稀疏，候选保持proposed且uncertainty以「高：」开头"
+    },
+    {
+      "file": "scenarios/09-sparse-evidence-high-uncertainty/observable-event-commit.json",
+      "record_type": "observable_event",
+      "valid": true,
+      "notes": "场景9：证据稀疏，候选保持proposed且uncertainty以「高：」开头"
     }
   ]
 }

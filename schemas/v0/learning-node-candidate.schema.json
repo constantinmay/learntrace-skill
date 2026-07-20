@@ -9,6 +9,7 @@
     "schema_version",
     "id",
     "evidence_level",
+    "node_type",
     "statement",
     "basis_event_ids",
     "uncertainty",
@@ -21,6 +22,10 @@
     "evidence_level": {
       "const": "candidate_inference",
       "description": "本记录类型固定的证据等级。"
+    },
+    "node_type": {
+      "enum": ["follow_up", "revise_ai_suggestion", "fix_failed_approach", "add_tests", "adjust_constraints"],
+      "description": "候选学习节点的分类，必填；档案层按此筛选与统计。新增类型属于契约变更。"
     },
     "statement": {
       "type": "string",

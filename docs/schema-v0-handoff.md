@@ -2,7 +2,7 @@
 
 负责人：Liushenwuzhu-Alpaca（数据契约、金标样例与契约回归）
 分支：`feat/schema-v0-contract`（未合并，待 PR）
-状态：四项检查全绿（ruff check / ruff format --check / pyright / pytest，21 项契约测试通过）
+状态：四项检查全绿（ruff check / ruff format --check / pyright / pytest）
 
 ## 1. 交付内容一览
 
@@ -15,14 +15,14 @@
 | 契约说明 | `schemas/v0/README.md` | 字段语义、证据等级、硬约束 |
 | Python 模型 | `src/learntrace/models/records.py` | 三种记录 + `SourceRef` / `MissingInfo` 的 dataclass |
 | 校验器 | `src/learntrace/models/validation.py` | `ContractValidator`，JSON 合规校验 |
-| 金标样例 | `tests/fixtures/golden/` | 正常 4 例、证据不足 3 例、非法 4 例 |
+| 金标样例 | `tests/fixtures/golden/` | 正常 4 例、证据不足 3 例、非法 4 例、九场景 31 例 |
 | 预期结果清单 | `tests/fixtures/golden/expected-results.json` | 每个样例应通过还是被拒绝 |
-| 契约回归测试 | `tests/contract/test_schema_v0.py` | 21 项，样例回归 + 跨记录规则 |
+| 契约回归测试 | `tests/contract/test_schema_v0.py` | 样例回归 + 跨记录规则 + 场景一致性 |
 
 ## 2. 三种记录与三条硬约束
 
 - `observable_fact`：必须带 ≥1 条 `source_refs`（`git_commit` / `file` / `document` / `test_log` / `trace_record`）。
-- `candidate_inference`：必须带 `basis_event_ids`（指向事实记录 id）和 `uncertainty`；`status` 只有 `proposed` / `resolved` 两种生命周期状态。
+- `candidate_inference`：必须带 `node_type`（必填枚举：`follow_up` / `revise_ai_suggestion` / `fix_failed_approach` / `add_tests` / `adjust_constraints`，档案层按此筛选与统计，新增类型属于契约变更须开 Issue）、`basis_event_ids`（指向事实记录 id）和 `uncertainty`；`status` 只有 `proposed` / `resolved` 两种生命周期状态。`uncertainty` 必须以「高：」「中：」「低：」程度前缀开头，契约测试已强制该约定。
 - `student_confirmation`：独立记录，存 `candidate_id` + `decision`（`confirmed` / `supplemented` / `denied`）+ 学生原话。
 
 硬约束（其他任务线必须遵守）：
@@ -74,7 +74,7 @@ data = event.to_dict()  # 保证通过 schema
 
 ### Skill 与学习档案（成员 4）
 
-- 候选推断构造 `LearningNodeCandidate`；学生作答后把 `status` 改为 `resolved` 并新增 `StudentConfirmation`。
+- 候选推断构造 `LearningNodeCandidate`，必填 `node_type`（`NodeType` 枚举）；学生作答后把 `status` 改为 `resolved` 并新增 `StudentConfirmation`。
 - 学生未补充说明时，`student_statement` 传 `MissingInfo(note="...")`。
 - 档案渲染遇到 `missing_info` 一律显示"未记录"。
 
@@ -94,6 +94,19 @@ errors = validator.iter_errors("learning_node_candidate", data)  # 拿全部错�
 
 - 中段联调统一输入：成员 2/3 的解析器可用 `golden/normal/` 的两个事实样例对齐输出格式。
 - 端到端演示：`normal/` 是"事实 → 候选 → 学生确认"完整闭环；`insufficient_evidence/` 演示无授权轨迹的降级行为。
+- `scenarios/` 九场景样例（对应档案输出测试场景）：
+
+| 目录 | 场景 |
+| --- | --- |
+| `01-revise-ai-suggestion-confirmed` | 修改 AI 建议，学生确认 |
+| `02-revise-ai-suggestion-denied` | 修改 AI 建议候选被否认，陈述用 missing_info |
+| `03-fix-failed-approach-supplemented` | 修复失败方案，学生补充说明 |
+| `04-fix-failed-approach-missing-evidence` | 仅提交证据，uncertainty 注明无测试日志 |
+| `05-add-tests-confirmed` | 补充测试，学生确认 |
+| `06-follow-up-confirmed` | 多轮追问（两条 trace 事件），学生确认 |
+| `07-adjust-constraints-supplemented` | 调整设计约束，学生补充 |
+| `08-no-trace-degraded` | 无授权轨迹降级：仅事件，无候选无确认 |
+| `09-sparse-evidence-high-uncertainty` | 证据稀疏：候选保持 proposed，uncertainty 以「高：」开头 |
 - 所有样例均为人工构造、已脱敏，可直接提交公开仓库。
 
 ## 5. 修改契约的流程
@@ -116,5 +129,5 @@ errors = validator.iter_errors("learning_node_candidate", data)  # 拿全部错�
 - 模型暂不提供 `from_dict()`；如解析侧需要，开 Issue 讨论后补。
 - 跨记录一致性（basis 引用存在、resolved 有确认）目前只在契约测试中检查，未提供运行时 API。
 - `student_confirmation` 不强制 `source_refs`，其来源视为与学生的对话本身。
-- 契约无“来源宿主/Agent”独立字段：多 Agent 会话中区分身份是真实需求，过渡方案是写入 `source_ref.note`；如需机器可检索，开 Issue 讨论 v0.1 增加可选 `source_host` 字段。
+- 来源宿主/Agent 独立字段已评估，v0/v0.1 均不增加：文件级归属已足够，会话内 Agent 身份暂无消费者；过渡期间来源宿主写入 `source_ref.note` 即可。
 - Markdown 导出无稳定记录 id：适配器需自行合成（如 `session_id + 消息序号`），重导出后 id 会漂移，实现时注意幂等与去重。

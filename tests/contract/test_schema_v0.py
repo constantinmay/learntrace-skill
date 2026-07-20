@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any, Literal, TypedDict
+from typing import Any, TypedDict
 
 import jsonschema
 import pytest
@@ -21,6 +21,7 @@ from learntrace.models import (
     EventKind,
     LearningNodeCandidate,
     MissingInfo,
+    NodeType,
     ObservableEvent,
     RecordType,
     SourceRef,
@@ -131,6 +132,7 @@ def test_models_roundtrip_validates(validator: ContractValidator) -> None:
     )
     candidate = LearningNodeCandidate(
         id="cand-model-1",
+        node_type=NodeType.FIX_FAILED_APPROACH,
         statement="候选陈述",
         basis_event_ids=("evt-model-1",),
         uncertainty="不确定性说明",
@@ -160,7 +162,7 @@ def test_missing_info_serializes_to_structured_state() -> None:
     assert data["student_statement"] == {"status": "not_recorded"}
 
 
-def _load_bundle(subdir: Literal["normal", "insufficient_evidence"]) -> dict[str, Any]:
+def _load_bundle(subdir: str) -> dict[str, Any]:
     bundle: dict[str, list[Any]] = {"events": [], "candidates": [], "confirmations": []}
     for path in sorted((GOLDEN_DIR / subdir).glob("*.json")):
         record = _load_json(path)
@@ -211,3 +213,35 @@ def test_resolved_candidate_without_confirmation_is_violation() -> None:
     bundle = _load_bundle("normal")
     bundle["confirmations"] = []
     assert any("缺少确认记录" in v for v in _bundle_violations(bundle))
+
+
+def test_scenario_bundles_are_consistent() -> None:
+    """九场景金标样例中每个场景目录都必须满足跨记录一致性规则。"""
+    scenarios_dir = GOLDEN_DIR / "scenarios"
+    subdirs = sorted(path for path in scenarios_dir.iterdir() if path.is_dir())
+    assert subdirs, "scenarios 目录下没有任何场景样例"
+    for path in subdirs:
+        relative = str(path.relative_to(GOLDEN_DIR))
+        assert _bundle_violations(_load_bundle(relative)) == [], relative
+
+
+def test_scenario_specific_expectations() -> None:
+    """场景专项断言：降级、保守候选等场景意图必须保持。"""
+    no_trace = _load_bundle("scenarios/08-no-trace-degraded")
+    assert all(event["kind"] != "trace_record" for event in no_trace["events"])
+    assert no_trace["candidates"] == []
+    assert no_trace["confirmations"] == []
+
+    sparse = _load_bundle("scenarios/09-sparse-evidence-high-uncertainty")
+    assert len(sparse["candidates"]) == 1
+    assert sparse["candidates"][0]["status"] == "proposed"
+    assert sparse["confirmations"] == []
+
+
+def test_candidate_uncertainty_has_severity_prefix(manifest: Manifest) -> None:
+    """所有有效候选样例的 uncertainty 必须以“高：/中：/低：”程度前缀开头。"""
+    for case in manifest["cases"]:
+        if case["record_type"] != "learning_node_candidate" or not case["valid"]:
+            continue
+        record = _load_json(GOLDEN_DIR / case["file"])
+        assert record["uncertainty"].startswith(("高：", "中：", "低：")), case["file"]

@@ -101,6 +101,16 @@ class ObservableEvent:
         return data
 
 
+class NodeType(StrEnum):
+    """候选学习节点的分类；档案层按此筛选与统计。新增类型属于契约变更。"""
+
+    FOLLOW_UP = "follow_up"
+    REVISE_AI_SUGGESTION = "revise_ai_suggestion"
+    FIX_FAILED_APPROACH = "fix_failed_approach"
+    ADD_TESTS = "add_tests"
+    ADJUST_CONSTRAINTS = "adjust_constraints"
+
+
 class CandidateStatus(StrEnum):
     """候选的生命周期。学生的决定只存放在 StudentConfirmation 中。"""
 
@@ -115,6 +125,7 @@ class LearningNodeCandidate:
     EVIDENCE_LEVEL: ClassVar[str] = "candidate_inference"
 
     id: str
+    node_type: NodeType
     statement: str
     basis_event_ids: tuple[str, ...]
     uncertainty: str
@@ -126,6 +137,7 @@ class LearningNodeCandidate:
             "schema_version": SCHEMA_VERSION,
             "id": self.id,
             "evidence_level": self.EVIDENCE_LEVEL,
+            "node_type": str(self.node_type),
             "statement": self.statement,
             "basis_event_ids": list(self.basis_event_ids),
             "uncertainty": self.uncertainty,

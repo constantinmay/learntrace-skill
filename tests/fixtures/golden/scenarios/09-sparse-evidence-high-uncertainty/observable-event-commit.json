@@ -1,0 +1,14 @@
+{
+  "schema_version": "v0",
+  "id": "evt-s09-1",
+  "evidence_level": "observable_fact",
+  "kind": "git_commit",
+  "summary": "提交 d9e0f1a：调整命令行参数解析，支持 --ignore-missing。",
+  "source_refs": [
+    {
+      "type": "git_commit",
+      "ref": "d9e0f1a"
+    }
+  ],
+  "occurred_at": "2026-04-26T18:20:00+08:00"
+}

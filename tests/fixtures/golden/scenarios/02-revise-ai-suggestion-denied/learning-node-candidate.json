@@ -1,0 +1,14 @@
+{
+  "schema_version": "v0",
+  "id": "cand-s02",
+  "evidence_level": "candidate_inference",
+  "node_type": "revise_ai_suggestion",
+  "statement": "学生可能将 AI 建议的正则校验改写为更简单的字符串方法实现。",
+  "basis_event_ids": [
+    "evt-s02-1",
+    "evt-s02-2"
+  ],
+  "uncertainty": "中：两种实现语义相近，无法排除学生本来就打算用字符串方法，与 AI 建议无关。",
+  "question_to_student": "这次实现是否参考并修改了 AI 提出的正则校验建议？",
+  "status": "resolved"
+}

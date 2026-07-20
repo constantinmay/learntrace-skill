@@ -1,0 +1,14 @@
+{
+  "schema_version": "v0",
+  "id": "evt-s07-1",
+  "evidence_level": "observable_fact",
+  "kind": "document",
+  "summary": "设计文档更新：成绩上限由 100 调整为等级制（A/B/C/D）。",
+  "source_refs": [
+    {
+      "type": "document",
+      "ref": "docs/design-v2.md"
+    }
+  ],
+  "occurred_at": "2026-04-23T10:00:00+08:00"
+}
