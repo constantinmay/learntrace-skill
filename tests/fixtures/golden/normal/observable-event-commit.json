@@ -3,7 +3,7 @@
   "id": "evt-0001",
   "evidence_level": "observable_fact",
   "kind": "git_commit",
-  "summary": "学生提交 commit，新增 CSV 解析模块与最小命令行入口。",
+  "summary": "该提交新增 CSV 解析模块与最小命令行入口。",
   "occurred_at": "2026-03-02T14:23:11+08:00",
   "source_refs": [
     {

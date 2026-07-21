@@ -8,6 +8,7 @@ M1 冻结的公共骨架字段：
 - 证据等级 `evidence_level`：三种记录类型各自固定取值，见下表。
 - 候选状态 `status`：仅表示生命周期；学生的决定只保存在确认记录中。
 - 候选分类 `node_type`：必填枚举，取值为 `follow_up` / `revise_ai_suggestion` / `fix_failed_approach` / `add_tests` / `adjust_constraints`，档案层按此筛选与统计；新增类型属于契约变更。
+- 候选 `uncertainty` 必须以「高：」「中：」或「低：」程度前缀开头，Schema `pattern` 强制。
 - 缺失状态 `missing_info`：结构化对象 `{"status": "not_recorded", "note": ...}`，展示为“未记录”，禁止使用普通字符串充当缺失语义。
 
 ## 记录类型

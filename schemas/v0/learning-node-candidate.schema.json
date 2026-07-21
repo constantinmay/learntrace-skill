@@ -41,7 +41,8 @@
     "uncertainty": {
       "type": "string",
       "minLength": 1,
-      "description": "系统不确定的原因，如缺少授权轨迹或证据存在歧义。"
+      "pattern": "^(高|中|低)：",
+      "description": "系统不确定的原因，必须以「高：」「中：」或「低：」程度前缀开头。"
     },
     "question_to_student": {
       "$ref": "common.schema.json#/$defs/text_or_missing",

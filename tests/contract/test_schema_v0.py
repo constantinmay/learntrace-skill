@@ -84,7 +84,7 @@ def test_manifest_covers_every_sample(manifest: Manifest) -> None:
     """新增样例文件必须同步登记到预期结果清单，否则此处直接失败。"""
     listed = {case["file"] for case in manifest["cases"]}
     on_disk = {
-        str(path.relative_to(GOLDEN_DIR))
+        path.relative_to(GOLDEN_DIR).as_posix()
         for path in GOLDEN_DIR.rglob("*.json")
         if path.name != MANIFEST_PATH.name
     }
@@ -135,7 +135,7 @@ def test_models_roundtrip_validates(validator: ContractValidator) -> None:
         node_type=NodeType.FIX_FAILED_APPROACH,
         statement="候选陈述",
         basis_event_ids=("evt-model-1",),
-        uncertainty="不确定性说明",
+        uncertainty="低：模型往返测试，不确定性仅为占位说明。",
         question_to_student="是否如此？",
         status=CandidateStatus.PROPOSED,
     )
@@ -181,6 +181,12 @@ def _load_bundle(subdir: str) -> dict[str, Any]:
 def _bundle_violations(bundle: dict[str, Any]) -> list[str]:
     """JSON Schema 无法表达的跨记录规则。"""
     violations: list[str] = []
+    all_ids = [
+        record["id"]
+        for record in (*bundle["events"], *bundle["candidates"], *bundle["confirmations"])
+    ]
+    for dup_id in sorted({rid for rid in all_ids if all_ids.count(rid) > 1}):
+        violations.append(f"记录 id 重复：{dup_id}")
     event_ids = {event["id"] for event in bundle["events"]}
     candidate_ids = {c["id"] for c in bundle["candidates"]}
     answered_ids = {c["candidate_id"] for c in bundle["confirmations"]}
@@ -213,6 +219,13 @@ def test_resolved_candidate_without_confirmation_is_violation() -> None:
     bundle = _load_bundle("normal")
     bundle["confirmations"] = []
     assert any("缺少确认记录" in v for v in _bundle_violations(bundle))
+
+
+def test_duplicate_record_id_is_violation() -> None:
+    """同一分析运行内记录 id 必须全局唯一。"""
+    bundle = _load_bundle("normal")
+    bundle["events"].append(dict(bundle["events"][0]))
+    assert any("重复" in v for v in _bundle_violations(bundle))
 
 
 def test_scenario_bundles_are_consistent() -> None:

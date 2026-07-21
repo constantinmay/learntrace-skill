@@ -68,6 +68,12 @@
       "notes": "decision 不在枚举内，必须被拒绝"
     },
     {
+      "file": "invalid/candidate-bad-uncertainty-prefix.json",
+      "record_type": "learning_node_candidate",
+      "valid": false,
+      "notes": "uncertainty 缺少高/中/低前缀，pattern 必须拒绝"
+    },
+    {
       "file": "scenarios/01-revise-ai-suggestion-confirmed/learning-node-candidate.json",
       "record_type": "learning_node_candidate",
       "valid": true,

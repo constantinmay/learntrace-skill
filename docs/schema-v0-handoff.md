@@ -22,7 +22,7 @@
 ## 2. 三种记录与三条硬约束
 
 - `observable_fact`：必须带 ≥1 条 `source_refs`（`git_commit` / `file` / `document` / `test_log` / `trace_record`）。
-- `candidate_inference`：必须带 `node_type`（必填枚举：`follow_up` / `revise_ai_suggestion` / `fix_failed_approach` / `add_tests` / `adjust_constraints`，档案层按此筛选与统计，新增类型属于契约变更须开 Issue）、`basis_event_ids`（指向事实记录 id）和 `uncertainty`；`status` 只有 `proposed` / `resolved` 两种生命周期状态。`uncertainty` 必须以「高：」「中：」「低：」程度前缀开头，契约测试已强制该约定。
+- `candidate_inference`：必须带 `node_type`（必填枚举：`follow_up` / `revise_ai_suggestion` / `fix_failed_approach` / `add_tests` / `adjust_constraints`，档案层按此筛选与统计，新增类型属于契约变更须开 Issue）、`basis_event_ids`（指向事实记录 id）和 `uncertainty`；`status` 只有 `proposed` / `resolved` 两种生命周期状态。`uncertainty` 必须以「高：」「中：」「低：」程度前缀开头，Schema `pattern` 强制，运行时校验同样生效。
 - `student_confirmation`：独立记录，存 `candidate_id` + `decision`（`confirmed` / `supplemented` / `denied`）+ 学生原话。
 
 硬约束（其他任务线必须遵守）：
@@ -128,6 +128,7 @@ errors = validator.iter_errors("learning_node_candidate", data)  # 拿全部错�
 
 - 模型暂不提供 `from_dict()`；如解析侧需要，开 Issue 讨论后补。
 - 跨记录一致性（basis 引用存在、resolved 有确认）目前只在契约测试中检查，未提供运行时 API。
+- `uv build` 产出的 wheel 不含 `schemas/v0/*.schema.json`：在非源码布局环境调用 `ContractValidator()`（无参）会因 `default_schema_dir()` 找不到目录而抛 `FileNotFoundError`。当前团队均在源码仓库布局开发不受影响；若日后发布正式 Python 包，需将 schema 作为 package data 打包并增加 wheel 安装后的校验测试。
 - `student_confirmation` 不强制 `source_refs`，其来源视为与学生的对话本身。
 - 来源宿主/Agent 独立字段已评估，v0/v0.1 均不增加：文件级归属已足够，会话内 Agent 身份暂无消费者；过渡期间来源宿主写入 `source_ref.note` 即可。
 - Markdown 导出无稳定记录 id：适配器需自行合成（如 `session_id + 消息序号`），重导出后 id 会漂移，实现时注意幂等与去重。
