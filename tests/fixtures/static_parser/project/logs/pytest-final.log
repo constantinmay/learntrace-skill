@@ -1,0 +1,6 @@
+============================= test session starts =============================
+collected 3 items
+tests/test_parser.py .F.                                                  [100%]
+=================================== FAILURES ===================================
+FAILED tests/test_parser.py::test_missing_column - AssertionError
+==================== 1 failed, 2 passed, 1 skipped in 0.10s ====================
