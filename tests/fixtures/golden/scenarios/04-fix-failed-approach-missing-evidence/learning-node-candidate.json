@@ -1,0 +1,13 @@
+{
+  "schema_version": "v0",
+  "id": "cand-s04",
+  "evidence_level": "candidate_inference",
+  "node_type": "fix_failed_approach",
+  "statement": "学生可能放弃了逐字符读取的初始方案，改为整行解析。",
+  "basis_event_ids": [
+    "evt-s04-1"
+  ],
+  "uncertainty": "高：无任何测试日志或轨迹记录初始方案失败，仅有单次提交，失败假设无法核实。",
+  "question_to_student": "重写解析循环之前，初始方案是否遇到过失败？",
+  "status": "resolved"
+}

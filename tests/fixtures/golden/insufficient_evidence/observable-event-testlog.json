@@ -1,0 +1,13 @@
+{
+  "schema_version": "v0",
+  "id": "evt-1001",
+  "evidence_level": "observable_fact",
+  "kind": "test_log",
+  "summary": "既有测试日志显示全部 8 个用例通过。",
+  "source_refs": [
+    {
+      "type": "test_log",
+      "ref": "logs/pytest-final.txt:1-12"
+    }
+  ]
+}

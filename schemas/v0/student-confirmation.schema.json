@@ -1,0 +1,41 @@
+{
+  "$id": "student-confirmation.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "StudentConfirmation",
+  "description": "学生对 LearningNodeCandidate 的回答。独立成记录保存，使原始候选与学生陈述始终分开。",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "id",
+    "evidence_level",
+    "candidate_id",
+    "decision",
+    "student_statement"
+  ],
+  "properties": {
+    "schema_version": { "$ref": "common.schema.json#/$defs/schema_version" },
+    "id": { "$ref": "common.schema.json#/$defs/record_id" },
+    "evidence_level": {
+      "const": "student_confirmation",
+      "description": "本记录类型固定的证据等级。"
+    },
+    "candidate_id": {
+      "$ref": "common.schema.json#/$defs/record_id",
+      "description": "本确认所回答的 LearningNodeCandidate 记录 id。"
+    },
+    "decision": {
+      "enum": ["confirmed", "supplemented", "denied"],
+      "description": "学生对候选的确认、补充或否认。"
+    },
+    "student_statement": {
+      "$ref": "common.schema.json#/$defs/text_or_missing",
+      "description": "学生本人的陈述；若学生未给出陈述，则使用显式 not_recorded 状态。"
+    },
+    "confirmed_at": {
+      "type": "string",
+      "format": "date-time",
+      "description": "学生作答时间（如有记录），可选。"
+    }
+  }
+}

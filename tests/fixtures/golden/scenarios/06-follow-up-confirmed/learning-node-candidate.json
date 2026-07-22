@@ -1,0 +1,14 @@
+{
+  "schema_version": "v0",
+  "id": "cand-s06",
+  "evidence_level": "candidate_inference",
+  "node_type": "follow_up",
+  "statement": "学生可能通过追问把问题从基础统计细化到含缺失值的统计。",
+  "basis_event_ids": [
+    "evt-s06-1",
+    "evt-s06-2"
+  ],
+  "uncertainty": "中：追问内容相关，但是否形成新的理解只有学生能确认。",
+  "question_to_student": "第二次追问是否让你对缺失值处理有了新的理解？",
+  "status": "resolved"
+}

@@ -1,0 +1,32 @@
+{
+  "$id": "observable-event.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ObservableEvent",
+  "description": "可直接追溯到 Git 元数据、项目文档、既有测试日志或经明确授权轨迹记录的可观察事实。",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "id", "evidence_level", "kind", "summary", "source_refs"],
+  "properties": {
+    "schema_version": { "$ref": "common.schema.json#/$defs/schema_version" },
+    "id": { "$ref": "common.schema.json#/$defs/record_id" },
+    "evidence_level": {
+      "const": "observable_fact",
+      "description": "本记录类型固定的证据等级。"
+    },
+    "kind": {
+      "enum": ["git_commit", "document", "test_log", "trace_record"],
+      "description": "被观察事件的类型。"
+    },
+    "summary": {
+      "type": "string",
+      "minLength": 1,
+      "description": "对观察结果的中立概述，不包含解读。"
+    },
+    "occurred_at": {
+      "type": "string",
+      "format": "date-time",
+      "description": "事件发生时间（以来源记录为准），可选。"
+    },
+    "source_refs": { "$ref": "common.schema.json#/$defs/source_refs" }
+  }
+}

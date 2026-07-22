@@ -1,0 +1,14 @@
+{
+  "schema_version": "v0",
+  "id": "evt-bad-0002",
+  "evidence_level": "observable_fact",
+  "kind": "test_log",
+  "summary": "occurred_at 不是合法 RFC 3339 date-time，FormatChecker 必须拒绝。",
+  "occurred_at": "2026年3月2日下午",
+  "source_refs": [
+    {
+      "type": "test_log",
+      "ref": "logs/pytest.txt:1-5"
+    }
+  ]
+}

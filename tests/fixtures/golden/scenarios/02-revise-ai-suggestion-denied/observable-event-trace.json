@@ -1,0 +1,15 @@
+{
+  "schema_version": "v0",
+  "id": "evt-s02-1",
+  "evidence_level": "observable_fact",
+  "kind": "trace_record",
+  "summary": "AI 建议用正则表达式校验课程项目中的学号输入。",
+  "source_refs": [
+    {
+      "type": "trace_record",
+      "ref": "trace://opencode/session-s02/turn-5",
+      "note": "opencode"
+    }
+  ],
+  "occurred_at": "2026-04-11T14:05:00+08:00"
+}
