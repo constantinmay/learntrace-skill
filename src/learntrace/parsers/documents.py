@@ -10,59 +10,103 @@ from learntrace.models import EventKind, ObservableEvent, SourceRef, SourceType
 from learntrace.parsers._common import (
     MAX_TEXT_FILE_BYTES,
     compact_text,
+    project_reference,
     repo_root,
     resolve_project_file,
+    safe_os_error,
     stable_event_id,
 )
 from learntrace.parsers.types import ParseResult, ParseWarning
 
 _HEADING_RE = re.compile(r"^(#{1,6})\s+(.+?)\s*#*\s*$")
+_CHUNK_TARGET_CHARS = 600
 
 
-def _markdown_sections(lines: list[str], fallback_title: str) -> list[tuple[int, int, str, str]]:
-    sections: list[tuple[int, int, str, str]] = []
-    title = fallback_title
-    start = 1
+def _text_blocks(lines: list[tuple[int, str]]) -> list[tuple[int, int, str]]:
+    """按段落分块；围栏代码块在正常大小下保持完整。"""
+    blocks: list[tuple[int, int, str]] = []
     body: list[str] = []
+    start = 1
+    end = 1
+    in_code = False
 
-    def append_section(end: int) -> None:
+    def append_block() -> None:
         text = compact_text("\n".join(body))
         if text:
-            sections.append((start, end, title, text))
+            blocks.append((start, end, text))
+
+    for number, line in lines:
+        stripped = line.strip()
+        if stripped.startswith("```"):
+            if not body:
+                start = number
+            body.append(line)
+            end = number
+            in_code = not in_code
+            continue
+        if not stripped and not in_code:
+            append_block()
+            body = []
+            continue
+        if not body:
+            start = number
+        body.append(line)
+        end = number
+    append_block()
+    return blocks
+
+
+def _pack_blocks(blocks: list[tuple[int, int, str]]) -> list[tuple[int, int, str]]:
+    chunks: list[tuple[int, int, str]] = []
+    current: list[str] = []
+    start = 1
+    end = 1
+
+    def append_chunk() -> None:
+        if current:
+            chunks.append((start, end, " ".join(current)))
+
+    for block_start, block_end, text in blocks:
+        projected = sum(len(item) for item in current) + len(current) + len(text)
+        if current and projected > _CHUNK_TARGET_CHARS:
+            append_chunk()
+            current = []
+        if not current:
+            start = block_start
+        current.append(text)
+        end = block_end
+    append_chunk()
+    return chunks
+
+
+def _markdown_sections(
+    lines: list[str], fallback_title: str
+) -> list[tuple[int, str, list[tuple[int, str]]]]:
+    sections: list[tuple[int, str, list[tuple[int, str]]]] = []
+    title = fallback_title
+    heading_line = 1
+    body: list[tuple[int, str]] = []
+
+    def append_section() -> None:
+        if _text_blocks(body):
+            sections.append((heading_line, title, list(body)))
 
     for number, line in enumerate(lines, start=1):
         match = _HEADING_RE.match(line)
         if match is None:
-            body.append(line)
+            body.append((number, line))
             continue
-        append_section(number - 1)
-        title = compact_text(match.group(2), limit=120)
-        start = number
+        append_section()
+        title = compact_text(match.group(2))
+        heading_line = number
         body = []
-    append_section(len(lines))
+    append_section()
     return sections
 
 
 def _text_paragraphs(lines: list[str]) -> list[tuple[int, int, str]]:
-    paragraphs: list[tuple[int, int, str]] = []
-    start = 1
-    body: list[str] = []
-
-    def append_paragraph(end: int) -> None:
-        text = compact_text("\n".join(body))
-        if text:
-            paragraphs.append((start, end, text))
-
-    for number, line in enumerate(lines, start=1):
-        if line.strip():
-            if not body:
-                start = number
-            body.append(line)
-            continue
-        append_paragraph(number - 1)
-        body = []
-    append_paragraph(len(lines))
-    return paragraphs
+    numbered = list(enumerate(lines, start=1))
+    return _text_blocks(numbered)
 
 
 def _parse_document(root: Path, requested_path: Path) -> ParseResult:
@@ -70,7 +114,9 @@ def _parse_document(root: Path, requested_path: Path) -> ParseResult:
         path, relative = resolve_project_file(root, requested_path)
     except ValueError as error:
         return ParseResult(
-            warnings=(ParseWarning("invalid_source", requested_path.as_posix(), str(error)),)
+            warnings=(
+                ParseWarning("invalid_source", project_reference(root, requested_path), str(error)),
+            )
         )
 
     if path.suffix.lower() not in {".md", ".txt"}:
@@ -100,22 +146,26 @@ def _parse_document(root: Path, requested_path: Path) -> ParseResult:
             warnings=(ParseWarning("invalid_utf8", relative, "file is not valid UTF-8"),)
         )
     except OSError as error:
-        return ParseResult(warnings=(ParseWarning("read_error", relative, str(error)),))
+        return ParseResult(warnings=(ParseWarning("read_error", relative, safe_os_error(error)),))
 
     lines = text.splitlines()
     events: list[ObservableEvent] = []
     if path.suffix.lower() == ".md":
-        for start, end, title, content in _markdown_sections(lines, path.stem):
-            summary = f"文档章节“{title}”记录：{content}"
-            location = f"{relative}:{start}-{max(start, end)}"
-            events.append(
-                ObservableEvent(
-                    id=stable_event_id("doc", relative, str(start), str(end), content),
-                    kind=EventKind.DOCUMENT,
-                    summary=summary,
-                    source_refs=(SourceRef(type=SourceType.DOCUMENT, ref=location),),
+        for heading_line, title, section_lines in _markdown_sections(lines, path.stem):
+            for chunk_index, (start, end, content) in enumerate(
+                _pack_blocks(_text_blocks(section_lines)), start=1
+            ):
+                source_start = min(heading_line, start) if chunk_index == 1 else start
+                summary = f"文档章节“{title}”记录：{content}"
+                location = f"{relative}:{source_start}-{max(source_start, end)}"
+                events.append(
+                    ObservableEvent(
+                        id=stable_event_id("doc", relative, str(source_start), str(end), content),
+                        kind=EventKind.DOCUMENT,
+                        summary=summary,
+                        source_refs=(SourceRef(type=SourceType.DOCUMENT, ref=location),),
+                    )
                 )
-            )
     else:
         for start, end, content in _text_paragraphs(lines):
             location = f"{relative}:{start}-{max(start, end)}"
