@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 
 import pytest
+from jsonschema.exceptions import ValidationError
 
 from learntrace.models import EventKind, ObservableEvent, SourceRef, SourceType
 from learntrace.parsers import ParseResult, write_parse_result
@@ -37,3 +38,18 @@ def test_rejects_duplicate_event_ids_before_writing(tmp_path: Path) -> None:
         write_parse_result(ParseResult(events=(event, event)), tmp_path / "parsed.json")
 
     assert not (tmp_path / "parsed.json").exists()
+
+
+def test_rejects_schema_invalid_event_before_writing(tmp_path: Path) -> None:
+    invalid = ObservableEvent(
+        id="evt-document-without-source",
+        kind=EventKind.DOCUMENT,
+        summary="缺少来源引用的无效事实。",
+        source_refs=(),
+    )
+    output = tmp_path / "parsed.json"
+
+    with pytest.raises(ValidationError, match="source_refs"):
+        write_parse_result(ParseResult(events=(invalid,)), output)
+
+    assert not output.exists()

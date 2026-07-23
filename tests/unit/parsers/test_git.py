@@ -4,11 +4,25 @@ import os
 import shutil
 import subprocess
 from pathlib import Path
+from typing import Protocol, cast
 
 import pytest
 
 from learntrace.models import ContractValidator, SourceType
+from learntrace.parsers import git as git_module
 from learntrace.parsers import parse_git_history
+
+
+class _MonkeyPatch(Protocol):
+    def setattr(self, target: object, name: str, value: object) -> None: ...
+
+
+class _GitRunner(Protocol):
+    def __call__(
+        self,
+        root: Path,
+        *arguments: str,
+    ) -> subprocess.CompletedProcess[str]: ...
 
 
 def _git(root: Path, *arguments: str, env: dict[str, str] | None = None) -> None:
@@ -121,11 +135,192 @@ def test_reports_copy_and_delete_file_changes(tmp_path: Path) -> None:
     commit_env["GIT_COMMITTER_DATE"] = "2026-07-22T12:00:00+08:00"
     _git(repository, "commit", "-q", "-m", "remove copy", env=commit_env)
 
-    result = parse_git_history(repository, max_commits=2)
+    result = parse_git_history(repository, max_commits=2, find_copies_harder=True)
 
     summaries = [event.summary for event in result.events]
     assert any("复制为 src/copy.py" in summary for summary in summaries)
     assert any("删除文件 src/copy.py" in summary for summary in summaries)
+
+
+def test_reports_merge_changes_relative_to_first_parent(tmp_path: Path) -> None:
+    repository = tmp_path / "repository"
+    _make_repository(repository)
+    _git(repository, "checkout", "-q", "-b", "feature")
+    (repository / "src" / "feature.py").write_text("FEATURE = True\n", encoding="utf-8")
+    _git(repository, "add", "src/feature.py")
+    commit_env = dict(os.environ)
+    commit_env["GIT_AUTHOR_DATE"] = "2026-07-21T11:00:00+08:00"
+    commit_env["GIT_COMMITTER_DATE"] = "2026-07-21T11:00:00+08:00"
+    _git(repository, "commit", "-q", "-m", "add feature", env=commit_env)
+
+    _git(repository, "checkout", "-q", "-")
+    (repository / "src" / "main.py").write_text("MAIN = True\n", encoding="utf-8")
+    _git(repository, "add", "src/main.py")
+    commit_env["GIT_AUTHOR_DATE"] = "2026-07-22T12:00:00+08:00"
+    commit_env["GIT_COMMITTER_DATE"] = "2026-07-22T12:00:00+08:00"
+    _git(repository, "commit", "-q", "-m", "add main module", env=commit_env)
+    commit_env["GIT_AUTHOR_DATE"] = "2026-07-23T13:00:00+08:00"
+    commit_env["GIT_COMMITTER_DATE"] = "2026-07-23T13:00:00+08:00"
+    _git(repository, "merge", "-q", "--no-ff", "feature", "-m", "merge feature", env=commit_env)
+
+    result = parse_git_history(repository, max_commits=1)
+
+    assert [warning.code for warning in result.warnings] == ["git_history_truncated"]
+    assert len(result.events) == 2
+    assert "记录 1 个文件变更（1 个新增）" in result.events[0].summary
+    assert "新增文件 src/feature.py" in result.events[1].summary
+    assert all("src/main.py" not in event.summary for event in result.events)
+    assert [ref.ref for ref in result.events[0].source_refs[1:]] == ["src/feature.py"]
+
+
+def test_reports_unavailable_line_counts_for_binary_file(tmp_path: Path) -> None:
+    repository = tmp_path / "repository"
+    _make_repository(repository)
+    (repository / "asset.bin").write_bytes(b"\x00\x01\x02\xff")
+    _git(repository, "add", "asset.bin")
+    commit_env = dict(os.environ)
+    commit_env["GIT_AUTHOR_DATE"] = "2026-07-21T11:00:00+08:00"
+    commit_env["GIT_COMMITTER_DATE"] = "2026-07-21T11:00:00+08:00"
+    _git(repository, "commit", "-q", "-m", "add binary fixture", env=commit_env)
+
+    result = parse_git_history(repository, max_commits=1)
+
+    binary_event = next(event for event in result.events if "asset.bin" in event.summary)
+    assert "行数统计不可用" in binary_event.summary
+
+
+def test_enables_expensive_copy_search_only_when_requested(
+    tmp_path: Path,
+    monkeypatch: _MonkeyPatch,
+) -> None:
+    repository = tmp_path / "repository"
+    _make_repository(repository)
+    real_git = cast(_GitRunner, vars(git_module)["_git"])
+    calls: list[tuple[str, ...]] = []
+
+    def record_git(root: Path, *arguments: str) -> subprocess.CompletedProcess[str]:
+        calls.append(arguments)
+        return real_git(root, *arguments)
+
+    monkeypatch.setattr(git_module, "_git", record_git)
+
+    parse_git_history(repository)
+    default_diff_calls = [call for call in calls if call and call[0] == "diff-tree"]
+    assert default_diff_calls
+    assert all("--find-copies-harder" not in call for call in default_diff_calls)
+
+    calls.clear()
+    parse_git_history(repository, find_copies_harder=True)
+    stronger_diff_calls = [call for call in calls if call and call[0] == "diff-tree"]
+    assert stronger_diff_calls
+    assert all("--find-copies-harder" in call for call in stronger_diff_calls)
+
+
+def test_reports_history_os_error_after_repository_check(
+    tmp_path: Path,
+    monkeypatch: _MonkeyPatch,
+) -> None:
+    calls = 0
+
+    def fail_after_repository_check(
+        root: Path,
+        *arguments: str,
+    ) -> subprocess.CompletedProcess[str]:
+        nonlocal calls
+        del root, arguments
+        calls += 1
+        if calls == 1:
+            return subprocess.CompletedProcess([], 0, "true\n", "")
+        raise PermissionError(13, "Permission denied", "private-history")
+
+    monkeypatch.setattr(git_module, "_git", fail_after_repository_check)
+
+    result = parse_git_history(tmp_path)
+
+    assert result.events == ()
+    assert result.warnings[0].code == "git_read_error"
+    assert "private-history" not in result.warnings[0].message
+
+
+def test_reports_commit_metadata_os_error_without_stopping_history(
+    tmp_path: Path,
+    monkeypatch: _MonkeyPatch,
+) -> None:
+    repository = tmp_path / "repository"
+    commit_id = _make_repository(repository)
+    real_git = cast(_GitRunner, vars(git_module)["_git"])
+
+    def fail_metadata(root: Path, *arguments: str) -> subprocess.CompletedProcess[str]:
+        if arguments and arguments[0] == "show":
+            raise PermissionError(13, "Permission denied", "private-metadata")
+        return real_git(root, *arguments)
+
+    monkeypatch.setattr(git_module, "_git", fail_metadata)
+
+    result = parse_git_history(repository)
+
+    assert result.events == ()
+    assert result.warnings[0].code == "git_commit_read_error"
+    assert result.warnings[0].source == commit_id
+    assert "private-metadata" not in result.warnings[0].message
+
+
+def test_reports_malformed_commit_metadata(tmp_path: Path, monkeypatch: _MonkeyPatch) -> None:
+    repository = tmp_path / "repository"
+    commit_id = _make_repository(repository)
+    real_git = cast(_GitRunner, vars(git_module)["_git"])
+
+    def malformed_metadata(root: Path, *arguments: str) -> subprocess.CompletedProcess[str]:
+        if arguments and arguments[0] == "show":
+            return subprocess.CompletedProcess(arguments, 0, "malformed metadata\n", "")
+        return real_git(root, *arguments)
+
+    monkeypatch.setattr(git_module, "_git", malformed_metadata)
+
+    result = parse_git_history(repository)
+
+    assert result.events == ()
+    assert result.warnings[0].code == "git_commit_format_error"
+    assert result.warnings[0].source == commit_id
+
+
+def test_reports_commit_diff_returncode_error(tmp_path: Path, monkeypatch: _MonkeyPatch) -> None:
+    repository = tmp_path / "repository"
+    commit_id = _make_repository(repository)
+    real_git = cast(_GitRunner, vars(git_module)["_git"])
+
+    def fail_diff(root: Path, *arguments: str) -> subprocess.CompletedProcess[str]:
+        if arguments and arguments[0] == "diff-tree":
+            return subprocess.CompletedProcess(arguments, 1, "", "diff unavailable")
+        return real_git(root, *arguments)
+
+    monkeypatch.setattr(git_module, "_git", fail_diff)
+
+    result = parse_git_history(repository)
+
+    assert result.events == ()
+    assert result.warnings[0].code == "git_commit_read_error"
+    assert result.warnings[0].source == commit_id
+    assert result.warnings[0].message == "diff unavailable"
+
+
+def test_reports_commit_diff_timeout(tmp_path: Path, monkeypatch: _MonkeyPatch) -> None:
+    repository = tmp_path / "repository"
+    commit_id = _make_repository(repository)
+    real_git = cast(_GitRunner, vars(git_module)["_git"])
+
+    def timeout_diff(root: Path, *arguments: str) -> subprocess.CompletedProcess[str]:
+        if arguments and arguments[0] == "diff-tree":
+            raise subprocess.TimeoutExpired("git diff-tree", 15)
+        return real_git(root, *arguments)
+
+    monkeypatch.setattr(git_module, "_git", timeout_diff)
+
+    result = parse_git_history(repository)
+
+    assert result.events == ()
+    assert result.warnings[0].code == "git_commit_timeout"
+    assert result.warnings[0].source == commit_id
 
 
 def test_rejects_non_positive_commit_limit(tmp_path: Path) -> None:

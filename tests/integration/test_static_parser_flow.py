@@ -7,6 +7,7 @@ import subprocess
 from pathlib import Path
 from typing import Any, cast
 
+from learntrace.models import ContractValidator, EventKind, ObservableEvent, SourceRef, SourceType
 from learntrace.parsers import (
     discover_static_materials,
     parse_static_materials,
@@ -95,3 +96,46 @@ def test_static_parser_fixed_project_end_to_end(tmp_path: Path) -> None:
     output = tmp_path / "parsed-result.json"
     write_parse_result(first, output)
     assert json.loads(output.read_text(encoding="utf-8")) == first_data
+
+
+def test_static_events_can_be_combined_with_trace_adapter_events(tmp_path: Path) -> None:
+    repository = _make_repository(tmp_path)
+    materials = discover_static_materials(repository)
+    static_result = parse_static_materials(
+        repository,
+        document_paths=materials.documents,
+        test_log_paths=materials.test_logs,
+        include_git=materials.has_git,
+    )
+    trace_event = ObservableEvent(
+        id="evt-trace-opencode-session-1-tool-1",
+        kind=EventKind.TRACE_RECORD,
+        summary="授权轨迹记录了一次读取项目文件的工具调用。",
+        source_refs=(
+            SourceRef(
+                type=SourceType.TRACE_RECORD,
+                ref="opencode-session-1:tool-1",
+                note="OpenCode",
+            ),
+        ),
+        occurred_at="2026-07-21T11:30:00+08:00",
+    )
+
+    combined_events = (*static_result.events, trace_event)
+    event_ids = [event.id for event in combined_events]
+    validator = ContractValidator()
+
+    assert len(event_ids) == len(set(event_ids))
+    assert all(validator.is_valid("observable_event", event.to_dict()) for event in combined_events)
+    assert all(
+        all(ref.type is not SourceType.TRACE_RECORD for ref in event.source_refs)
+        for event in static_result.events
+    )
+    assert {ref.type for ref in trace_event.source_refs} == {SourceType.TRACE_RECORD}
+    assert all(
+        not {
+            SourceType.GIT_COMMIT,
+            SourceType.TRACE_RECORD,
+        }.issubset({ref.type for ref in event.source_refs})
+        for event in combined_events
+    )

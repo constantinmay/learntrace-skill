@@ -24,20 +24,28 @@ def parse_static_materials(
     test_log_paths: Iterable[Path],
     include_git: bool = True,
     max_commits: int = 50,
+    find_copies_harder: bool = False,
 ) -> ParseResult:
     """解析调用方已确认的范围，返回事实事件和非致命告警。"""
     root = repo_root(project_root)
     documents = deduplicate_paths(root, document_paths)
     logs = deduplicate_paths(root, test_log_paths)
-    inventory = discover_static_materials(root).inventory
+    discovered = discover_static_materials(root)
+    inventory = discovered.inventory
     scope = AnalysisScope(
         include_git=include_git,
         documents=tuple(project_reference(root, path) for path in documents),
         test_logs=tuple(project_reference(root, path) for path in logs),
     )
-    result = ParseResult()
+    result = ParseResult(warnings=discovered.warnings)
     if include_git:
-        result = result.merged(parse_git_history(root, max_commits=max_commits))
+        result = result.merged(
+            parse_git_history(
+                root,
+                max_commits=max_commits,
+                find_copies_harder=find_copies_harder,
+            )
+        )
     combined = result.merged(
         parse_documents(root, documents),
         parse_test_logs(root, logs),

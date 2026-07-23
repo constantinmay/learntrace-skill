@@ -94,7 +94,18 @@ def _parse_numstat(value: str) -> dict[str, tuple[int | None, int | None]]:
     return stats
 
 
-def _file_changes(root: Path, commit_id: str) -> tuple[list[_GitFileChange], str | None]:
+def _file_changes(
+    root: Path,
+    commit_id: str,
+    *,
+    merge_first_parent: str | None = None,
+    find_copies_harder: bool = False,
+) -> tuple[list[_GitFileChange], str | None]:
+    """Read a commit diff, comparing merges only with their first parent."""
+    commit_range = (
+        (merge_first_parent, commit_id) if merge_first_parent is not None else (commit_id,)
+    )
+    copy_arguments = ("-C", "--find-copies-harder") if find_copies_harder else ("-C",)
     status_result = _git(
         root,
         "diff-tree",
@@ -102,11 +113,10 @@ def _file_changes(root: Path, commit_id: str) -> tuple[list[_GitFileChange], str
         "--no-commit-id",
         "--name-status",
         "-M",
-        "-C",
-        "--find-copies-harder",
+        *copy_arguments,
         "-r",
         "-z",
-        commit_id,
+        *commit_range,
     )
     stats_result = _git(
         root,
@@ -115,11 +125,10 @@ def _file_changes(root: Path, commit_id: str) -> tuple[list[_GitFileChange], str
         "--no-commit-id",
         "--numstat",
         "-M",
-        "-C",
-        "--find-copies-harder",
+        *copy_arguments,
         "-r",
         "-z",
-        commit_id,
+        *commit_range,
     )
     if status_result.returncode != 0 or stats_result.returncode != 0:
         message = compact_text(status_result.stderr or stats_result.stderr) or "could not read diff"
@@ -167,7 +176,12 @@ def _change_summary(commit_id: str, change: _GitFileChange) -> str:
     return f"提交 {short_hash} {action}（{stats}）。"
 
 
-def parse_git_history(project_root: Path, *, max_commits: int = 50) -> ParseResult:
+def parse_git_history(
+    project_root: Path,
+    *,
+    max_commits: int = 50,
+    find_copies_harder: bool = False,
+) -> ParseResult:
     """读取最近 Git 提交；不运行钩子、diff 驱动或用户项目命令。"""
     root = repo_root(project_root)
     if max_commits < 1:
@@ -187,6 +201,8 @@ def parse_git_history(project_root: Path, *, max_commits: int = 50) -> ParseResu
         if head.returncode != 0:
             return _warning("git_no_commits", root, "Git history has no commits")
         revisions = _git(root, "rev-list", f"--max-count={max_commits + 1}", "HEAD")
+    except OSError as error:
+        return _warning("git_read_error", root, safe_os_error(error))
     except subprocess.TimeoutExpired:
         return _warning("git_timeout", root, "Git history read timed out")
     if revisions.returncode != 0:
@@ -211,22 +227,42 @@ def parse_git_history(project_root: Path, *, max_commits: int = 50) -> ParseResu
         commit_ids = commit_ids[:max_commits]
     for commit_id in commit_ids:
         try:
-            metadata = _git(root, "show", "-s", "--format=%H%x1f%cI%x1f%s", commit_id)
-            changes, change_error = _file_changes(root, commit_id)
+            metadata = _git(root, "show", "-s", "--format=%H%x1f%cI%x1f%P%x1f%s", commit_id)
+        except OSError as error:
+            warnings.append(ParseWarning("git_commit_read_error", commit_id, safe_os_error(error)))
+            continue
         except subprocess.TimeoutExpired:
             warnings.append(ParseWarning("git_commit_timeout", commit_id, "Git read timed out"))
             continue
-        if metadata.returncode != 0 or change_error is not None:
-            message = compact_text(metadata.stderr) or change_error or "could not read commit"
+        if metadata.returncode != 0:
+            message = compact_text(metadata.stderr) or "could not read commit"
             warnings.append(ParseWarning("git_commit_read_error", commit_id, message))
             continue
-        fields = metadata.stdout.strip().split(_FIELD_SEPARATOR, maxsplit=2)
-        if len(fields) != 3:
+        fields = metadata.stdout.strip().split(_FIELD_SEPARATOR, maxsplit=3)
+        if len(fields) != 4:
             warnings.append(
                 ParseWarning("git_commit_format_error", commit_id, "unexpected Git metadata format")
             )
             continue
-        full_hash, occurred_at, subject = fields
+        full_hash, occurred_at, parent_text, subject = fields
+        parent_ids = parent_text.split()
+        merge_first_parent = parent_ids[0] if len(parent_ids) > 1 else None
+        try:
+            changes, change_error = _file_changes(
+                root,
+                commit_id,
+                merge_first_parent=merge_first_parent,
+                find_copies_harder=find_copies_harder,
+            )
+        except OSError as error:
+            warnings.append(ParseWarning("git_commit_read_error", commit_id, safe_os_error(error)))
+            continue
+        except subprocess.TimeoutExpired:
+            warnings.append(ParseWarning("git_commit_timeout", commit_id, "Git read timed out"))
+            continue
+        if change_error is not None:
+            warnings.append(ParseWarning("git_commit_read_error", commit_id, change_error))
+            continue
         subject_text = compact_text(subject) or "（提交信息未记录）"
         summary = (
             f"提交 {full_hash[:7]} 的提交信息为“{subject_text}”，"

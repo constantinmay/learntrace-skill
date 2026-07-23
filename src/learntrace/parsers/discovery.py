@@ -7,8 +7,8 @@ from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
 
-from learntrace.parsers._common import repo_root
-from learntrace.parsers.types import ProjectInventory
+from learntrace.parsers._common import project_reference, repo_root, safe_os_error
+from learntrace.parsers.types import ParseWarning, ProjectInventory
 
 _EXCLUDED_DIRS = frozenset(
     {".git", ".hg", ".svn", ".venv", "venv", "node_modules", "dist", "build", "__pycache__"}
@@ -53,6 +53,7 @@ class DiscoveredMaterials:
     test_logs: tuple[Path, ...]
     has_git: bool
     inventory: ProjectInventory
+    warnings: tuple[ParseWarning, ...] = ()
 
 
 def _is_test_log(path: Path) -> bool:
@@ -89,9 +90,21 @@ def discover_static_materials(project_root: Path) -> DiscoveredMaterials:
     task_documents: list[Path] = []
     report_documents: list[Path] = []
     design_documents: list[Path] = []
+    warnings: list[ParseWarning] = []
     extensions: Counter[str] = Counter()
 
-    for directory, dirnames, filenames in os.walk(root, followlinks=False):
+    def record_walk_error(error: OSError) -> None:
+        filename = error.filename
+        source = (
+            project_reference(root, Path(os.fsdecode(filename))) if filename is not None else "."
+        )
+        warnings.append(ParseWarning("discovery_error", source, safe_os_error(error)))
+
+    for directory, dirnames, filenames in os.walk(
+        root,
+        followlinks=False,
+        onerror=record_walk_error,
+    ):
         current = Path(directory)
         dirnames[:] = sorted(
             name
@@ -151,4 +164,5 @@ def discover_static_materials(project_root: Path) -> DiscoveredMaterials:
         test_logs=sorted_logs,
         has_git=has_git,
         inventory=inventory,
+        warnings=tuple(warnings),
     )

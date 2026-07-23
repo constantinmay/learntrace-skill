@@ -1,4 +1,4 @@
-"""已有 pytest 风格测试日志的只读解析。"""
+"""已有 pytest 与 Maven/JUnit 测试日志的只读解析。"""
 
 from __future__ import annotations
 
@@ -30,8 +30,26 @@ _COUNT_RE = re.compile(
     r"(?P<count>\d+)\s+(?P<label>passed|failed|errors?|skipped|xfailed|xpassed)\b",
     re.IGNORECASE,
 )
-_FAILED_RE = re.compile(r"^FAILED\s+(?P<node>\S+)", re.IGNORECASE)
-_ERROR_RE = re.compile(r"^ERROR\s+(?P<node>\S+)", re.IGNORECASE)
+_PYTEST_COUNT_SEGMENT = (
+    r"\d+\s+(?:passed|failed|errors?|skipped|xfailed|xpassed|warnings?|deselected)"
+)
+_PYTEST_SUMMARY_RE = re.compile(
+    rf"^{_PYTEST_COUNT_SEGMENT}(?:\s*,\s*{_PYTEST_COUNT_SEGMENT})*"
+    r"(?:\s+in\s+\d+(?:\.\d+)?s)?$",
+    re.IGNORECASE,
+)
+_PYTEST_MARKER_RE = re.compile(
+    r"^(?:=+\s*(?:test session starts|short test summary info)\s*=+|"
+    r"platform\b.*\bpytest-\d)",
+    re.IGNORECASE,
+)
+_PYTEST_FAILED_RE = re.compile(r"^FAILED\s+(?P<node>\S+)", re.IGNORECASE)
+_PYTEST_ERROR_RE = re.compile(r"^ERROR\s+(?P<node>\S+)", re.IGNORECASE)
+_MAVEN_CASE_RE = re.compile(
+    r"^\[ERROR\]\s+(?P<node>.+?)\s+(?:--\s+)?Time elapsed:.*?"
+    r"<<<\s+(?P<outcome>FAILURE|ERROR)!\s*$",
+    re.IGNORECASE,
+)
 _DURATION_RE = re.compile(r"\bin\s+(?P<duration>\d+(?:\.\d+)?)s\b", re.IGNORECASE)
 _GENERIC_SUMMARY_RE = re.compile(
     r"Tests\s+run:\s*(?P<total>\d+)\s*,\s*Failures:\s*(?P<failed>\d+)\s*,\s*"
@@ -40,10 +58,22 @@ _GENERIC_SUMMARY_RE = re.compile(
 )
 
 
+def _pytest_summary_body(line: str) -> str | None:
+    stripped = line.strip()
+    has_delimiters = stripped.startswith("=") and stripped.endswith("=")
+    body = stripped.strip("= ")
+    if _PYTEST_SUMMARY_RE.fullmatch(body) is None:
+        return None
+    if not has_delimiters and _DURATION_RE.search(body) is None:
+        return None
+    return body
+
+
 def _summary_counts(lines: list[str]) -> list[tuple[int, dict[str, int], str | None]]:
     summaries: list[tuple[int, dict[str, int], str | None]] = []
     for number, line in enumerate(lines, start=1):
-        matches = list(_COUNT_RE.finditer(line))
+        pytest_body = _pytest_summary_body(line)
+        matches = list(_COUNT_RE.finditer(pytest_body)) if pytest_body is not None else []
         counts: dict[str, int] = {}
         if matches:
             counts = {
@@ -60,10 +90,45 @@ def _summary_counts(lines: list[str]) -> list[tuple[int, dict[str, int], str | N
                     "skipped": int(generic.group("skipped")),
                 }
         if counts:
-            duration_match = _DURATION_RE.search(line)
+            duration_match = _DURATION_RE.search(pytest_body or line)
             duration = duration_match.group("duration") if duration_match is not None else None
             summaries.append((number, counts, duration))
     return summaries
+
+
+def _has_pytest_context(lines: list[str]) -> bool:
+    return any(
+        _pytest_summary_body(line) is not None or _PYTEST_MARKER_RE.match(line.strip()) is not None
+        for line in lines
+    )
+
+
+def _has_junit_context(lines: list[str]) -> bool:
+    return any(_GENERIC_SUMMARY_RE.search(line) is not None for line in lines)
+
+
+def _pytest_case(line: str) -> tuple[str, str] | None:
+    match = _PYTEST_FAILED_RE.match(line)
+    outcome = "失败"
+    if match is None:
+        match = _PYTEST_ERROR_RE.match(line)
+        outcome = "错误"
+    if match is None:
+        return None
+
+    node = match.group("node")
+    test_path = node.split("::", maxsplit=1)[0]
+    if "::" not in node and Path(test_path).suffix.lower() != ".py":
+        return None
+    return node, outcome
+
+
+def _maven_case(line: str) -> tuple[str, str] | None:
+    match = _MAVEN_CASE_RE.match(line)
+    if match is None:
+        return None
+    outcome = "失败" if match.group("outcome").upper() == "FAILURE" else "错误"
+    return match.group("node"), outcome
 
 
 def _count_summary(counts: dict[str, int]) -> str:
@@ -120,20 +185,20 @@ def _parse_test_log(root: Path, requested_path: Path) -> ParseResult:
             )
         )
 
+    allow_pytest_cases = _has_pytest_context(lines) or _has_junit_context(lines)
     for number, line in enumerate(lines, start=1):
         stripped = line.strip()
-        match = _FAILED_RE.match(stripped)
-        outcome = "失败"
-        if match is None:
-            match = _ERROR_RE.match(stripped)
-            outcome = "错误"
-        if match is None:
+        case = _pytest_case(stripped) if allow_pytest_cases else None
+        pytest_case = case is not None
+        if case is None:
+            case = _maven_case(stripped)
+        if case is None:
             continue
-        raw_node = match.group("node")
+        raw_node, outcome = case
         node = compact_text(raw_node)
         source_refs = [SourceRef(type=SourceType.TEST_LOG, ref=f"{relative}:{number}")]
-        test_path = node.split("::", maxsplit=1)[0]
-        if test_path and not Path(test_path).is_absolute():
+        test_path = raw_node.split("::", maxsplit=1)[0]
+        if pytest_case and test_path and not Path(test_path).is_absolute():
             source_refs.append(SourceRef(type=SourceType.FILE, ref=Path(test_path).as_posix()))
         events.append(
             ObservableEvent(

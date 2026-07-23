@@ -19,6 +19,7 @@ from learntrace.parsers._common import (
 from learntrace.parsers.types import ParseResult, ParseWarning
 
 _HEADING_RE = re.compile(r"^(#{1,6})\s+(.+?)\s*#*\s*$")
+_FENCE_RE = re.compile(r"^(?P<fence>`{3,}|~{3,})")
 _CHUNK_TARGET_CHARS = 600
 
 
@@ -28,7 +29,7 @@ def _text_blocks(lines: list[tuple[int, str]]) -> list[tuple[int, int, str]]:
     body: list[str] = []
     start = 1
     end = 1
-    in_code = False
+    code_fence: tuple[str, int] | None = None
 
     def append_block() -> None:
         text = compact_text("\n".join(body))
@@ -37,14 +38,19 @@ def _text_blocks(lines: list[tuple[int, str]]) -> list[tuple[int, int, str]]:
 
     for number, line in lines:
         stripped = line.strip()
-        if stripped.startswith("```"):
+        fence_match = _FENCE_RE.match(stripped)
+        if fence_match is not None:
+            fence = fence_match.group("fence")
             if not body:
                 start = number
             body.append(line)
             end = number
-            in_code = not in_code
+            if code_fence is None:
+                code_fence = (fence[0], len(fence))
+            elif fence[0] == code_fence[0] and len(fence) >= code_fence[1]:
+                code_fence = None
             continue
-        if not stripped and not in_code:
+        if not stripped and code_fence is None:
             append_block()
             body = []
             continue
