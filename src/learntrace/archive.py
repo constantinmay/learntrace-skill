@@ -355,7 +355,10 @@ def load_project_artifacts(
         warnings.extend(loaded_warnings)
 
     if not events:
-        msg = f"no observable_event records found under {root}"
+        msg = (
+            f"no observable_event records found under {root}; "
+            "expected LearnTrace record JSON or a Task2 parse-result JSON with an events list"
+        )
         raise ValueError(msg)
 
     return LoadedProjectRecords(
@@ -474,13 +477,16 @@ def main(argv: list[str] | tuple[str, ...] | None = None) -> int:
         parser.error("the following arguments are required: project_dir")
 
     project_dir = Path(args.project_dir)
-    result = write_learning_record_result(
-        project_dir,
-        output_path=args.output,
-        records_output_path=args.records_output,
-        questions_output_path=args.questions_output,
-        strict_inputs=args.strict_inputs,
-    )
+    try:
+        result = write_learning_record_result(
+            project_dir,
+            output_path=args.output,
+            records_output_path=args.records_output,
+            questions_output_path=args.questions_output,
+            strict_inputs=args.strict_inputs,
+        )
+    except (FileNotFoundError, ValueError) as exc:
+        parser.exit(1, f"{parser.prog}: error: {exc}\n")
     print(_format_cli_summary(result))
     return 0
 
