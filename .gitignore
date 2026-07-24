@@ -20,6 +20,7 @@ htmlcov/
 build/
 dist/
 *.egg-info/
+examples/task4-llm-demo/out/
 
 # Environment and secrets
 .env
