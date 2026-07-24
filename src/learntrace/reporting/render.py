@@ -34,6 +34,18 @@ def _render_confirmation_line(confirmation: StudentConfirmation | None) -> str:
     return f"{confirmation.decision.value}；{_render_text(confirmation.student_statement)}"
 
 
+def _missing_info_count(bundle: ArchiveBundle) -> int:
+    candidate_missing = sum(
+        isinstance(candidate.question_to_student, MissingInfo)
+        for candidate in bundle.candidates
+    )
+    confirmation_missing = sum(
+        isinstance(confirmation.student_statement, MissingInfo)
+        for confirmation in bundle.confirmations
+    )
+    return candidate_missing + confirmation_missing
+
+
 def render_markdown(bundle: ArchiveBundle, *, source_dir: Path | None = None) -> str:
     confirmations_by_candidate = {
         confirmation.candidate_id: confirmation for confirmation in bundle.confirmations
@@ -50,6 +62,25 @@ def render_markdown(bundle: ArchiveBundle, *, source_dir: Path | None = None) ->
             "",
         ]
     )
+
+    lines.extend(
+        [
+            "## 证据分层",
+            f"- observable_fact：{len(bundle.events)} 条",
+            f"- candidate_inference：{len(bundle.candidates)} 条",
+            f"- student_confirmation：{len(bundle.confirmations)} 条",
+            f"- missing_info：{_missing_info_count(bundle)} 处",
+            "",
+        ]
+    )
+
+    lines.append("## 解析告警与边界")
+    if bundle.warnings:
+        for warning in bundle.warnings:
+            lines.append(f"- {warning.code} [{warning.source}]：{warning.message}")
+    else:
+        lines.append("- 未记录")
+    lines.append("")
 
     lines.append("## AI 使用")
     trace_events = [event for event in bundle.events if event.kind == EventKind.TRACE_RECORD]

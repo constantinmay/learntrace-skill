@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+from dataclasses import dataclass
 from pathlib import Path
 from typing import cast
 
@@ -20,12 +21,20 @@ from learntrace.models import (
     TextOrMissing,
 )
 from learntrace.reporting import (
+    ArchiveWarning,
     CandidateInferencer,
     build_archive_bundle,
     render_markdown,
 )
 
 JsonObject = dict[str, object]
+
+
+@dataclass(frozen=True, slots=True)
+class LoadedProjectRecords:
+    events: tuple[ObservableEvent, ...]
+    confirmations: tuple[StudentConfirmation, ...]
+    warnings: tuple[ArchiveWarning, ...] = ()
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -137,13 +146,23 @@ def _parse_confirmation(raw: JsonObject, path: Path) -> StudentConfirmation:
     )
 
 
+def _parse_warning(raw: object, path: Path) -> ArchiveWarning:
+    data = _require_object(raw, "warning", path)
+    return ArchiveWarning(
+        code=_require_string(data, "code", path),
+        source=_require_string(data, "source", path),
+        message=_require_string(data, "message", path),
+    )
+
+
 def _collect_records_from_json(
     raw: JsonObject,
     path: Path,
     validator: ContractValidator,
-) -> tuple[list[ObservableEvent], list[StudentConfirmation]]:
+) -> tuple[list[ObservableEvent], list[StudentConfirmation], list[ArchiveWarning]]:
     events: list[ObservableEvent] = []
     confirmations: list[StudentConfirmation] = []
+    warnings: list[ArchiveWarning] = []
     evidence_level = raw.get("evidence_level")
     if evidence_level == ObservableEvent.EVIDENCE_LEVEL:
         validator.validate("observable_event", raw)
@@ -166,14 +185,21 @@ def _collect_records_from_json(
             validator.validate("student_confirmation", confirmation)
             confirmations.append(_parse_confirmation(confirmation, path))
 
-    return events, confirmations
+    raw_warnings = raw.get("warnings")
+    if raw_warnings is not None:
+        warnings.extend(
+            _parse_warning(item, path)
+            for item in _require_list(raw, "warnings", path)
+        )
+
+    return events, confirmations, warnings
 
 
-def load_project_records(
+def load_project_artifacts(
     project_dir: Path,
     *,
     validator: ContractValidator | None = None,
-) -> tuple[tuple[ObservableEvent, ...], tuple[StudentConfirmation, ...]]:
+) -> LoadedProjectRecords:
     root = project_dir.resolve()
     if not root.is_dir():
         msg = f"{root} is not a directory"
@@ -182,22 +208,37 @@ def load_project_records(
     contract_validator = validator if validator is not None else ContractValidator()
     events: list[ObservableEvent] = []
     confirmations: list[StudentConfirmation] = []
+    warnings: list[ArchiveWarning] = []
 
     for path in sorted(root.rglob("*.json")):
         raw = _read_json_object(path)
-        loaded_events, loaded_confirmations = _collect_records_from_json(
+        loaded_events, loaded_confirmations, loaded_warnings = _collect_records_from_json(
             raw,
             path,
             contract_validator,
         )
         events.extend(loaded_events)
         confirmations.extend(loaded_confirmations)
+        warnings.extend(loaded_warnings)
 
     if not events:
         msg = f"no observable_event records found under {root}"
         raise ValueError(msg)
 
-    return tuple(events), tuple(confirmations)
+    return LoadedProjectRecords(
+        events=tuple(events),
+        confirmations=tuple(confirmations),
+        warnings=tuple(warnings),
+    )
+
+
+def load_project_records(
+    project_dir: Path,
+    *,
+    validator: ContractValidator | None = None,
+) -> tuple[tuple[ObservableEvent, ...], tuple[StudentConfirmation, ...]]:
+    loaded = load_project_artifacts(project_dir, validator=validator)
+    return loaded.events, loaded.confirmations
 
 
 def write_learning_record(
@@ -208,10 +249,11 @@ def write_learning_record(
     inferencer: CandidateInferencer | None = None,
 ) -> Path:
     contract_validator = validator if validator is not None else ContractValidator()
-    events, confirmations = load_project_records(project_dir, validator=contract_validator)
+    loaded = load_project_artifacts(project_dir, validator=contract_validator)
     bundle = build_archive_bundle(
-        events,
-        confirmations=confirmations,
+        loaded.events,
+        confirmations=loaded.confirmations,
+        warnings=loaded.warnings,
         validator=contract_validator,
         inferencer=inferencer,
     )

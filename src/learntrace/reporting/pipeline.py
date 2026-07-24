@@ -28,10 +28,18 @@ class CandidateDraft:
 
 
 @dataclass(frozen=True, slots=True)
+class ArchiveWarning:
+    code: str
+    source: str
+    message: str
+
+
+@dataclass(frozen=True, slots=True)
 class ArchiveBundle:
     events: tuple[ObservableEvent, ...]
     candidates: tuple[LearningNodeCandidate, ...]
     confirmations: tuple[StudentConfirmation, ...]
+    warnings: tuple[ArchiveWarning, ...] = ()
 
 
 class CandidateInferencer(Protocol):
@@ -350,6 +358,7 @@ def build_archive_bundle(
     events: tuple[ObservableEvent, ...],
     *,
     confirmations: tuple[StudentConfirmation, ...] = (),
+    warnings: tuple[ArchiveWarning, ...] = (),
     validator: ContractValidator | None = None,
     inferencer: CandidateInferencer | None = None,
 ) -> ArchiveBundle:
@@ -364,6 +373,7 @@ def build_archive_bundle(
         events=deduped_events,
         candidates=candidates,
         confirmations=sorted_confirmations,
+        warnings=warnings,
     )
     validate_bundle(bundle, validator=validator)
     return bundle
