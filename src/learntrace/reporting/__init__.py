@@ -2,6 +2,7 @@
 
 from learntrace.reporting.pipeline import (
     ArchiveBundle,
+    ArchiveWarning,
     CandidateDraft,
     CandidateInferencer,
     StubCandidateInferencer,
@@ -12,6 +13,7 @@ from learntrace.reporting.render import render_markdown
 
 __all__ = [
     "ArchiveBundle",
+    "ArchiveWarning",
     "CandidateDraft",
     "CandidateInferencer",
     "StubCandidateInferencer",

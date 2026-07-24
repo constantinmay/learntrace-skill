@@ -6,7 +6,7 @@ from typing import Any, cast
 
 import pytest
 
-from learntrace.archive import load_project_records, write_learning_record
+from learntrace.archive import load_project_artifacts, load_project_records, write_learning_record
 from learntrace.models import ContractValidator
 from learntrace.reporting import build_archive_bundle, render_markdown
 
@@ -62,6 +62,7 @@ def test_render_markdown_contains_required_sections(scenario_dir: Path) -> None:
 
     for heading in (
         "## 项目概览",
+        "## 证据分层",
         "## AI 使用",
         "## 关键决策",
         "## 验证证据",
@@ -130,7 +131,13 @@ def test_loads_task2_style_batch_json(tmp_path: Path) -> None:
         "parser_version": "v0",
         "events": event_records,
         "confirmations": confirmation_records,
-        "warnings": [],
+        "warnings": [
+            {
+                "code": "unsupported_test_log_format",
+                "source": "logs/unknown.log",
+                "message": "格式未识别，保留为边界告警。",
+            }
+        ],
     }
     (tmp_path / "parse-result.json").write_text(
         json.dumps(batch, ensure_ascii=False),
@@ -138,10 +145,17 @@ def test_loads_task2_style_batch_json(tmp_path: Path) -> None:
     )
 
     validator = ContractValidator(schema_dir=SCHEMA_DIR)
-    events, confirmations = load_project_records(tmp_path, validator=validator)
-    bundle = build_archive_bundle(events, confirmations=confirmations, validator=validator)
+    loaded = load_project_artifacts(tmp_path, validator=validator)
+    bundle = build_archive_bundle(
+        loaded.events,
+        confirmations=loaded.confirmations,
+        warnings=loaded.warnings,
+        validator=validator,
+    )
 
     assert [candidate.to_dict() for candidate in bundle.candidates] == _expected_candidates(
         scenario_dir
     )
     assert [confirmation.to_dict() for confirmation in bundle.confirmations] == confirmation_records
+    markdown = render_markdown(bundle, source_dir=tmp_path)
+    assert "unsupported_test_log_format [logs/unknown.log]" in markdown
