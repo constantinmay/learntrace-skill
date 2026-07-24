@@ -1,0 +1,127 @@
+"""Markdown rendering for learning archives."""
+
+from __future__ import annotations
+
+from pathlib import Path
+
+from learntrace.models import (
+    EventKind,
+    MissingInfo,
+    NodeType,
+    StudentConfirmation,
+    TextOrMissing,
+)
+from learntrace.reporting.pipeline import ArchiveBundle
+
+_NODE_LABELS: dict[NodeType, str] = {
+    NodeType.FOLLOW_UP: "追问深化",
+    NodeType.REVISE_AI_SUGGESTION: "修改 AI 建议",
+    NodeType.FIX_FAILED_APPROACH: "修复失败方案",
+    NodeType.ADD_TESTS: "补充测试",
+    NodeType.ADJUST_CONSTRAINTS: "调整约束",
+}
+
+
+def _render_text(value: TextOrMissing) -> str:
+    if isinstance(value, MissingInfo):
+        return "未记录"
+    return value
+
+
+def _render_confirmation_line(confirmation: StudentConfirmation | None) -> str:
+    if confirmation is None:
+        return "未记录"
+    return f"{confirmation.decision.value}；{_render_text(confirmation.student_statement)}"
+
+
+def render_markdown(bundle: ArchiveBundle, *, source_dir: Path | None = None) -> str:
+    confirmations_by_candidate = {
+        confirmation.candidate_id: confirmation for confirmation in bundle.confirmations
+    }
+    lines: list[str] = ["# 学习档案", ""]
+
+    lines.extend(
+        [
+            "## 项目概览",
+            f"- 证据目录：{source_dir if source_dir is not None else '未记录'}",
+            f"- 可观察事实：{len(bundle.events)} 条",
+            f"- 学习节点候选：{len(bundle.candidates)} 条",
+            f"- 学生确认：{len(bundle.confirmations)} 条",
+            "",
+        ]
+    )
+
+    lines.append("## AI 使用")
+    trace_events = [event for event in bundle.events if event.kind == EventKind.TRACE_RECORD]
+    if trace_events:
+        for event in trace_events:
+            lines.append(f"- {event.id}：{event.summary}")
+    else:
+        lines.append("- 未见授权轨迹，未据此推断 AI 使用。")
+    lines.append("")
+
+    lines.append("## 关键决策")
+    if bundle.candidates:
+        for node_type in NodeType:
+            matching = [
+                candidate
+                for candidate in bundle.candidates
+                if candidate.node_type == node_type
+            ]
+            if not matching:
+                continue
+            lines.append(f"### {_NODE_LABELS[node_type]}")
+            for candidate in matching:
+                confirmation = confirmations_by_candidate.get(candidate.id)
+                lines.append(f"- 候选 {candidate.id}：{candidate.statement}")
+                lines.append(f"- 依据事实：{', '.join(candidate.basis_event_ids)}")
+                lines.append(f"- 不确定性：{candidate.uncertainty}")
+                lines.append(f"- 提问：{_render_text(candidate.question_to_student)}")
+                lines.append(f"- 学生确认：{_render_confirmation_line(confirmation)}")
+            lines.append("")
+    else:
+        lines.append("- 当前证据未形成可提问的学习节点候选。")
+        lines.append("")
+
+    lines.append("## 验证证据")
+    for event in bundle.events:
+        refs = ", ".join(f"{ref.type.value}:{ref.ref}" for ref in event.source_refs)
+        lines.append(f"- {event.id} [{event.kind.value}]：{event.summary}（来源：{refs}）")
+    lines.append("")
+
+    lines.append("## 个人反思")
+    reflection_lines = [
+        f"- {_NODE_LABELS[candidate.node_type]}：{_render_text(confirmation.student_statement)}"
+        for candidate in bundle.candidates
+        if (confirmation := confirmations_by_candidate.get(candidate.id)) is not None
+        and not isinstance(confirmation.student_statement, MissingInfo)
+    ]
+    lines.extend(reflection_lines or ["- 未记录"])
+    lines.append("")
+
+    lines.append("## 后续学习")
+    next_steps: list[str] = []
+    for candidate in bundle.candidates:
+        confirmation = confirmations_by_candidate.get(candidate.id)
+        if confirmation is None:
+            next_steps.append(
+                f"- 待补充 {candidate.id}：{_render_text(candidate.question_to_student)}"
+            )
+        elif isinstance(confirmation.student_statement, MissingInfo):
+            next_steps.append(
+                f"- 待补充 {candidate.id} 的学生说明："
+                f"{_render_text(candidate.question_to_student)}"
+            )
+    lines.extend(next_steps or ["- 未记录"])
+    lines.append("")
+
+    lines.extend(
+        [
+            "## AI 使用声明",
+            "- `observable_fact` 仅来自 Git、文档、测试日志和授权轨迹。",
+            "- `candidate_inference` 保持为候选推断，不自动写成事实。",
+            "- 学生未说明的内容一律展示为“未记录”。",
+            "",
+        ]
+    )
+    return "\n".join(lines)
