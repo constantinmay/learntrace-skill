@@ -15,6 +15,18 @@ def test_version(capsys: CaptureFixture[str]) -> None:
 
 
 def test_parser_accepts_project_dir_and_output() -> None:
-    args = build_parser().parse_args(["sample-project", "--output", "learning-record.md"])
+    args = build_parser().parse_args(
+        [
+            "sample-project",
+            "--output",
+            "learning-record.md",
+            "--records-output",
+            "archive-records.json",
+            "--questions-output",
+            "learning-questions.md",
+        ]
+    )
     assert args.project_dir == "sample-project"
     assert str(args.output) == "learning-record.md"
+    assert str(args.records_output) == "archive-records.json"
+    assert str(args.questions_output) == "learning-questions.md"

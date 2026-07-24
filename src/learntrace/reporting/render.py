@@ -36,14 +36,17 @@ def _render_confirmation_line(confirmation: StudentConfirmation | None) -> str:
 
 def _missing_info_count(bundle: ArchiveBundle) -> int:
     candidate_missing = sum(
-        isinstance(candidate.question_to_student, MissingInfo)
-        for candidate in bundle.candidates
+        isinstance(candidate.question_to_student, MissingInfo) for candidate in bundle.candidates
     )
     confirmation_missing = sum(
         isinstance(confirmation.student_statement, MissingInfo)
         for confirmation in bundle.confirmations
     )
     return candidate_missing + confirmation_missing
+
+
+def _pending_question_count(bundle: ArchiveBundle) -> int:
+    return sum(candidate.status.value == "proposed" for candidate in bundle.candidates)
 
 
 def render_markdown(bundle: ArchiveBundle, *, source_dir: Path | None = None) -> str:
@@ -70,6 +73,7 @@ def render_markdown(bundle: ArchiveBundle, *, source_dir: Path | None = None) ->
             f"- candidate_inference：{len(bundle.candidates)} 条",
             f"- student_confirmation：{len(bundle.confirmations)} 条",
             f"- missing_info：{_missing_info_count(bundle)} 处",
+            f"- 待确认问题：{_pending_question_count(bundle)} 条",
             "",
         ]
     )
@@ -95,9 +99,7 @@ def render_markdown(bundle: ArchiveBundle, *, source_dir: Path | None = None) ->
     if bundle.candidates:
         for node_type in NodeType:
             matching = [
-                candidate
-                for candidate in bundle.candidates
-                if candidate.node_type == node_type
+                candidate for candidate in bundle.candidates if candidate.node_type == node_type
             ]
             if not matching:
                 continue
@@ -140,8 +142,7 @@ def render_markdown(bundle: ArchiveBundle, *, source_dir: Path | None = None) ->
             )
         elif isinstance(confirmation.student_statement, MissingInfo):
             next_steps.append(
-                f"- 待补充 {candidate.id} 的学生说明："
-                f"{_render_text(candidate.question_to_student)}"
+                f"- 待补充 {candidate.id} 的学生说明：{_render_text(candidate.question_to_student)}"
             )
     lines.extend(next_steps or ["- 未记录"])
     lines.append("")
@@ -155,4 +156,21 @@ def render_markdown(bundle: ArchiveBundle, *, source_dir: Path | None = None) ->
             "",
         ]
     )
+    return "\n".join(lines)
+
+
+def render_questions_markdown(bundle: ArchiveBundle) -> str:
+    pending = [candidate for candidate in bundle.candidates if candidate.status.value == "proposed"]
+    lines: list[str] = ["# 学生确认问题", ""]
+    if not pending:
+        lines.extend(["- 无待确认问题。", ""])
+        return "\n".join(lines)
+
+    for candidate in pending:
+        lines.append(f"## {candidate.id}")
+        lines.append(f"- 类型：{candidate.node_type.value}")
+        lines.append(f"- 问题：{_render_text(candidate.question_to_student)}")
+        lines.append(f"- 依据事实：{', '.join(candidate.basis_event_ids)}")
+        lines.append(f"- 不确定性：{candidate.uncertainty}")
+        lines.append("")
     return "\n".join(lines)

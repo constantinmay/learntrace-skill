@@ -4,13 +4,14 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from typing import Protocol
+from typing import Any, Protocol
 
 from learntrace.models import (
     CandidateStatus,
     ContractValidator,
     EventKind,
     LearningNodeCandidate,
+    MissingInfo,
     NodeType,
     ObservableEvent,
     StudentConfirmation,
@@ -32,6 +33,9 @@ class ArchiveWarning:
     code: str
     source: str
     message: str
+
+    def to_dict(self) -> dict[str, str]:
+        return {"code": self.code, "source": self.source, "message": self.message}
 
 
 @dataclass(frozen=True, slots=True)
@@ -88,8 +92,7 @@ class StubCandidateInferencer:
             return CandidateDraft(
                 node_type=NodeType.REVISE_AI_SUGGESTION,
                 statement=(
-                    "学生可能判断 AI 建议的默认类型推断不适合含千分位的数据，"
-                    "改为显式 dtype 方案。"
+                    "学生可能判断 AI 建议的默认类型推断不适合含千分位的数据，改为显式 dtype 方案。"
                 ),
                 basis_event_ids=(trace.id, commit.id),
                 uncertainty=(
@@ -113,9 +116,7 @@ class StubCandidateInferencer:
             node_type=NodeType.REVISE_AI_SUGGESTION,
             statement="学生可能调整了 AI 给出的实现建议，并采用了不同的落地方案。",
             basis_event_ids=(trace.id, commit.id),
-            uncertainty=(
-                "中：轨迹建议与代码结果相邻，但系统不能把二者直接当作同一决策链。"
-            ),
+            uncertainty=("中：轨迹建议与代码结果相邻，但系统不能把二者直接当作同一决策链。"),
             question_to_student="这次实现是否参考并修改了 AI 给出的建议？",
         )
 
@@ -275,6 +276,34 @@ def _dedupe_events(events: tuple[ObservableEvent, ...]) -> tuple[ObservableEvent
     return tuple(by_id.values())
 
 
+def _dedupe_confirmations(
+    confirmations: tuple[StudentConfirmation, ...],
+) -> tuple[StudentConfirmation, ...]:
+    by_id: dict[str, StudentConfirmation] = {}
+    ordered = sorted(confirmations, key=lambda item: (item.confirmed_at or "", item.id))
+    for confirmation in ordered:
+        existing = by_id.get(confirmation.id)
+        if existing is None:
+            by_id[confirmation.id] = confirmation
+            continue
+        if existing.to_dict() != confirmation.to_dict():
+            msg = f"conflicting student_confirmation records for id {confirmation.id}"
+            raise ValueError(msg)
+    return tuple(by_id.values())
+
+
+def _dedupe_warnings(warnings: tuple[ArchiveWarning, ...]) -> tuple[ArchiveWarning, ...]:
+    seen: set[tuple[str, str, str]] = set()
+    unique: list[ArchiveWarning] = []
+    for warning in warnings:
+        key = (warning.code, warning.source, warning.message)
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(warning)
+    return tuple(unique)
+
+
 def _candidate_id_for(draft: CandidateDraft, index: int) -> str:
     for event_id in draft.basis_event_ids:
         match = _SCENARIO_ID_PATTERN.match(event_id)
@@ -363,9 +392,7 @@ def build_archive_bundle(
     inferencer: CandidateInferencer | None = None,
 ) -> ArchiveBundle:
     deduped_events = _dedupe_events(events)
-    sorted_confirmations = tuple(
-        sorted(confirmations, key=lambda item: (item.confirmed_at or "", item.id))
-    )
+    sorted_confirmations = _dedupe_confirmations(confirmations)
     candidate_inferencer = inferencer if inferencer is not None else StubCandidateInferencer()
     drafts = candidate_inferencer.infer(deduped_events)
     candidates = _materialize_candidates(drafts, sorted_confirmations)
@@ -373,7 +400,71 @@ def build_archive_bundle(
         events=deduped_events,
         candidates=candidates,
         confirmations=sorted_confirmations,
-        warnings=warnings,
+        warnings=_dedupe_warnings(warnings),
     )
     validate_bundle(bundle, validator=validator)
     return bundle
+
+
+def _text_or_missing_to_json(value: TextOrMissing) -> str | dict[str, Any]:
+    if isinstance(value, MissingInfo):
+        return value.to_dict()
+    return value
+
+
+def _missing_info_count(bundle: ArchiveBundle) -> int:
+    candidate_missing = sum(
+        isinstance(candidate.question_to_student, MissingInfo) for candidate in bundle.candidates
+    )
+    confirmation_missing = sum(
+        isinstance(confirmation.student_statement, MissingInfo)
+        for confirmation in bundle.confirmations
+    )
+    return candidate_missing + confirmation_missing
+
+
+def bundle_to_dict(
+    bundle: ArchiveBundle,
+    *,
+    validator: ContractValidator | None = None,
+) -> dict[str, object]:
+    validate_bundle(bundle, validator=validator)
+    pending_questions = [
+        {
+            "candidate_id": candidate.id,
+            "node_type": candidate.node_type.value,
+            "question_to_student": _text_or_missing_to_json(candidate.question_to_student),
+            "basis_event_ids": list(candidate.basis_event_ids),
+            "uncertainty": candidate.uncertainty,
+        }
+        for candidate in bundle.candidates
+        if candidate.status == CandidateStatus.PROPOSED
+    ]
+    missing_info_count = _missing_info_count(bundle)
+    return {
+        "archive_version": "v0",
+        "record_counts": {
+            "observable_fact": len(bundle.events),
+            "candidate_inference": len(bundle.candidates),
+            "student_confirmation": len(bundle.confirmations),
+            "missing_info": missing_info_count,
+            "warnings": len(bundle.warnings),
+            "pending_questions": len(pending_questions),
+        },
+        "quality_checks": {
+            "schema_valid": True,
+            "basis_events_resolved": True,
+            "resolved_candidates_have_confirmation": True,
+            "no_duplicate_record_ids": True,
+        },
+        "risk_flags": {
+            "has_warnings": bool(bundle.warnings),
+            "has_pending_questions": bool(pending_questions),
+            "has_missing_info": missing_info_count > 0,
+        },
+        "events": [event.to_dict() for event in bundle.events],
+        "candidates": [candidate.to_dict() for candidate in bundle.candidates],
+        "confirmations": [confirmation.to_dict() for confirmation in bundle.confirmations],
+        "warnings": [warning.to_dict() for warning in bundle.warnings],
+        "pending_questions": pending_questions,
+    }

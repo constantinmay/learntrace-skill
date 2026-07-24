@@ -7,9 +7,10 @@ from learntrace.reporting.pipeline import (
     CandidateInferencer,
     StubCandidateInferencer,
     build_archive_bundle,
+    bundle_to_dict,
     validate_bundle,
 )
-from learntrace.reporting.render import render_markdown
+from learntrace.reporting.render import render_markdown, render_questions_markdown
 
 __all__ = [
     "ArchiveBundle",
@@ -18,6 +19,8 @@ __all__ = [
     "CandidateInferencer",
     "StubCandidateInferencer",
     "build_archive_bundle",
+    "bundle_to_dict",
     "render_markdown",
+    "render_questions_markdown",
     "validate_bundle",
 ]

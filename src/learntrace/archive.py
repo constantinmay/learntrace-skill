@@ -24,7 +24,9 @@ from learntrace.reporting import (
     ArchiveWarning,
     CandidateInferencer,
     build_archive_bundle,
+    bundle_to_dict,
     render_markdown,
+    render_questions_markdown,
 )
 
 JsonObject = dict[str, object]
@@ -52,6 +54,16 @@ def build_parser() -> argparse.ArgumentParser:
         "--output",
         type=Path,
         help="Path to the Markdown learning record. Defaults to <project_dir>/learning-record.md.",
+    )
+    parser.add_argument(
+        "--records-output",
+        type=Path,
+        help="Optional path for machine-readable validated archive JSON.",
+    )
+    parser.add_argument(
+        "--questions-output",
+        type=Path,
+        help="Optional path for unresolved student confirmation questions.",
     )
     parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     return parser
@@ -120,8 +132,7 @@ def _parse_text_or_missing(value: object, path: Path, field_name: str) -> TextOr
 
 def _parse_event(raw: JsonObject, path: Path) -> ObservableEvent:
     source_refs = tuple(
-        _parse_source_ref(item, path)
-        for item in _require_list(raw, "source_refs", path)
+        _parse_source_ref(item, path) for item in _require_list(raw, "source_refs", path)
     )
     return ObservableEvent(
         id=_require_string(raw, "id", path),
@@ -153,6 +164,11 @@ def _parse_warning(raw: object, path: Path) -> ArchiveWarning:
         source=_require_string(data, "source", path),
         message=_require_string(data, "message", path),
     )
+
+
+def _write_text(path: Path, text: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text, encoding="utf-8")
 
 
 def _collect_records_from_json(
@@ -187,10 +203,7 @@ def _collect_records_from_json(
 
     raw_warnings = raw.get("warnings")
     if raw_warnings is not None:
-        warnings.extend(
-            _parse_warning(item, path)
-            for item in _require_list(raw, "warnings", path)
-        )
+        warnings.extend(_parse_warning(item, path) for item in _require_list(raw, "warnings", path))
 
     return events, confirmations, warnings
 
@@ -245,6 +258,8 @@ def write_learning_record(
     project_dir: Path,
     *,
     output_path: Path | None = None,
+    records_output_path: Path | None = None,
+    questions_output_path: Path | None = None,
     validator: ContractValidator | None = None,
     inferencer: CandidateInferencer | None = None,
 ) -> Path:
@@ -259,12 +274,18 @@ def write_learning_record(
     )
     markdown = render_markdown(bundle, source_dir=project_dir.resolve())
     destination = (
-        output_path
-        if output_path is not None
-        else project_dir.resolve() / "learning-record.md"
+        output_path if output_path is not None else project_dir.resolve() / "learning-record.md"
     )
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    destination.write_text(markdown, encoding="utf-8")
+    _write_text(destination, markdown)
+    if records_output_path is not None:
+        archive_json = json.dumps(
+            bundle_to_dict(bundle, validator=contract_validator),
+            ensure_ascii=False,
+            indent=2,
+        )
+        _write_text(records_output_path, f"{archive_json}\n")
+    if questions_output_path is not None:
+        _write_text(questions_output_path, render_questions_markdown(bundle))
     return destination
 
 
@@ -275,7 +296,12 @@ def main(argv: list[str] | tuple[str, ...] | None = None) -> int:
         parser.error("the following arguments are required: project_dir")
 
     project_dir = Path(args.project_dir)
-    write_learning_record(project_dir, output_path=args.output)
+    write_learning_record(
+        project_dir,
+        output_path=args.output,
+        records_output_path=args.records_output,
+        questions_output_path=args.questions_output,
+    )
     return 0
 
 
