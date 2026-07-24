@@ -17,6 +17,22 @@ Build a local, evidence-based learning portfolio while separating observation, s
 6. Ask only the questions needed for the student to confirm, supplement, or deny candidates.
 7. Generate an editable local Markdown portfolio containing goals, AI-use scenarios, decisions, validation evidence, reflection, and next steps.
 
+## Local CLI
+
+Use the local Python pipeline for Task 4 archives:
+
+```powershell
+python -m learntrace.archive <project-dir> `
+  --output learning-record.md `
+  --records-output archive-records.json `
+  --questions-output learning-questions.md
+```
+
+- The default inferencer is a deterministic stub; do not look for LLM keys or log in.
+- The CLI skips common dependency and VCS directories such as `.venv`, `.git`, and `node_modules`.
+- Add `--strict-inputs` when the input directory should contain only LearnTrace JSON records.
+- The JSON archive includes a stable SHA-256 manifest fingerprint for review and reproducibility.
+
 ## Evidence rules
 
 Read [references/evidence-policy.md](references/evidence-policy.md) before classifying or writing evidence.
