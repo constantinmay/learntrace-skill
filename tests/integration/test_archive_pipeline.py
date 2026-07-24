@@ -8,7 +8,7 @@ import pytest
 
 from learntrace.archive import load_project_artifacts, load_project_records, write_learning_record
 from learntrace.models import ContractValidator
-from learntrace.reporting import build_archive_bundle, render_markdown
+from learntrace.reporting import build_archive_bundle, bundle_to_dict, render_markdown
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SCHEMA_DIR = REPO_ROOT / "schemas" / "v0"
@@ -45,10 +45,7 @@ def test_archive_bundle_matches_golden_scenarios(scenario_dir: Path) -> None:
     expected_candidates = _expected_candidates(scenario_dir)
     assert actual_candidates == expected_candidates
 
-    actual_confirmations = [
-        confirmation.to_dict()
-        for confirmation in bundle.confirmations
-    ]
+    actual_confirmations = [confirmation.to_dict() for confirmation in bundle.confirmations]
     expected_confirmations = _expected_confirmations(scenario_dir)
     assert actual_confirmations == expected_confirmations
 
@@ -159,3 +156,56 @@ def test_loads_task2_style_batch_json(tmp_path: Path) -> None:
     assert [confirmation.to_dict() for confirmation in bundle.confirmations] == confirmation_records
     markdown = render_markdown(bundle, source_dir=tmp_path)
     assert "unsupported_test_log_format [logs/unknown.log]" in markdown
+
+
+def test_cli_writes_machine_readable_archive_and_questions(tmp_path: Path) -> None:
+    output_path = tmp_path / "learning-record.md"
+    records_output = tmp_path / "archive-records.json"
+    questions_output = tmp_path / "learning-questions.md"
+    write_learning_record(
+        SCENARIOS_DIR / "09-sparse-evidence-high-uncertainty",
+        output_path=output_path,
+        records_output_path=records_output,
+        questions_output_path=questions_output,
+        validator=ContractValidator(schema_dir=SCHEMA_DIR),
+    )
+
+    records = cast(dict[str, Any], _load_json(records_output))
+    record_counts = cast(dict[str, int], records["record_counts"])
+    pending_questions = cast(list[dict[str, Any]], records["pending_questions"])
+    assert records["archive_version"] == "v0"
+    assert record_counts["pending_questions"] == 1
+    assert pending_questions[0]["candidate_id"] == "cand-s09"
+    quality_checks = cast(dict[str, bool], records["quality_checks"])
+    risk_flags = cast(dict[str, bool], records["risk_flags"])
+    assert quality_checks["schema_valid"] is True
+    assert risk_flags["has_pending_questions"] is True
+    assert "cand-s09" in questions_output.read_text(encoding="utf-8")
+
+
+def test_archive_json_can_be_reloaded_without_duplicate_record_failures(tmp_path: Path) -> None:
+    scenario_dir = SCENARIOS_DIR / "05-add-tests-confirmed"
+    records_output = tmp_path / "archive-records.json"
+    write_learning_record(
+        scenario_dir,
+        output_path=tmp_path / "learning-record.md",
+        records_output_path=records_output,
+        validator=ContractValidator(schema_dir=SCHEMA_DIR),
+    )
+
+    for source in scenario_dir.glob("*.json"):
+        (tmp_path / source.name).write_text(source.read_text(encoding="utf-8"), encoding="utf-8")
+
+    validator = ContractValidator(schema_dir=SCHEMA_DIR)
+    loaded = load_project_artifacts(tmp_path, validator=validator)
+    bundle = build_archive_bundle(
+        loaded.events,
+        confirmations=loaded.confirmations,
+        warnings=loaded.warnings,
+        validator=validator,
+    )
+
+    records = bundle_to_dict(bundle, validator=validator)
+    record_counts = cast(dict[str, int], records["record_counts"])
+    assert record_counts["observable_fact"] == 2
+    assert record_counts["student_confirmation"] == 1
