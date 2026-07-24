@@ -183,6 +183,55 @@ def test_cli_writes_machine_readable_archive_and_questions(tmp_path: Path) -> No
     assert "cand-s09" in questions_output.read_text(encoding="utf-8")
 
 
+def test_machine_readable_archive_includes_provenance_indexes(tmp_path: Path) -> None:
+    records_output = tmp_path / "archive-records.json"
+    write_learning_record(
+        SCENARIOS_DIR / "05-add-tests-confirmed",
+        output_path=tmp_path / "learning-record.md",
+        records_output_path=records_output,
+        validator=ContractValidator(schema_dir=SCHEMA_DIR),
+    )
+
+    records = cast(dict[str, Any], _load_json(records_output))
+    source_index = cast(list[dict[str, Any]], records["source_index"])
+    candidate_links = cast(list[dict[str, Any]], records["candidate_links"])
+
+    git_source = next(
+        entry
+        for entry in source_index
+        if cast(dict[str, str], entry["source_ref"])["ref"] == "f6a7b8c"
+    )
+    assert git_source["event_ids"] == ["evt-s05-1"]
+    assert git_source["candidate_ids"] == ["cand-s05"]
+    assert candidate_links == [
+        {
+            "candidate_id": "cand-s05",
+            "node_type": "add_tests",
+            "basis_event_ids": ["evt-s05-1", "evt-s05-2"],
+            "confirmation_id": "conf-s05",
+            "status": "resolved",
+        }
+    ]
+
+
+def test_output_files_are_overwritten_atomically(tmp_path: Path) -> None:
+    records_output = tmp_path / "archive-records.json"
+    questions_output = tmp_path / "learning-questions.md"
+    records_output.write_text("old records", encoding="utf-8")
+    questions_output.write_text("old questions", encoding="utf-8")
+
+    write_learning_record(
+        SCENARIOS_DIR / "09-sparse-evidence-high-uncertainty",
+        output_path=tmp_path / "learning-record.md",
+        records_output_path=records_output,
+        questions_output_path=questions_output,
+        validator=ContractValidator(schema_dir=SCHEMA_DIR),
+    )
+
+    assert cast(dict[str, Any], _load_json(records_output))["archive_version"] == "v0"
+    assert "old questions" not in questions_output.read_text(encoding="utf-8")
+
+
 def test_archive_json_can_be_reloaded_without_duplicate_record_failures(tmp_path: Path) -> None:
     scenario_dir = SCENARIOS_DIR / "05-add-tests-confirmed"
     records_output = tmp_path / "archive-records.json"

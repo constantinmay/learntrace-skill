@@ -46,6 +46,20 @@ class ArchiveBundle:
     warnings: tuple[ArchiveWarning, ...] = ()
 
 
+@dataclass(slots=True)
+class SourceIndexEntry:
+    source_ref: dict[str, Any]
+    event_ids: list[str]
+    candidate_ids: list[str]
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "source_ref": self.source_ref,
+            "event_ids": self.event_ids,
+            "candidate_ids": self.candidate_ids,
+        }
+
+
 class CandidateInferencer(Protocol):
     def infer(self, events: tuple[ObservableEvent, ...]) -> tuple[CandidateDraft, ...]: ...
 
@@ -423,6 +437,45 @@ def _missing_info_count(bundle: ArchiveBundle) -> int:
     return candidate_missing + confirmation_missing
 
 
+def _source_index(bundle: ArchiveBundle) -> list[dict[str, object]]:
+    candidate_ids_by_event = {
+        event.id: [
+            candidate.id for candidate in bundle.candidates if event.id in candidate.basis_event_ids
+        ]
+        for event in bundle.events
+    }
+    index: dict[str, SourceIndexEntry] = {}
+    for event in bundle.events:
+        for ref in event.source_refs:
+            key = f"{ref.type.value}:{ref.ref}"
+            entry = index.setdefault(
+                key,
+                SourceIndexEntry(source_ref=ref.to_dict(), event_ids=[], candidate_ids=[]),
+            )
+            if event.id not in entry.event_ids:
+                entry.event_ids.append(event.id)
+            for candidate_id in candidate_ids_by_event[event.id]:
+                if candidate_id not in entry.candidate_ids:
+                    entry.candidate_ids.append(candidate_id)
+    return [entry.to_dict() for entry in index.values()]
+
+
+def _candidate_links(bundle: ArchiveBundle) -> list[dict[str, object]]:
+    confirmation_by_candidate = {
+        confirmation.candidate_id: confirmation.id for confirmation in bundle.confirmations
+    }
+    return [
+        {
+            "candidate_id": candidate.id,
+            "node_type": candidate.node_type.value,
+            "basis_event_ids": list(candidate.basis_event_ids),
+            "confirmation_id": confirmation_by_candidate.get(candidate.id),
+            "status": candidate.status.value,
+        }
+        for candidate in bundle.candidates
+    ]
+
+
 def bundle_to_dict(
     bundle: ArchiveBundle,
     *,
@@ -467,4 +520,6 @@ def bundle_to_dict(
         "confirmations": [confirmation.to_dict() for confirmation in bundle.confirmations],
         "warnings": [warning.to_dict() for warning in bundle.warnings],
         "pending_questions": pending_questions,
+        "source_index": _source_index(bundle),
+        "candidate_links": _candidate_links(bundle),
     }
