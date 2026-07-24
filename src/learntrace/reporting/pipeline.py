@@ -414,7 +414,12 @@ def build_archive_bundle(
 ) -> ArchiveBundle:
     deduped_events = _dedupe_events(events)
     sorted_confirmations = _dedupe_confirmations(confirmations)
-    candidate_inferencer = inferencer if inferencer is not None else StubCandidateInferencer()
+    if inferencer is not None:
+        candidate_inferencer = inferencer
+    else:
+        from learntrace.reporting.llm import default_candidate_inferencer
+
+        candidate_inferencer = default_candidate_inferencer()
     drafts = candidate_inferencer.infer(deduped_events)
     candidates = _materialize_candidates(drafts, sorted_confirmations)
     bundle = ArchiveBundle(
