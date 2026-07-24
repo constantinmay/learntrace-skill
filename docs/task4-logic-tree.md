@@ -1,62 +1,60 @@
-# Task 4 Logic Tree
+# Task 4 逻辑树
 
-This file is the one-page logic tree for LearnTrace Task 4. It is meant to be
-included in the Task 4 PR so reviewers can understand the end-to-end flow
-without reconstructing it from the code.
+这份文件是一页版的 LearnTrace Task 4 逻辑树，目的是在提交 Task 4 的
+PR 时，让评审不需要反推代码，也能快速看懂整条链路。
 
-## One-Line Summary
+## 一句话概括
 
-Task 4 turns local project evidence into an auditable learning archive: it
-collects observable facts, proposes candidate learning moments, separates
-student confirmation from system inference, and renders both human-readable and
-machine-readable outputs.
+Task 4 会把本地项目证据整理成可审计的学习档案：先收集可观察事实，再
+提出候选学习节点，把学生确认和系统推断分开保存，最后输出给人看和给程
+序读的两种结果。
 
-## Logic Tree
+## 逻辑树
 
 ```text
-Task 4: Learning Archive
+Task 4：学习档案
 |
-+-- 1. Goal
++-- 1. 目标
 |   |
-|   +-- Build a traceable learning portfolio from local evidence
-|   +-- Show collaboration and learning, not authorship or cheating judgment
-|   +-- Keep facts, inference, and student confirmation strictly separated
+|   +-- 从本地证据生成可追溯的学习档案
+|   +-- 展示协作和学习过程，而不是做作者归因或作弊判断
+|   +-- 严格分离事实、推断、学生确认
 |
-+-- 2. Inputs
++-- 2. 输入
 |   |
-|   +-- Observable facts
+|   +-- 可观察事实
 |   |   |
 |   |   +-- git_commit
 |   |   +-- document
 |   |   +-- test_log
 |   |   +-- trace_record
 |   |
-|   +-- Optional student confirmation records
+|   +-- 可选的学生确认记录
 |   |
-|   +-- Optional parser warnings
+|   +-- 可选的解析告警
 |   |
-|   +-- Input source shape
+|   +-- 输入形态
 |       |
-|       +-- single LearnTrace record JSON
-|       +-- JSON container with events / confirmations / warnings
-|       +-- hand-authored demo bundle
+|       +-- 单条 LearnTrace 记录 JSON
+|       +-- 含 events / confirmations / warnings 的 JSON 容器
+|       +-- 手工构造的 demo bundle
 |
-+-- 3. Loading Layer
++-- 3. 加载层
 |   |
-|   +-- Walk project directory for JSON files
-|   +-- Skip noise directories like .git / .venv / node_modules
-|   +-- Parse records into typed models
-|   +-- Validate records against schema contracts
-|   +-- Reject malformed or conflicting evidence early
+|   +-- 遍历项目目录中的 JSON 文件
+|   +-- 跳过 .git / .venv / node_modules 等噪音目录
+|   +-- 把记录解析成类型化模型
+|   +-- 按 schema 契约做校验
+|   +-- 尽早拒绝格式错误或彼此冲突的证据
 |
-+-- 4. Inference Layer
++-- 4. 推理层
 |   |
-|   +-- Select inferencer
+|   +-- 选择 inferencer
 |   |   |
-|   |   +-- no LLM env -> deterministic stub inferencer
-|   |   +-- LLM env present -> OpenAI-compatible LLM inferencer
+|   |   +-- 没有 LLM 环境变量 -> 走确定性 stub inferencer
+|   |   +-- 有 LLM 环境变量 -> 走 OpenAI 兼容 LLM inferencer
 |   |
-|   +-- Produce candidate learning nodes
+|   +-- 产出候选学习节点
 |   |   |
 |   |   +-- follow_up
 |   |   +-- revise_ai_suggestion
@@ -64,54 +62,54 @@ Task 4: Learning Archive
 |   |   +-- add_tests
 |   |   +-- adjust_constraints
 |   |
-|   +-- Every candidate must include
+|   +-- 每个候选必须带上
 |       |
 |       +-- node_type
-|       +-- candidate statement
+|       +-- 候选陈述
 |       +-- basis_event_ids
-|       +-- uncertainty label
-|       +-- question_to_student
+|       +-- uncertainty 不确定性说明
+|       +-- question_to_student 给学生的确认问题
 |
-+-- 5. Trust Boundary
++-- 5. 信任边界
 |   |
-|   +-- Candidate inference is not treated as fact
-|   +-- basis_event_ids must resolve to real observable events
-|   +-- Invalid LLM outputs are dropped instead of polluting the archive
-|   +-- Student decisions are stored separately from system candidates
+|   +-- 候选推断不能直接当成事实
+|   +-- basis_event_ids 必须能指回真实 observable event
+|   +-- 不合法的 LLM 输出直接丢弃，不能污染档案
+|   +-- 学生决定必须与系统候选分开保存
 |
-+-- 6. Confirmation Layer
++-- 6. 确认层
 |   |
-|   +-- Candidate status starts as proposed
-|   +-- StudentConfirmation can mark a candidate as
+|   +-- 候选初始状态是 proposed
+|   +-- StudentConfirmation 可以把候选标记为
 |   |   |
 |   |   +-- confirmed
 |   |   +-- supplemented
 |   |   +-- denied
 |   |
-|   +-- A candidate becomes resolved only when confirmation exists
+|   +-- 只有存在确认记录，候选才会变成 resolved
 |
-+-- 7. Archive Assembly
++-- 7. 档案组装
 |   |
-|   +-- Deduplicate events
-|   +-- Deduplicate confirmations
-|   +-- Deduplicate warnings
-|   +-- Materialize stable candidate IDs
-|   +-- Validate the whole bundle again
+|   +-- 去重 events
+|   +-- 去重 confirmations
+|   +-- 去重 warnings
+|   +-- 生成稳定的 candidate id
+|   +-- 对整个 bundle 再做一次整体验证
 |
-+-- 8. Outputs
++-- 8. 输出
 |   |
-|   +-- Markdown learning record
+|   +-- Markdown 学习档案
 |   |   |
-|   |   +-- project overview
-|   |   +-- audit summary
-|   |   +-- evidence layers
-|   |   +-- AI usage
-|   |   +-- key candidate decisions
-|   |   +-- supporting evidence
-|   |   +-- reflection
-|   |   +-- next-step questions
+|   |   +-- 项目概览
+|   |   +-- 审计摘要
+|   |   +-- 证据分层
+|   |   +-- AI 使用情况
+|   |   +-- 关键候选决策
+|   |   +-- 支撑证据
+|   |   +-- 反思
+|   |   +-- 后续待确认问题
 |   |
-|   +-- Machine-readable archive JSON
+|   +-- 机器可读 archive JSON
 |   |   |
 |   |   +-- events
 |   |   +-- candidates
@@ -125,39 +123,38 @@ Task 4: Learning Archive
 |   |   +-- quality_checks
 |   |   +-- archive_manifest
 |   |
-|   +-- Pending-question Markdown
+|   +-- 待确认问题 Markdown
 |
-+-- 9. Auditability
++-- 9. 可审计性
 |   |
-|   +-- Stable SHA-256 content fingerprint
-|   +-- Record-level hashes
-|   +-- Provenance index from source refs to events and candidates
-|   +-- Deterministic stub path for tests
+|   +-- 稳定的 SHA-256 内容指纹
+|   +-- 分类型记录哈希
+|   +-- 从 source ref 指到 event 和 candidate 的 provenance 索引
+|   +-- 测试环境下可复现的确定性 stub 路径
 |
-+-- 10. Safety Constraints
++-- 10. 安全约束
     |
-    +-- Do not execute user repository code
-    +-- Do not infer cheating or authorship
-    +-- Do not turn system guesses into conclusions
-    +-- Do not invent missing evidence
-    +-- Read API keys only from environment variables
+    +-- 不执行用户仓库代码
+    +-- 不做作弊推断或作者归因
+    +-- 不把系统猜测写成结论
+    +-- 不编造缺失证据
+    +-- API key 只允许从环境变量读取
 ```
 
-## Review Checklist
+## 评审检查清单
 
-- Does the archive start from observable facts instead of direct conclusions?
-- Can each candidate be traced back to concrete `basis_event_ids`?
-- Are student confirmations stored separately from system inference?
-- Does the output include both human-readable and machine-readable forms?
-- Does the archive remain auditable when the LLM path is disabled?
+- 档案是不是从可观察事实出发，而不是直接下结论？
+- 每个候选是不是都能追溯到明确的 `basis_event_ids`？
+- 学生确认是不是和系统推断分开存放？
+- 输出是不是同时包含给人看和给程序读的两种形式？
+- 关闭 LLM 路径后，系统是不是仍然可审计、可复现？
 
-## PR Note
+## PR 说明
 
-If this file is included in the PR, reviewers can use it as the top-level map
-for the following implementation areas:
+如果把这份文件放进 PR，评审可以把它当成下面几个实现区域的总地图：
 
-- input loading and contract validation
-- candidate inference
-- confirmation handling
-- archive serialization and audit metadata
-- Markdown reporting and demo flow
+- 输入加载与契约校验
+- 候选推理
+- 学生确认处理
+- 档案序列化与审计元数据
+- Markdown 报告与 demo 流程
