@@ -11,7 +11,7 @@ from learntrace.models import (
     StudentConfirmation,
     TextOrMissing,
 )
-from learntrace.reporting.pipeline import ArchiveBundle
+from learntrace.reporting.pipeline import ArchiveBundle, archive_manifest
 
 _NODE_LABELS: dict[NodeType, str] = {
     NodeType.FOLLOW_UP: "追问深化",
@@ -53,6 +53,7 @@ def render_markdown(bundle: ArchiveBundle, *, source_dir: Path | None = None) ->
     confirmations_by_candidate = {
         confirmation.candidate_id: confirmation for confirmation in bundle.confirmations
     }
+    manifest = archive_manifest(bundle)
     lines: list[str] = ["# 学习档案", ""]
 
     lines.extend(
@@ -62,6 +63,17 @@ def render_markdown(bundle: ArchiveBundle, *, source_dir: Path | None = None) ->
             f"- 可观察事实：{len(bundle.events)} 条",
             f"- 学习节点候选：{len(bundle.candidates)} 条",
             f"- 学生确认：{len(bundle.confirmations)} 条",
+            "",
+        ]
+    )
+
+    lines.extend(
+        [
+            "## 审计摘要",
+            f"- 档案指纹：`{manifest['hash_algorithm']}:{manifest['content_fingerprint']}`",
+            f"- Schema：`{manifest['schema_version']}`",
+            f"- 生成工具：`{manifest['tool']} {manifest['tool_version']}`",
+            "- 指纹仅基于事实、候选、确认与解析告警生成，不包含本机路径或生成时间。",
             "",
         ]
     )

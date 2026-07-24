@@ -4,10 +4,13 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import cast
+
+import jsonschema
 
 from learntrace import __version__
 from learntrace.models import (
@@ -16,6 +19,7 @@ from learntrace.models import (
     EventKind,
     MissingInfo,
     ObservableEvent,
+    RecordType,
     SourceRef,
     SourceType,
     StudentConfirmation,
@@ -31,6 +35,27 @@ from learntrace.reporting import (
 )
 
 JsonObject = dict[str, object]
+_IGNORED_DIR_NAMES = frozenset(
+    {
+        ".eggs",
+        ".git",
+        ".hg",
+        ".mypy_cache",
+        ".pytest_cache",
+        ".pyright",
+        ".ruff_cache",
+        ".svn",
+        ".tox",
+        ".venv",
+        "__pycache__",
+        "build",
+        "dist",
+        "env",
+        "node_modules",
+        "venv",
+    }
+)
+_LEARNTRACE_CONTAINER_KEYS = frozenset({"events", "confirmations", "warnings"})
 
 
 @dataclass(frozen=True, slots=True)
@@ -38,6 +63,14 @@ class LoadedProjectRecords:
     events: tuple[ObservableEvent, ...]
     confirmations: tuple[StudentConfirmation, ...]
     warnings: tuple[ArchiveWarning, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class LearningRecordWriteResult:
+    output_path: Path
+    records_output_path: Path | None
+    questions_output_path: Path | None
+    archive: dict[str, object]
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -66,16 +99,58 @@ def build_parser() -> argparse.ArgumentParser:
         type=Path,
         help="Optional path for unresolved student confirmation questions.",
     )
+    parser.add_argument(
+        "--strict-inputs",
+        action="store_true",
+        help="Fail on unrelated JSON files instead of skipping them.",
+    )
     parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     return parser
 
 
-def _read_json_object(path: Path) -> JsonObject:
-    data = json.loads(path.read_text(encoding="utf-8"))
-    if not isinstance(data, dict):
-        msg = f"{path} does not contain a JSON object"
+def _iter_json_files(root: Path) -> tuple[Path, ...]:
+    paths: list[Path] = []
+    for directory, dirnames, filenames in os.walk(root):
+        dirnames[:] = sorted(name for name in dirnames if name not in _IGNORED_DIR_NAMES)
+        for filename in sorted(filenames):
+            if filename.endswith(".json"):
+                paths.append(Path(directory) / filename)
+    return tuple(paths)
+
+
+def _read_json_object(path: Path, *, strict_inputs: bool) -> JsonObject | None:
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        msg = f"{path}: invalid JSON: {exc.msg}"
+        raise ValueError(msg) from exc
+    if isinstance(data, dict):
+        return cast(JsonObject, data)
+    if strict_inputs:
+        msg = f"{path}: expected a JSON object"
         raise ValueError(msg)
-    return cast(JsonObject, data)
+    return None
+
+
+def _looks_like_learntrace_json(data: JsonObject) -> bool:
+    return data.get("evidence_level") is not None or any(
+        key in data for key in _LEARNTRACE_CONTAINER_KEYS
+    )
+
+
+def _validate_record(
+    validator: ContractValidator,
+    record_type: RecordType,
+    record: JsonObject,
+    path: Path,
+) -> None:
+    try:
+        validator.validate(record_type, record)
+    except jsonschema.ValidationError as exc:
+        location = ".".join(str(part) for part in exc.absolute_path)
+        suffix = f" at {location}" if location else ""
+        msg = f"{path}: invalid {record_type}{suffix}: {exc.message}"
+        raise ValueError(msg) from exc
 
 
 def _require_string(data: JsonObject, key: str, path: Path) -> str:
@@ -187,6 +262,27 @@ def _write_text(path: Path, text: str) -> None:
             temporary_path.unlink()
 
 
+def _validate_distinct_output_paths(
+    markdown_path: Path,
+    records_path: Path | None,
+    questions_path: Path | None,
+) -> None:
+    seen: dict[Path, str] = {}
+    for label, path in (
+        ("Markdown", markdown_path),
+        ("archive JSON", records_path),
+        ("pending questions", questions_path),
+    ):
+        if path is None:
+            continue
+        resolved = path.expanduser().resolve()
+        existing_label = seen.get(resolved)
+        if existing_label is not None:
+            msg = f"{label} output path conflicts with {existing_label} output path: {path}"
+            raise ValueError(msg)
+        seen[resolved] = label
+
+
 def _collect_records_from_json(
     raw: JsonObject,
     path: Path,
@@ -197,24 +293,24 @@ def _collect_records_from_json(
     warnings: list[ArchiveWarning] = []
     evidence_level = raw.get("evidence_level")
     if evidence_level == ObservableEvent.EVIDENCE_LEVEL:
-        validator.validate("observable_event", raw)
+        _validate_record(validator, "observable_event", raw, path)
         events.append(_parse_event(raw, path))
     elif evidence_level == StudentConfirmation.EVIDENCE_LEVEL:
-        validator.validate("student_confirmation", raw)
+        _validate_record(validator, "student_confirmation", raw, path)
         confirmations.append(_parse_confirmation(raw, path))
 
     raw_events = raw.get("events")
     if raw_events is not None:
         for index, item in enumerate(_require_list(raw, "events", path), start=1):
             event = _require_object(item, f"events[{index}]", path)
-            validator.validate("observable_event", event)
+            _validate_record(validator, "observable_event", event, path)
             events.append(_parse_event(event, path))
 
     raw_confirmations = raw.get("confirmations")
     if raw_confirmations is not None:
         for index, item in enumerate(_require_list(raw, "confirmations", path), start=1):
             confirmation = _require_object(item, f"confirmations[{index}]", path)
-            validator.validate("student_confirmation", confirmation)
+            _validate_record(validator, "student_confirmation", confirmation, path)
             confirmations.append(_parse_confirmation(confirmation, path))
 
     raw_warnings = raw.get("warnings")
@@ -228,6 +324,7 @@ def load_project_artifacts(
     project_dir: Path,
     *,
     validator: ContractValidator | None = None,
+    strict_inputs: bool = False,
 ) -> LoadedProjectRecords:
     root = project_dir.resolve()
     if not root.is_dir():
@@ -239,8 +336,15 @@ def load_project_artifacts(
     confirmations: list[StudentConfirmation] = []
     warnings: list[ArchiveWarning] = []
 
-    for path in sorted(root.rglob("*.json")):
-        raw = _read_json_object(path)
+    for path in _iter_json_files(root):
+        raw = _read_json_object(path, strict_inputs=strict_inputs)
+        if raw is None:
+            continue
+        if not _looks_like_learntrace_json(raw):
+            if strict_inputs:
+                msg = f"{path}: does not look like a LearnTrace JSON record"
+                raise ValueError(msg)
+            continue
         loaded_events, loaded_confirmations, loaded_warnings = _collect_records_from_json(
             raw,
             path,
@@ -265,12 +369,13 @@ def load_project_records(
     project_dir: Path,
     *,
     validator: ContractValidator | None = None,
+    strict_inputs: bool = False,
 ) -> tuple[tuple[ObservableEvent, ...], tuple[StudentConfirmation, ...]]:
-    loaded = load_project_artifacts(project_dir, validator=validator)
+    loaded = load_project_artifacts(project_dir, validator=validator, strict_inputs=strict_inputs)
     return loaded.events, loaded.confirmations
 
 
-def write_learning_record(
+def write_learning_record_result(
     project_dir: Path,
     *,
     output_path: Path | None = None,
@@ -278,9 +383,14 @@ def write_learning_record(
     questions_output_path: Path | None = None,
     validator: ContractValidator | None = None,
     inferencer: CandidateInferencer | None = None,
-) -> Path:
+    strict_inputs: bool = False,
+) -> LearningRecordWriteResult:
     contract_validator = validator if validator is not None else ContractValidator()
-    loaded = load_project_artifacts(project_dir, validator=contract_validator)
+    loaded = load_project_artifacts(
+        project_dir,
+        validator=contract_validator,
+        strict_inputs=strict_inputs,
+    )
     bundle = build_archive_bundle(
         loaded.events,
         confirmations=loaded.confirmations,
@@ -292,17 +402,69 @@ def write_learning_record(
     destination = (
         output_path if output_path is not None else project_dir.resolve() / "learning-record.md"
     )
+    _validate_distinct_output_paths(destination, records_output_path, questions_output_path)
+    archive = bundle_to_dict(bundle, validator=contract_validator)
     _write_text(destination, markdown)
     if records_output_path is not None:
         archive_json = json.dumps(
-            bundle_to_dict(bundle, validator=contract_validator),
+            archive,
             ensure_ascii=False,
             indent=2,
         )
         _write_text(records_output_path, f"{archive_json}\n")
     if questions_output_path is not None:
         _write_text(questions_output_path, render_questions_markdown(bundle))
-    return destination
+    return LearningRecordWriteResult(
+        output_path=destination,
+        records_output_path=records_output_path,
+        questions_output_path=questions_output_path,
+        archive=archive,
+    )
+
+
+def write_learning_record(
+    project_dir: Path,
+    *,
+    output_path: Path | None = None,
+    records_output_path: Path | None = None,
+    questions_output_path: Path | None = None,
+    validator: ContractValidator | None = None,
+    inferencer: CandidateInferencer | None = None,
+    strict_inputs: bool = False,
+) -> Path:
+    result = write_learning_record_result(
+        project_dir,
+        output_path=output_path,
+        records_output_path=records_output_path,
+        questions_output_path=questions_output_path,
+        validator=validator,
+        inferencer=inferencer,
+        strict_inputs=strict_inputs,
+    )
+    return result.output_path
+
+
+def _format_cli_summary(result: LearningRecordWriteResult) -> str:
+    record_counts = cast(dict[str, object], result.archive["record_counts"])
+    manifest = cast(dict[str, object], result.archive["archive_manifest"])
+    hash_algorithm = cast(str, manifest["hash_algorithm"])
+    content_fingerprint = cast(str, manifest["content_fingerprint"])
+    lines = [
+        f"Wrote learning record: {result.output_path}",
+        f"Archive fingerprint: {hash_algorithm}:{content_fingerprint}",
+        (
+            "Record counts: "
+            f"observable_fact={record_counts['observable_fact']}, "
+            f"candidate_inference={record_counts['candidate_inference']}, "
+            f"student_confirmation={record_counts['student_confirmation']}, "
+            f"pending_questions={record_counts['pending_questions']}"
+        ),
+    ]
+    if result.records_output_path is not None:
+        lines.append(f"Wrote archive JSON: {result.records_output_path}")
+    if result.questions_output_path is not None:
+        lines.append(f"Wrote pending questions: {result.questions_output_path}")
+    return "\n".join(lines)
 
 
 def main(argv: list[str] | tuple[str, ...] | None = None) -> int:
@@ -312,12 +474,14 @@ def main(argv: list[str] | tuple[str, ...] | None = None) -> int:
         parser.error("the following arguments are required: project_dir")
 
     project_dir = Path(args.project_dir)
-    write_learning_record(
+    result = write_learning_record_result(
         project_dir,
         output_path=args.output,
         records_output_path=args.records_output,
         questions_output_path=args.questions_output,
+        strict_inputs=args.strict_inputs,
     )
+    print(_format_cli_summary(result))
     return 0
 
 

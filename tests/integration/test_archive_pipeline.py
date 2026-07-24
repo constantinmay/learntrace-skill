@@ -1,14 +1,27 @@
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from pathlib import Path
 from typing import Any, cast
 
 import pytest
 
 from learntrace.archive import load_project_artifacts, load_project_records, write_learning_record
-from learntrace.models import ContractValidator
-from learntrace.reporting import build_archive_bundle, bundle_to_dict, render_markdown
+from learntrace.models import (
+    ConfirmationDecision,
+    ContractValidator,
+    MissingInfo,
+    NodeType,
+    ObservableEvent,
+    StudentConfirmation,
+)
+from learntrace.reporting import (
+    CandidateDraft,
+    build_archive_bundle,
+    bundle_to_dict,
+    render_markdown,
+)
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SCHEMA_DIR = REPO_ROOT / "schemas" / "v0"
@@ -59,6 +72,7 @@ def test_render_markdown_contains_required_sections(scenario_dir: Path) -> None:
 
     for heading in (
         "## 项目概览",
+        "## 审计摘要",
         "## 证据分层",
         "## AI 使用",
         "## 关键决策",
@@ -183,6 +197,42 @@ def test_cli_writes_machine_readable_archive_and_questions(tmp_path: Path) -> No
     assert "cand-s09" in questions_output.read_text(encoding="utf-8")
 
 
+def test_machine_readable_archive_includes_stable_manifest(tmp_path: Path) -> None:
+    first_records_output = tmp_path / "archive-records-first.json"
+    second_records_output = tmp_path / "nested" / "archive-records-second.json"
+    scenario_dir = SCENARIOS_DIR / "05-add-tests-confirmed"
+    validator = ContractValidator(schema_dir=SCHEMA_DIR)
+
+    write_learning_record(
+        scenario_dir,
+        output_path=tmp_path / "learning-record-first.md",
+        records_output_path=first_records_output,
+        validator=validator,
+    )
+    write_learning_record(
+        scenario_dir,
+        output_path=tmp_path / "nested" / "learning-record-second.md",
+        records_output_path=second_records_output,
+        validator=validator,
+    )
+
+    first_records = cast(dict[str, Any], _load_json(first_records_output))
+    second_records = cast(dict[str, Any], _load_json(second_records_output))
+    first_manifest = cast(dict[str, Any], first_records["archive_manifest"])
+    second_manifest = cast(dict[str, Any], second_records["archive_manifest"])
+
+    assert first_manifest["hash_algorithm"] == "sha256"
+    assert first_manifest["content_fingerprint"] == second_manifest["content_fingerprint"]
+    assert len(cast(str, first_manifest["content_fingerprint"])) == 64
+    record_hashes = cast(dict[str, str], first_manifest["record_hashes"])
+    assert set(record_hashes) == {
+        "observable_fact",
+        "candidate_inference",
+        "student_confirmation",
+        "warnings",
+    }
+
+
 def test_machine_readable_archive_includes_provenance_indexes(tmp_path: Path) -> None:
     records_output = tmp_path / "archive-records.json"
     write_learning_record(
@@ -232,6 +282,18 @@ def test_output_files_are_overwritten_atomically(tmp_path: Path) -> None:
     assert "old questions" not in questions_output.read_text(encoding="utf-8")
 
 
+def test_output_paths_must_be_distinct(tmp_path: Path) -> None:
+    output_path = tmp_path / "same-output"
+
+    with pytest.raises(ValueError, match="output path conflicts"):
+        write_learning_record(
+            SCENARIOS_DIR / "09-sparse-evidence-high-uncertainty",
+            output_path=output_path,
+            records_output_path=output_path,
+            validator=ContractValidator(schema_dir=SCHEMA_DIR),
+        )
+
+
 def test_archive_json_can_be_reloaded_without_duplicate_record_failures(tmp_path: Path) -> None:
     scenario_dir = SCENARIOS_DIR / "05-add-tests-confirmed"
     records_output = tmp_path / "archive-records.json"
@@ -258,3 +320,133 @@ def test_archive_json_can_be_reloaded_without_duplicate_record_failures(tmp_path
     record_counts = cast(dict[str, int], records["record_counts"])
     assert record_counts["observable_fact"] == 2
     assert record_counts["student_confirmation"] == 1
+
+
+def test_identical_duplicate_events_are_deduped() -> None:
+    validator = ContractValidator(schema_dir=SCHEMA_DIR)
+    events, confirmations = load_project_records(
+        SCENARIOS_DIR / "09-sparse-evidence-high-uncertainty",
+        validator=validator,
+    )
+
+    bundle = build_archive_bundle(
+        (*events, events[0]),
+        confirmations=confirmations,
+        validator=validator,
+    )
+
+    assert [event.id for event in bundle.events] == ["evt-s09-1"]
+
+
+def test_conflicting_duplicate_event_ids_are_rejected() -> None:
+    validator = ContractValidator(schema_dir=SCHEMA_DIR)
+    events, confirmations = load_project_records(
+        SCENARIOS_DIR / "09-sparse-evidence-high-uncertainty",
+        validator=validator,
+    )
+    conflicting_event = replace(events[0], summary=f"{events[0].summary} changed")
+
+    with pytest.raises(ValueError, match="conflicting observable_event"):
+        build_archive_bundle(
+            (*events, conflicting_event),
+            confirmations=confirmations,
+            validator=validator,
+        )
+
+
+def test_confirmation_targeting_missing_candidate_is_rejected() -> None:
+    validator = ContractValidator(schema_dir=SCHEMA_DIR)
+    events, _ = load_project_records(
+        SCENARIOS_DIR / "08-no-trace-degraded",
+        validator=validator,
+    )
+    confirmation = StudentConfirmation(
+        id="conf-missing-candidate",
+        candidate_id="cand-does-not-exist",
+        decision=ConfirmationDecision.CONFIRMED,
+        student_statement=MissingInfo(),
+    )
+
+    with pytest.raises(ValueError, match="confirmation targets missing candidate"):
+        build_archive_bundle(
+            events,
+            confirmations=(confirmation,),
+            validator=validator,
+        )
+
+
+def test_inferencer_output_with_missing_basis_event_is_rejected() -> None:
+    class MissingBasisInferencer:
+        def infer(self, events: tuple[ObservableEvent, ...]) -> tuple[CandidateDraft, ...]:
+            return (
+                CandidateDraft(
+                    node_type=NodeType.FOLLOW_UP,
+                    statement="候选引用了不存在的事实，应被完整性校验拒绝。",
+                    basis_event_ids=("evt-not-present",),
+                    uncertainty="高：测试用 inferencer 故意输出缺失依据。",
+                    question_to_student="这条候选是否应该出现？",
+                ),
+            )
+
+    validator = ContractValidator(schema_dir=SCHEMA_DIR)
+    events, confirmations = load_project_records(
+        SCENARIOS_DIR / "09-sparse-evidence-high-uncertainty",
+        validator=validator,
+    )
+
+    with pytest.raises(ValueError, match="missing basis event"):
+        build_archive_bundle(
+            events,
+            confirmations=confirmations,
+            validator=validator,
+            inferencer=MissingBasisInferencer(),
+        )
+
+
+def test_loader_ignores_unrelated_json_and_dependency_dirs(tmp_path: Path) -> None:
+    source = SCENARIOS_DIR / "09-sparse-evidence-high-uncertainty" / "observable-event-commit.json"
+    (tmp_path / source.name).write_text(source.read_text(encoding="utf-8"), encoding="utf-8")
+    (tmp_path / "unrelated-array.json").write_text("[]", encoding="utf-8")
+    (tmp_path / "package.json").write_text('{"name": "demo"}', encoding="utf-8")
+    venv_dir = tmp_path / ".venv"
+    venv_dir.mkdir()
+    (venv_dir / "broken.json").write_text("{", encoding="utf-8")
+
+    loaded = load_project_artifacts(
+        tmp_path,
+        validator=ContractValidator(schema_dir=SCHEMA_DIR),
+    )
+
+    assert [event.id for event in loaded.events] == ["evt-s09-1"]
+
+
+def test_strict_inputs_rejects_unrelated_json(tmp_path: Path) -> None:
+    source = SCENARIOS_DIR / "09-sparse-evidence-high-uncertainty" / "observable-event-commit.json"
+    (tmp_path / source.name).write_text(source.read_text(encoding="utf-8"), encoding="utf-8")
+    (tmp_path / "unrelated-array.json").write_text("[]", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="expected a JSON object"):
+        load_project_artifacts(
+            tmp_path,
+            validator=ContractValidator(schema_dir=SCHEMA_DIR),
+            strict_inputs=True,
+        )
+
+
+def test_loader_reports_schema_errors_with_source_path(tmp_path: Path) -> None:
+    bad_record = (
+        REPO_ROOT / "tests" / "fixtures" / "golden" / "invalid" / "event-missing-source-refs.json"
+    )
+    target = tmp_path / "bad-event.json"
+    target.write_text(bad_record.read_text(encoding="utf-8"), encoding="utf-8")
+
+    with pytest.raises(ValueError) as exc_info:
+        load_project_artifacts(
+            tmp_path,
+            validator=ContractValidator(schema_dir=SCHEMA_DIR),
+        )
+
+    message = str(exc_info.value)
+    assert "bad-event.json" in message
+    assert "invalid observable_event" in message
+    assert "source_refs" in message

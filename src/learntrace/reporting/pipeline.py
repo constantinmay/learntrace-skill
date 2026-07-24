@@ -2,11 +2,15 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 import re
 from dataclasses import dataclass
 from typing import Any, Protocol
 
+from learntrace import __version__
 from learntrace.models import (
+    SCHEMA_VERSION,
     CandidateStatus,
     ContractValidator,
     EventKind,
@@ -17,6 +21,9 @@ from learntrace.models import (
     StudentConfirmation,
     TextOrMissing,
 )
+
+ARCHIVE_VERSION = "v0"
+HASH_ALGORITHM = "sha256"
 
 
 @dataclass(frozen=True, slots=True)
@@ -476,6 +483,41 @@ def _candidate_links(bundle: ArchiveBundle) -> list[dict[str, object]]:
     ]
 
 
+def _canonical_bytes(value: object) -> bytes:
+    return json.dumps(
+        value,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+
+
+def _sha256(value: object) -> str:
+    return hashlib.sha256(_canonical_bytes(value)).hexdigest()
+
+
+def archive_manifest(bundle: ArchiveBundle) -> dict[str, object]:
+    """Return deterministic metadata for reproducing and auditing an archive."""
+
+    record_sets = {
+        "observable_fact": [event.to_dict() for event in bundle.events],
+        "candidate_inference": [candidate.to_dict() for candidate in bundle.candidates],
+        "student_confirmation": [confirmation.to_dict() for confirmation in bundle.confirmations],
+        "warnings": [warning.to_dict() for warning in bundle.warnings],
+    }
+    return {
+        "tool": "learntrace",
+        "tool_version": __version__,
+        "archive_version": ARCHIVE_VERSION,
+        "schema_version": SCHEMA_VERSION,
+        "hash_algorithm": HASH_ALGORITHM,
+        "content_fingerprint": _sha256(record_sets),
+        "record_hashes": {
+            record_type: _sha256(records) for record_type, records in record_sets.items()
+        },
+    }
+
+
 def bundle_to_dict(
     bundle: ArchiveBundle,
     *,
@@ -495,7 +537,8 @@ def bundle_to_dict(
     ]
     missing_info_count = _missing_info_count(bundle)
     return {
-        "archive_version": "v0",
+        "archive_version": ARCHIVE_VERSION,
+        "archive_manifest": archive_manifest(bundle),
         "record_counts": {
             "observable_fact": len(bundle.events),
             "candidate_inference": len(bundle.candidates),
