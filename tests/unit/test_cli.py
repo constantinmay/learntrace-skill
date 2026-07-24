@@ -71,3 +71,19 @@ def test_main_prints_write_summary(tmp_path: Path, capsys: CaptureFixture[str]) 
     assert "Wrote learning record:" in summary
     assert "Archive fingerprint: sha256:" in summary
     assert "pending_questions=1" in summary
+
+
+def test_main_reports_missing_records_without_traceback(
+    tmp_path: Path,
+    capsys: CaptureFixture[str],
+) -> None:
+    (tmp_path / "package.json").write_text('{"name": "raw-project"}', encoding="utf-8")
+
+    try:
+        main([str(tmp_path)])
+    except SystemExit as exc:
+        assert exc.code == 1
+
+    captured = capsys.readouterr()
+    assert "expected LearnTrace record JSON or a Task2 parse-result JSON" in captured.err
+    assert "Traceback" not in captured.err
