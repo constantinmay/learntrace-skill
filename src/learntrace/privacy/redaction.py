@@ -50,7 +50,7 @@ def redact_sensitive_text(value: str, *, limit: int = 160) -> str:
 
 
 def _path_style(value: str) -> str | None:
-    if _WINDOWS_ABSOLUTE_RE.match(value) or value.startswith(("\\\\", "//")):
+    if _WINDOWS_ABSOLUTE_RE.match(value) or value.startswith(("\\", "//")):
         return "windows"
     if value.startswith("/"):
         return "posix"
