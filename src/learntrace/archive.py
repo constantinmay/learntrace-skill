@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
@@ -56,6 +57,8 @@ _IGNORED_DIR_NAMES = frozenset(
     }
 )
 _LEARNTRACE_CONTAINER_KEYS = frozenset({"events", "confirmations", "warnings"})
+_LEARNTRACE_BUNDLE_MARKER = "learntrace_bundle"
+_COMMIT_OVERVIEW_PATTERN = re.compile(r"^提交\s+[a-f0-9]+\s*[：:]")
 
 
 @dataclass(frozen=True, slots=True)
@@ -108,13 +111,27 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def _iter_json_files(root: Path) -> tuple[Path, ...]:
+def _iter_json_files(
+    root: Path,
+    *,
+    output_filenames: frozenset[str] = frozenset(),
+) -> tuple[Path, ...]:
     paths: list[Path] = []
     for directory, dirnames, filenames in os.walk(root):
         dirnames[:] = sorted(name for name in dirnames if name not in _IGNORED_DIR_NAMES)
         for filename in sorted(filenames):
-            if filename.endswith(".json"):
-                paths.append(Path(directory) / filename)
+            if not filename.endswith(".json"):
+                continue
+            if filename in output_filenames:
+                continue
+            filepath = Path(directory) / filename
+            # Skip symlinks to prevent reading files outside the project
+            try:
+                if filepath.is_symlink():
+                    continue
+            except OSError:
+                continue
+            paths.append(filepath)
     return tuple(paths)
 
 
@@ -133,9 +150,9 @@ def _read_json_object(path: Path, *, strict_inputs: bool) -> JsonObject | None:
 
 
 def _looks_like_learntrace_json(data: JsonObject) -> bool:
-    return data.get("evidence_level") is not None or any(
-        key in data for key in _LEARNTRACE_CONTAINER_KEYS
-    )
+    if data.get("evidence_level") is not None:
+        return True
+    return data.get(_LEARNTRACE_BUNDLE_MARKER) is True
 
 
 def _validate_record(

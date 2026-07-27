@@ -34,6 +34,9 @@ dev = [
     "ruff>=0.12,<1",
 ]
 
+[tool.uv.build]
+include = ["schemas/"]
+
 [tool.pytest.ini_options]
 addopts = "-ra --strict-config --strict-markers"
 testpaths = ["tests"]

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -27,9 +28,11 @@ from learntrace.reporting.pipeline import (
 LLM_API_KEY_ENV = "LEARNTRACE_LLM_API_KEY"
 LLM_BASE_URL_ENV = "LEARNTRACE_LLM_BASE_URL"
 LLM_MODEL_ENV = "LEARNTRACE_LLM_MODEL"
+LLM_ENABLED_ENV = "LEARNTRACE_LLM_ENABLED"
 DEFAULT_LLM_BASE_URL = "https://api.llm.ustc.edu.cn/v1"
 DEFAULT_LLM_MODEL = "smart/default"
 _UNCERTAINTY_PREFIXES = ("\u9ad8\uff1a", "\u4e2d\uff1a", "\u4f4e\uff1a")
+_STABLE_SCENARIO_PATTERN = re.compile(r"^evt-([^-]+)-")
 
 
 @dataclass(frozen=True, slots=True)
@@ -142,10 +145,11 @@ class OpenAIChatCandidateInferencer:
         events: tuple[ObservableEvent, ...],
     ) -> tuple[CandidateDraft, ...]:
         event_ids = {event.id for event in events}
+        event_by_id = {event.id: event for event in events}
         drafts: list[CandidateDraft] = []
         used_ids: set[str] = set()
         for index, raw in enumerate(raw_candidates, start=1):
-            draft = _candidate_draft_from_llm(raw, event_ids)
+            draft = _candidate_draft_from_llm(raw, event_ids, event_by_id)
             if draft is None:
                 continue
             candidate_id = _candidate_id_for(draft, index)
@@ -184,6 +188,17 @@ def default_candidate_inferencer() -> CandidateInferencer:
     config = llm_config_from_env()
     if config is None:
         return StubCandidateInferencer()
+
+    enabled = os.environ.get(LLM_ENABLED_ENV, "").strip().lower()
+    if enabled not in ("1", "true", "yes"):
+        return StubCandidateInferencer()
+
+    print(
+        "INFO: LLM candidate inference is enabled. "
+        "The following data will be sent to the configured LLM endpoint: "
+        "event summaries, source references, and metadata. "
+        "No repository code or student personal data will be transmitted.",
+    )
     return OpenAIChatCandidateInferencer(config)
 
 
@@ -222,9 +237,13 @@ def _extract_llm_candidates(content: str) -> list[dict[str, object]]:
     ]
 
 
+_AI_NODE_TYPES_REQUIRING_TRACE: frozenset[str] = frozenset({"revise_ai_suggestion", "follow_up"})
+
+
 def _candidate_draft_from_llm(
     raw: dict[str, object],
     event_ids: set[str],
+    event_by_id: dict[str, ObservableEvent] | None = None,
 ) -> CandidateDraft | None:
     node_type_raw = raw.get("node_type")
     statement = raw.get("statement")
@@ -248,6 +267,15 @@ def _candidate_draft_from_llm(
     )
     if not basis_event_ids or any(item not in event_ids for item in basis_event_ids):
         return None
+    # AI-type (revise_ai_suggestion / follow_up) candidates require at least
+    # one trace_record basis event to prevent hallucinated associations.
+    if node_type.value in _AI_NODE_TYPES_REQUIRING_TRACE and event_by_id is not None:
+        has_trace = any(
+            event_by_id.get(eid) is not None and event_by_id[eid].kind.value == "trace_record"
+            for eid in basis_event_ids
+        )
+        if not has_trace:
+            return None
     if not uncertainty.startswith(_UNCERTAINTY_PREFIXES):
         return None
     if not statement.strip() or not question_to_student.strip():
@@ -261,5 +289,20 @@ def _candidate_draft_from_llm(
     )
 
 
-def _candidate_id_for(draft: CandidateDraft, index: int) -> str:
-    return f"cand-{draft.node_type.value}-{index}"
+def _candidate_id_for(draft: CandidateDraft, index: int) -> str:  # noqa: ARG001
+    """Generate a stable candidate ID from draft content.
+
+    Priority:
+    1. Scenario prefix extracted from the first basis event ID.
+    2. Content-based hash of node_type + sorted basis_event_ids.
+    """
+    for event_id in draft.basis_event_ids:
+        match = _STABLE_SCENARIO_PATTERN.match(event_id)
+        if match is not None:
+            return f"cand-{match.group(1)}"
+    content = json.dumps(
+        [draft.node_type.value, sorted(draft.basis_event_ids)],
+        sort_keys=True,
+    )
+    suffix = hashlib.sha256(content.encode("utf-8")).hexdigest()[:8]
+    return f"cand-{draft.node_type.value}-{suffix}"
