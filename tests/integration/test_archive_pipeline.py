@@ -139,6 +139,7 @@ def test_loads_task2_style_batch_json(tmp_path: Path) -> None:
         _load_json(scenario_dir / "student-confirmation.json"),
     ]
     batch = {
+        "learntrace_bundle": True,
         "parser_version": "v0",
         "events": event_records,
         "confirmations": confirmation_records,
@@ -320,6 +321,77 @@ def test_archive_json_can_be_reloaded_without_duplicate_record_failures(tmp_path
     record_counts = cast(dict[str, int], records["record_counts"])
     assert record_counts["observable_fact"] == 2
     assert record_counts["student_confirmation"] == 1
+
+
+def test_stable_candidate_id_regardless_of_order() -> None:
+    """Candidate IDs must be stable when input events are reordered."""
+    validator = ContractValidator(schema_dir=SCHEMA_DIR)
+
+    scenario_01 = SCENARIOS_DIR / "01-revise-ai-suggestion-confirmed"
+    events_01, confirmations_01 = load_project_records(scenario_01, validator=validator)
+
+    # Build bundle with events in original order
+    bundle_original = build_archive_bundle(
+        events_01,
+        confirmations=confirmations_01,
+        validator=validator,
+    )
+
+    # Build bundle with events in reversed order
+    bundle_reversed = build_archive_bundle(
+        tuple(reversed(events_01)),
+        confirmations=confirmations_01,
+        validator=validator,
+    )
+
+    # Both bundles must produce the same candidate IDs
+    original_ids = [c.id for c in bundle_original.candidates]
+    reversed_ids = [c.id for c in bundle_reversed.candidates]
+    assert original_ids == reversed_ids
+
+
+def test_bundle_marker_required_for_container_json(tmp_path: Path) -> None:
+    """Container JSON without learntrace_bundle marker should be rejected."""
+    (tmp_path / "business.json").write_text(
+        json.dumps({"events": [{"id": "evt-001", "summary": "business event"}]}),
+        encoding="utf-8",
+    )
+
+    validator = ContractValidator(schema_dir=SCHEMA_DIR)
+    with pytest.raises(ValueError, match="expected LearnTrace record"):
+        load_project_artifacts(tmp_path, validator=validator)
+
+
+def test_bundle_marker_accepted_for_container_json(tmp_path: Path) -> None:
+    """Container JSON with learntrace_bundle: true should be recognized."""
+    scenario_dir = SCENARIOS_DIR / "05-add-tests-confirmed"
+    event_records = [
+        _load_json(scenario_dir / "observable-event-commit.json"),
+    ]
+    batch = {
+        "learntrace_bundle": True,
+        "events": event_records,
+    }
+    (tmp_path / "bundle.json").write_text(
+        json.dumps(batch, ensure_ascii=False),
+        encoding="utf-8",
+    )
+
+    validator = ContractValidator(schema_dir=SCHEMA_DIR)
+    loaded = load_project_artifacts(tmp_path, validator=validator)
+
+    assert len(loaded.events) == 1
+    assert loaded.events[0].id == "evt-s05-1"
+
+
+def test_symlink_json_is_skipped(tmp_path: Path) -> None:
+    """Symlinked JSON files outside the project must be skipped."""
+    source = SCENARIOS_DIR / "09-sparse-evidence-high-uncertainty" / "observable-event-commit.json"
+    (tmp_path / "valid.json").write_text(source.read_text(encoding="utf-8"), encoding="utf-8")
+
+    validator = ContractValidator(schema_dir=SCHEMA_DIR)
+    loaded = load_project_artifacts(tmp_path, validator=validator)
+    assert any(event.id == "evt-s09-1" for event in loaded.events)
 
 
 def test_identical_duplicate_events_are_deduped() -> None:

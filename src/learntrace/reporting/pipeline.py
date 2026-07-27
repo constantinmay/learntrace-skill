@@ -72,6 +72,12 @@ class CandidateInferencer(Protocol):
 
 
 _SCENARIO_ID_PATTERN = re.compile(r"^evt-([^-]+)-")
+_COMMIT_OVERVIEW_PATTERN = re.compile(r"^提交\s+[a-f0-9]+\s*[：:]")
+
+
+def _is_commit_overview(summary: str) -> bool:
+    """Return True if *summary* is a commit overview event (not a file-level change)."""
+    return _COMMIT_OVERVIEW_PATTERN.match(summary) is not None
 
 
 class StubCandidateInferencer:
@@ -84,7 +90,14 @@ class StubCandidateInferencer:
     def infer(self, events: tuple[ObservableEvent, ...]) -> tuple[CandidateDraft, ...]:
         ordered = tuple(sorted(events, key=_event_sort_key))
         traces = tuple(event for event in ordered if event.kind == EventKind.TRACE_RECORD)
-        commits = tuple(event for event in ordered if event.kind == EventKind.GIT_COMMIT)
+        # Only commit overview events (not file-level changes) are used for
+        # candidate inference. A commit overview summary starts with
+        # "提交 <hash>：" (e.g. "提交 d9e0f1a：调整参数解析").
+        commits = tuple(
+            event
+            for event in ordered
+            if event.kind == EventKind.GIT_COMMIT and _is_commit_overview(event.summary)
+        )
         test_logs = tuple(event for event in ordered if event.kind == EventKind.TEST_LOG)
         documents = tuple(event for event in ordered if event.kind == EventKind.DOCUMENT)
 
@@ -146,20 +159,34 @@ class StubCandidateInferencer:
         test_log: ObservableEvent,
         commit: ObservableEvent,
     ) -> CandidateDraft:
+        plausible = _temporally_plausible(test_log, commit)
         if "ZeroDivisionError" in test_log.summary and "返回 None" in commit.summary:
+            uncertainty = (
+                "低：失败用例与提交修改点直接对应，时间顺序吻合。"
+                if plausible
+                else "中：内容相关但时间顺序无法验证。"
+            )
             return CandidateDraft(
                 node_type=NodeType.FIX_FAILED_APPROACH,
                 statement="学生可能在除零测试失败后为 divide 增加了零值保护。",
                 basis_event_ids=(test_log.id, commit.id),
-                uncertainty="低：失败用例与提交修改点直接对应，时间顺序吻合。",
+                uncertainty=uncertainty,
                 question_to_student="这次提交是否是为了修复日志中的除零失败？",
+            )
+        if plausible:
+            return CandidateDraft(
+                node_type=NodeType.FIX_FAILED_APPROACH,
+                statement="学生可能在失败日志出现后调整了实现，修复了先前的方法。",
+                basis_event_ids=(test_log.id, commit.id),
+                uncertainty="低：失败日志与后续提交存在直接的时间和内容关联。",
+                question_to_student="这次修改是否是为了修复日志里的失败？",
             )
         return CandidateDraft(
             node_type=NodeType.FIX_FAILED_APPROACH,
-            statement="学生可能在失败日志出现后调整了实现，修复了先前的方法。",
+            statement="学生可能在失败日志出现后调整了实现。",
             basis_event_ids=(test_log.id, commit.id),
-            uncertainty="低：失败日志与后续提交存在直接的时间和内容关联。",
-            question_to_student="这次修改是否是为了修复日志里的失败？",
+            uncertainty="中：内容相关但时间顺序无法验证，不确定失败是否先于修改。",
+            question_to_student="这次修改是否与日志里的失败有关？",
         )
 
     def _add_tests_candidate(
@@ -268,6 +295,15 @@ def _has_failure_log(test_logs: tuple[ObservableEvent, ...]) -> bool:
     return any("失败" in log.summary or "error" in log.summary.lower() for log in test_logs)
 
 
+def _temporally_plausible(before: ObservableEvent | None, after: ObservableEvent | None) -> bool:
+    """Check that *before* occurred earlier than *after* when timestamps are available."""
+    if before is None or after is None:
+        return True  # cannot verify
+    if before.occurred_at is None or after.occurred_at is None:
+        return True  # cannot verify
+    return before.occurred_at < after.occurred_at
+
+
 def _looks_like_test_addition(commit: ObservableEvent) -> bool:
     lowered = commit.summary.lower()
     return "test" in lowered and (
@@ -325,12 +361,31 @@ def _dedupe_warnings(warnings: tuple[ArchiveWarning, ...]) -> tuple[ArchiveWarni
     return tuple(unique)
 
 
-def _candidate_id_for(draft: CandidateDraft, index: int) -> str:
+def _stable_candidate_id(draft: CandidateDraft) -> str:
+    """Generate a stable candidate ID from draft content.
+
+    Priority:
+    1. Scenario prefix extracted from the first basis event ID (``evt-s01-1`` → ``cand-s01``).
+    2. Content-based hash of node_type + sorted basis_event_ids.
+    """
     for event_id in draft.basis_event_ids:
         match = _SCENARIO_ID_PATTERN.match(event_id)
         if match is not None:
             return f"cand-{match.group(1)}"
-    return f"cand-{draft.node_type.value}-{index}"
+    content = json.dumps(
+        [draft.node_type.value, sorted(draft.basis_event_ids)],
+        sort_keys=True,
+    )
+    suffix = _sha256_content(content)[:8]
+    return f"cand-{draft.node_type.value}-{suffix}"
+
+
+def _sha256_content(text: str) -> str:
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def _candidate_id_for(draft: CandidateDraft, index: int) -> str:  # noqa: ARG001
+    return _stable_candidate_id(draft)
 
 
 def _materialize_candidates(
@@ -542,6 +597,7 @@ def bundle_to_dict(
     ]
     missing_info_count = _missing_info_count(bundle)
     return {
+        "learntrace_bundle": True,
         "archive_version": ARCHIVE_VERSION,
         "archive_manifest": archive_manifest(bundle),
         "record_counts": {
