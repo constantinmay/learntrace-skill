@@ -243,7 +243,7 @@ _AI_NODE_TYPES_REQUIRING_TRACE: frozenset[str] = frozenset({"revise_ai_suggestio
 def _candidate_draft_from_llm(
     raw: dict[str, object],
     event_ids: set[str],
-    event_by_id: dict[str, ObservableEvent] | None = None,
+    event_by_id: dict[str, ObservableEvent],
 ) -> CandidateDraft | None:
     node_type_raw = raw.get("node_type")
     statement = raw.get("statement")
@@ -269,7 +269,7 @@ def _candidate_draft_from_llm(
         return None
     # AI-type (revise_ai_suggestion / follow_up) candidates require at least
     # one trace_record basis event to prevent hallucinated associations.
-    if node_type.value in _AI_NODE_TYPES_REQUIRING_TRACE and event_by_id is not None:
+    if node_type.value in _AI_NODE_TYPES_REQUIRING_TRACE:
         has_trace = any(
             event_by_id.get(eid) is not None and event_by_id[eid].kind.value == "trace_record"
             for eid in basis_event_ids
@@ -293,13 +293,15 @@ def _candidate_id_for(draft: CandidateDraft, index: int) -> str:  # noqa: ARG001
     """Generate a stable candidate ID from draft content.
 
     Priority:
-    1. Scenario prefix extracted from the first basis event ID.
+    1. Scenario prefix extracted from the first basis event ID, with node type
+       appended to prevent collisions when multiple candidates share the same
+       scenario prefix (e.g. ``evt-s01-1`` → ``cand-s01-revise_ai_suggestion``).
     2. Content-based hash of node_type + sorted basis_event_ids.
     """
     for event_id in draft.basis_event_ids:
         match = _STABLE_SCENARIO_PATTERN.match(event_id)
         if match is not None:
-            return f"cand-{match.group(1)}"
+            return f"cand-{match.group(1)}-{draft.node_type.value}"
     content = json.dumps(
         [draft.node_type.value, sorted(draft.basis_event_ids)],
         sort_keys=True,

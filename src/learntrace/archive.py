@@ -152,7 +152,10 @@ def _read_json_object(path: Path, *, strict_inputs: bool) -> JsonObject | None:
 def _looks_like_learntrace_json(data: JsonObject) -> bool:
     if data.get("evidence_level") is not None:
         return True
-    return data.get(_LEARNTRACE_BUNDLE_MARKER) is True
+    if data.get(_LEARNTRACE_BUNDLE_MARKER) is True:
+        return True
+    # Accept container-style JSON (Task2 parse-result with events list, etc.).
+    return bool(_LEARNTRACE_CONTAINER_KEYS & set(data.keys()))
 
 
 def _validate_record(

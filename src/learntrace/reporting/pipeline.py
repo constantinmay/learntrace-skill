@@ -365,13 +365,15 @@ def _stable_candidate_id(draft: CandidateDraft) -> str:
     """Generate a stable candidate ID from draft content.
 
     Priority:
-    1. Scenario prefix extracted from the first basis event ID (``evt-s01-1`` → ``cand-s01``).
+    1. Scenario prefix extracted from the first basis event ID (``evt-s01-1``
+       → ``cand-s01-{node_type}``). Node type is included to prevent ID
+       collisions when multiple candidates share the same scenario prefix.
     2. Content-based hash of node_type + sorted basis_event_ids.
     """
     for event_id in draft.basis_event_ids:
         match = _SCENARIO_ID_PATTERN.match(event_id)
         if match is not None:
-            return f"cand-{match.group(1)}"
+            return f"cand-{match.group(1)}-{draft.node_type.value}"
     content = json.dumps(
         [draft.node_type.value, sorted(draft.basis_event_ids)],
         sort_keys=True,

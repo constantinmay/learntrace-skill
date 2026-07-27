@@ -1,6 +1,6 @@
 {
   "schema_version": "v0",
-  "id": "cand-s06",
+  "id": "cand-s06-follow_up",
   "evidence_level": "candidate_inference",
   "node_type": "follow_up",
   "statement": "学生可能通过追问把问题从基础统计细化到含缺失值的统计。",

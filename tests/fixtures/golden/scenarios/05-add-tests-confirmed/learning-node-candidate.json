@@ -1,6 +1,6 @@
 {
   "schema_version": "v0",
-  "id": "cand-s05",
+  "id": "cand-s05-add_tests",
   "evidence_level": "candidate_inference",
   "node_type": "add_tests",
   "statement": "学生可能在实现解析功能后主动补充了边界用例测试。",
