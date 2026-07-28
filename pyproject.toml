@@ -22,8 +22,8 @@ dev = [
 ]
 
 [build-system]
-requires = ["uv_build>=0.11.0,<0.12.0"]
-build-backend = "uv_build"
+requires = ["hatchling>=1.26,<2"]
+build-backend = "hatchling.build"
 
 [dependency-groups]
 dev = [
@@ -34,8 +34,8 @@ dev = [
     "ruff>=0.12,<1",
 ]
 
-[tool.uv.build]
-include = ["schemas/"]
+[tool.hatch.build.targets.wheel]
+include = ["src/**", "schemas/**"]
 
 [tool.pytest.ini_options]
 addopts = "-ra --strict-config --strict-markers"

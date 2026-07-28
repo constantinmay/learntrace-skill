@@ -2,7 +2,7 @@
   "schema_version": "v0",
   "id": "conf-s06",
   "evidence_level": "student_confirmation",
-  "candidate_id": "cand-s06-follow_up",
+  "candidate_id": "cand-s06-follow_up-3a27d8bc",
   "decision": "confirmed",
   "student_statement": "是，追问之后我才知道要先过滤缺失记录再统计。",
   "confirmed_at": "2026-04-22T13:00:00+08:00"

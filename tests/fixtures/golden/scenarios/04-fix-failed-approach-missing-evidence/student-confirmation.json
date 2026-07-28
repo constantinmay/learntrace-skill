@@ -2,7 +2,7 @@
   "schema_version": "v0",
   "id": "conf-s04",
   "evidence_level": "student_confirmation",
-  "candidate_id": "cand-s04-fix_failed_approach",
+  "candidate_id": "cand-s04-fix_failed_approach-4c121b5d",
   "decision": "confirmed",
   "student_statement": {
     "status": "not_recorded"

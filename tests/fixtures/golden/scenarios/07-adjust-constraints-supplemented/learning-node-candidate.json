@@ -1,6 +1,6 @@
 {
   "schema_version": "v0",
-  "id": "cand-s07-adjust_constraints",
+  "id": "cand-s07-adjust_constraints-0b0ce852",
   "evidence_level": "candidate_inference",
   "node_type": "adjust_constraints",
   "statement": "学生可能因设计约束从百分制改为等级制而重写了统计逻辑。",

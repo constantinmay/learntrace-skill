@@ -114,7 +114,8 @@ def test_render_markdown_handles_missing_info_and_degraded_cases() -> None:
     bundle_09 = build_archive_bundle(events_09, confirmations=confirmations_09, validator=validator)
     markdown_09 = render_markdown(bundle_09, source_dir=scenario_09)
     assert (
-        "待补充 cand-s09-adjust_constraints：增加 --ignore-missing 是出于什么考虑？" in markdown_09
+        "待补充 cand-s09-adjust_constraints-79510e31：增加 --ignore-missing 是出于什么考虑？"  # noqa: E501
+        in markdown_09
     )
 
 
@@ -192,12 +193,12 @@ def test_cli_writes_machine_readable_archive_and_questions(tmp_path: Path) -> No
     pending_questions = cast(list[dict[str, Any]], records["pending_questions"])
     assert records["archive_version"] == "v0"
     assert record_counts["pending_questions"] == 1
-    assert pending_questions[0]["candidate_id"] == "cand-s09-adjust_constraints"
+    assert pending_questions[0]["candidate_id"] == "cand-s09-adjust_constraints-79510e31"
     quality_checks = cast(dict[str, bool], records["quality_checks"])
     risk_flags = cast(dict[str, bool], records["risk_flags"])
     assert quality_checks["schema_valid"] is True
     assert risk_flags["has_pending_questions"] is True
-    assert "cand-s09-adjust_constraints" in questions_output.read_text(encoding="utf-8")
+    assert "cand-s09-adjust_constraints-79510e31" in questions_output.read_text(encoding="utf-8")
 
 
 def test_machine_readable_archive_includes_stable_manifest(tmp_path: Path) -> None:
@@ -255,10 +256,10 @@ def test_machine_readable_archive_includes_provenance_indexes(tmp_path: Path) ->
         if cast(dict[str, str], entry["source_ref"])["ref"] == "f6a7b8c"
     )
     assert git_source["event_ids"] == ["evt-s05-1"]
-    assert git_source["candidate_ids"] == ["cand-s05-add_tests"]
+    assert git_source["candidate_ids"] == ["cand-s05-add_tests-e24f35c1"]
     assert candidate_links == [
         {
-            "candidate_id": "cand-s05-add_tests",
+            "candidate_id": "cand-s05-add_tests-e24f35c1",
             "node_type": "add_tests",
             "basis_event_ids": ["evt-s05-1", "evt-s05-2"],
             "confirmation_id": "conf-s05",
