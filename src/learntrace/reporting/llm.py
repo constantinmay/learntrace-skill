@@ -292,19 +292,17 @@ def _candidate_draft_from_llm(
 def _candidate_id_for(draft: CandidateDraft, index: int) -> str:  # noqa: ARG001
     """Generate a stable candidate ID from draft content.
 
-    Priority:
-    1. Scenario prefix extracted from the first basis event ID, with node type
-       appended to prevent collisions when multiple candidates share the same
-       scenario prefix (e.g. ``evt-s01-1`` → ``cand-s01-revise_ai_suggestion``).
-    2. Content-based hash of node_type + sorted basis_event_ids.
+    Always includes a content-based hash of node_type + sorted
+    basis_event_ids + statement so that two candidates with different
+    basis or statements never collide.
     """
-    for event_id in draft.basis_event_ids:
-        match = _STABLE_SCENARIO_PATTERN.match(event_id)
-        if match is not None:
-            return f"cand-{match.group(1)}-{draft.node_type.value}"
     content = json.dumps(
-        [draft.node_type.value, sorted(draft.basis_event_ids)],
+        [draft.node_type.value, sorted(draft.basis_event_ids), draft.statement],
         sort_keys=True,
     )
     suffix = hashlib.sha256(content.encode("utf-8")).hexdigest()[:8]
+    for event_id in draft.basis_event_ids:
+        match = _STABLE_SCENARIO_PATTERN.match(event_id)
+        if match is not None:
+            return f"cand-{match.group(1)}-{draft.node_type.value}-{suffix}"
     return f"cand-{draft.node_type.value}-{suffix}"
