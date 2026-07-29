@@ -24,7 +24,7 @@ from learntrace.reporting import (
 )
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-SCHEMA_DIR = REPO_ROOT / "schemas" / "v0"
+SCHEMA_DIR = REPO_ROOT / "src" / "learntrace" / "schemas" / "v0"
 SCENARIOS_DIR = REPO_ROOT / "tests" / "fixtures" / "golden" / "scenarios"
 SCENARIO_DIRS = tuple(sorted(path for path in SCENARIOS_DIR.iterdir() if path.is_dir()))
 
