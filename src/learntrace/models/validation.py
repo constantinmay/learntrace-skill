@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import json
 from collections.abc import Iterator
+from importlib.resources import files
+from importlib.resources.abc import Traversable
 from pathlib import Path
 from typing import Any, Literal, Protocol, cast
 
@@ -43,22 +45,17 @@ class _Validator(Protocol):
     def is_valid(self, instance: Any) -> bool: ...
 
 
-def default_schema_dir() -> Path:
-    """从本文件向上查找 ``schemas/v0`` 目录。
-
-    仅适用于源码检出布局的便利函数。安装或嵌入场景的调用方
-    必须向 ``ContractValidator`` 显式传入 ``schema_dir``。
-    """
-    for parent in Path(__file__).resolve().parents:
-        candidate = parent / "schemas" / "v0"
-        if candidate.is_dir():
-            return candidate
-    msg = f"could not locate schemas/v0 relative to {__file__}"
+def default_schema_dir() -> Traversable:
+    """返回随 Python 包发布的 v0 Schema 资源目录。"""
+    schema_dir = files("learntrace").joinpath("schemas", "v0")
+    if schema_dir.is_dir():
+        return schema_dir
+    msg = "Python 包中缺少 schemas/v0 资源目录"
     raise FileNotFoundError(msg)
 
 
-def _load_schema(schema_dir: Path, filename: str) -> SchemaDict:
-    with (schema_dir / filename).open(encoding="utf-8") as handle:
+def _load_schema(schema_dir: Path | Traversable, filename: str) -> SchemaDict:
+    with schema_dir.joinpath(filename).open(encoding="utf-8") as handle:
         schema: SchemaDict = json.load(handle)
     return schema
 
@@ -66,7 +63,7 @@ def _load_schema(schema_dir: Path, filename: str) -> SchemaDict:
 class ContractValidator:
     """依据 v0 Schema 校验记录 dict。"""
 
-    def __init__(self, schema_dir: Path | None = None) -> None:
+    def __init__(self, schema_dir: Path | Traversable | None = None) -> None:
         self._schema_dir = schema_dir if schema_dir is not None else default_schema_dir()
         schemas: dict[str, SchemaDict] = {
             filename: _load_schema(self._schema_dir, filename)
@@ -90,7 +87,7 @@ class ContractValidator:
         }
 
     @property
-    def schema_dir(self) -> Path:
+    def schema_dir(self) -> Path | Traversable:
         return self._schema_dir
 
     def validate(self, record_type: RecordType, record: Any) -> None:

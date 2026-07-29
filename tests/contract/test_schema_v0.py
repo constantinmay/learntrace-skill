@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import json
+from importlib.resources.abc import Traversable
 from pathlib import Path
 from typing import Any, TypedDict
 
@@ -27,10 +28,11 @@ from learntrace.models import (
     SourceRef,
     SourceType,
     StudentConfirmation,
+    default_schema_dir,
 )
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-SCHEMA_DIR = REPO_ROOT / "schemas" / "v0"
+SCHEMA_DIR = default_schema_dir()
 GOLDEN_DIR = REPO_ROOT / "tests" / "fixtures" / "golden"
 MANIFEST_PATH = GOLDEN_DIR / "expected-results.json"
 
@@ -53,7 +55,7 @@ class Manifest(TypedDict):
     cases: list[ExpectedCase]
 
 
-def _load_json(path: Path) -> Any:
+def _load_json(path: Path | Traversable) -> Any:
     with path.open(encoding="utf-8") as handle:
         data: Any = json.load(handle)
     return data
@@ -61,7 +63,7 @@ def _load_json(path: Path) -> Any:
 
 @pytest.fixture(scope="module")
 def validator() -> ContractValidator:
-    return ContractValidator(schema_dir=SCHEMA_DIR)
+    return ContractValidator()
 
 
 @pytest.fixture(scope="module")
@@ -76,7 +78,11 @@ def _case_id(case: ExpectedCase) -> str:
 
 def test_schemas_are_valid_json_schema() -> None:
     """每个 Schema 文件自身必须满足 Draft 2020-12 元 Schema。"""
-    for schema_path in sorted(SCHEMA_DIR.glob("*.schema.json")):
+    schema_paths = sorted(
+        (path for path in SCHEMA_DIR.iterdir() if path.name.endswith(".schema.json")),
+        key=lambda path: path.name,
+    )
+    for schema_path in schema_paths:
         jsonschema.Draft202012Validator.check_schema(_load_json(schema_path))
 
 

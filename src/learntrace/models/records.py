@@ -1,4 +1,4 @@
-"""与 ``schemas/v0/`` 中冻结 Schema 一一对应的记录模型。
+"""与 ``learntrace/schemas/v0/`` 中冻结 Schema 一一对应的记录模型。
 
 模型只提供结构化构造与固定字段注入（schema_version / evidence_level），
 不在构造时做运行时校验。任何外部输入以及需要落盘或跨模块传递的输出，
