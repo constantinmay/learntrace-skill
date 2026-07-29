@@ -164,6 +164,8 @@ class StubCandidateInferencer:
         commit: ObservableEvent,
     ) -> CandidateDraft:
 
+        plausible = _temporally_plausible(trace, commit)
+
         if "默认类型推断" in trace.summary and "显式指定 dtype" in commit.summary:
             return CandidateDraft(
                 node_type=NodeType.REVISE_AI_SUGGESTION,
@@ -174,6 +176,8 @@ class StubCandidateInferencer:
                 uncertainty=(
                     "中：AI 建议与代码提交是两条独立记录，系统不预设二者相关；"
                     "是否参考及修改动机均需学生确认。"
+                    if plausible
+                    else "高：时间顺序无法验证，AI 建议与代码修改的关联性存疑。"
                 ),
                 question_to_student="你是否因为默认类型推断无法处理千分位而修改了 AI 的建议？",
             )
@@ -186,6 +190,8 @@ class StubCandidateInferencer:
                 uncertainty=(
                     "中：AI 建议与代码提交是两条独立记录，系统不预设二者相关；"
                     "两种实现语义相近，是否参考需学生确认。"
+                    if plausible
+                    else "高：时间顺序无法验证，语义近似的修改可能来自其他原因。"
                 ),
                 question_to_student="这次实现是否参考并修改了 AI 提出的正则校验建议？",
             )
@@ -194,7 +200,11 @@ class StubCandidateInferencer:
             node_type=NodeType.REVISE_AI_SUGGESTION,
             statement="学生可能调整了 AI 给出的实现建议，并采用了不同的落地方案。",
             basis_event_ids=(trace.id, commit.id),
-            uncertainty=("中：轨迹建议与代码结果相邻，但系统不能把二者直接当作同一决策链。"),
+            uncertainty=(
+                "中：轨迹建议与代码结果相邻，但系统不能把二者直接当作同一决策链。"
+                if plausible
+                else "高：时间顺序无法验证，轨迹与代码修改之间的因果关系不明。"
+            ),
             question_to_student="这次实现是否参考并修改了 AI 给出的建议？",
         )
 
@@ -267,12 +277,18 @@ class StubCandidateInferencer:
         second_trace: ObservableEvent,
     ) -> CandidateDraft:
 
+        plausible = _temporally_plausible(first_trace, second_trace)
+
         if "成绩分布" in first_trace.summary and "缺失" in second_trace.summary:
             return CandidateDraft(
                 node_type=NodeType.FOLLOW_UP,
                 statement="学生可能通过追问把问题从基础统计细化到含缺失值的统计。",
                 basis_event_ids=(first_trace.id, second_trace.id),
-                uncertainty="中：追问内容相关，但是否形成新的理解只有学生能确认。",
+                uncertainty=(
+                    "中：追问内容相关，但是否形成新的理解只有学生能确认。"
+                    if plausible
+                    else "高：两次追问时间顺序无法验证，内容相关性可能是偶然。"
+                ),
                 question_to_student="第二次追问是否让你对缺失值处理有了新的理解？",
             )
 
@@ -280,7 +296,11 @@ class StubCandidateInferencer:
             node_type=NodeType.FOLLOW_UP,
             statement="学生可能通过连续追问把问题进一步细化。",
             basis_event_ids=(first_trace.id, second_trace.id),
-            uncertainty="中：追问主题连续，但新的学习收获仍需学生确认。",
+            uncertainty=(
+                "中：追问主题连续，但新的学习收获仍需学生确认。"
+                if plausible
+                else "高：时间顺序无法验证，主题连续性可能是偶然。"
+            ),
             question_to_student="后续追问是否让你形成了新的理解？",
         )
 
@@ -290,12 +310,18 @@ class StubCandidateInferencer:
         commit: ObservableEvent,
     ) -> CandidateDraft:
 
+        plausible = _temporally_plausible(document, commit)
+
         if "等级制" in document.summary and "等级制" in commit.summary:
             return CandidateDraft(
                 node_type=NodeType.ADJUST_CONSTRAINTS,
                 statement="学生可能因设计约束从百分制改为等级制而重写了统计逻辑。",
                 basis_event_ids=(document.id, commit.id),
-                uncertainty="中：文档与提交时间相邻，但文档更新者身份未记录，无法确认是学生本人调整。",
+                uncertainty=(
+                    "中：文档与提交时间相邻，但文档更新者身份未记录，无法确认是学生本人调整。"
+                    if plausible
+                    else "高：文档与提交时间顺序无法验证，事件关联匹配可能是偶然。"
+                ),
                 question_to_student="等级制这个约束调整是你自己提出的，还是课程要求变更？",
             )
 
@@ -576,7 +602,18 @@ def validate_bundle(
 
     violations: list[str] = []
 
+    ai_trace_types = frozenset({"revise_ai_suggestion", "follow_up"})
+    event_kind_by_id = {event.id: event.kind.value for event in bundle.events}
     for candidate in bundle.candidates:
+        if candidate.node_type.value in ai_trace_types:
+            has_trace = any(
+                event_kind_by_id.get(bid) == "trace_record" for bid in candidate.basis_event_ids
+            )
+            if not has_trace:
+                violations.append(
+                    f"{candidate.id}: AI-type candidate ({candidate.node_type.value}) "
+                    f"requires at least one trace_record in basis_event_ids"
+                )
         for basis_id in candidate.basis_event_ids:
             if basis_id not in event_ids:
                 violations.append(f"{candidate.id}: missing basis event {basis_id}")
