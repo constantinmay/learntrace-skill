@@ -31,7 +31,7 @@ uv run pytest
 
 ```text
 src/learntrace/        Python 包与 CLI
-schemas/v0/            schema v0 数据契约
+src/learntrace/schemas/v0/  随 Python 包发布的 schema v0 数据契约
 skills/learntrace/     可安装 Skill
 tests/unit/            单元测试
 tests/contract/        Schema 与金标样例回归

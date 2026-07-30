@@ -8,11 +8,11 @@
 
 | 交付物 | 位置 | 用途 |
 | --- | --- | --- |
-| 公共字段定义 | `schemas/v0/common.schema.json` | `schema_version`、`id`、`source_ref`、`missing_info` 等共享定义 |
-| 事实 Schema | `schemas/v0/observable-event.schema.json` | 可观察事实记录 |
-| 候选 Schema | `schemas/v0/learning-node-candidate.schema.json` | 系统候选学习节点 |
-| 确认 Schema | `schemas/v0/student-confirmation.schema.json` | 学生对候选的回答 |
-| 契约说明 | `schemas/v0/README.md` | 字段语义、证据等级、硬约束 |
+| 公共字段定义 | `src/learntrace/schemas/v0/common.schema.json` | `schema_version`、`id`、`source_ref`、`missing_info` 等共享定义 |
+| 事实 Schema | `src/learntrace/schemas/v0/observable-event.schema.json` | 可观察事实记录 |
+| 候选 Schema | `src/learntrace/schemas/v0/learning-node-candidate.schema.json` | 系统候选学习节点 |
+| 确认 Schema | `src/learntrace/schemas/v0/student-confirmation.schema.json` | 学生对候选的回答 |
+| 契约说明 | `src/learntrace/schemas/v0/README.md` | 字段语义、证据等级、硬约束 |
 | Python 模型 | `src/learntrace/models/records.py` | 三种记录 + `SourceRef` / `MissingInfo` 的 dataclass |
 | 校验器 | `src/learntrace/models/validation.py` | `ContractValidator`，JSON 合规校验 |
 | 金标样例 | `tests/fixtures/golden/` | 正常 4 例、证据不足 3 例、非法 4 例、九场景 31 例 |
@@ -83,12 +83,12 @@ data = event.to_dict()  # 保证通过 schema
 ```python
 from learntrace.models import ContractValidator
 
-validator = ContractValidator()  # 源码布局自动定位 schemas/v0
+validator = ContractValidator()  # 源码布局和 wheel 安装布局均从包资源加载 Schema
 validator.validate("observable_event", data)        # 不合规抛 ValidationError
 errors = validator.iter_errors("learning_node_candidate", data)  # 拿全部错误
 ```
 
-注意：Skill 打包或非源码布局场景必须显式传 `ContractValidator(schema_dir=...)`，不能依赖自动定位。
+`ContractValidator()` 在源码布局和 wheel 安装布局中均加载随包发布的 Schema 资源。仅在需要使用外部 Schema 目录时显式传入 `schema_dir`。
 
 ## 4. 金标样例用途
 
@@ -111,7 +111,7 @@ errors = validator.iter_errors("learning_node_candidate", data)  # 拿全部错�
 
 ## 5. 修改契约的流程
 
-`schemas/v0/` 四个 schema 文件（含共享的 `common.schema.json`）是四人冻结的公共契约，任何字段或枚举变更：
+`src/learntrace/schemas/v0/` 四个 schema 文件（含共享的 `common.schema.json`）是四人冻结的公共契约，任何字段或枚举变更：
 
 1. 先在对应 Issue 中记录变更内容并 @ 相关任务线负责人共同审核。
 2. 同步修改 `records.py` 模型、受影响的金标样例和 `expected-results.json`。
@@ -128,7 +128,6 @@ errors = validator.iter_errors("learning_node_candidate", data)  # 拿全部错�
 
 - 模型暂不提供 `from_dict()`；如解析侧需要，开 Issue 讨论后补。
 - 跨记录一致性（basis 引用存在、resolved 有确认）目前只在契约测试中检查，未提供运行时 API。
-- `uv build` 产出的 wheel 不含 `schemas/v0/*.schema.json`：在非源码布局环境调用 `ContractValidator()`（无参）会因 `default_schema_dir()` 找不到目录而抛 `FileNotFoundError`。当前团队均在源码仓库布局开发不受影响；若日后发布正式 Python 包，需将 schema 作为 package data 打包并增加 wheel 安装后的校验测试。
 - `student_confirmation` 不强制 `source_refs`，其来源视为与学生的对话本身。
 - 来源宿主/Agent 独立字段已评估，v0/v0.1 均不增加：文件级归属已足够，会话内 Agent 身份暂无消费者；过渡期间来源宿主写入 `source_ref.note` 即可。
 - Markdown 导出无稳定记录 id：适配器需自行合成（如 `session_id + 消息序号`），重导出后 id 会漂移，实现时注意幂等与去重。

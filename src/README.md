@@ -28,13 +28,13 @@ src/learntrace/
 - 可复用的 Python 产品代码：`src/learntrace/`
 - 单元测试：`tests/unit/` 下与源码模块对应的目录
 - 跨模块流程测试：`tests/integration/`
-- Schema 与字段约定：`schemas/v0/`
+- Schema 与字段约定：`src/learntrace/schemas/v0/`
 - Schema 和金标样例回归：`tests/contract/`
 - 脱敏测试材料：`tests/fixtures/`
 - Agent 使用的 Skill 指令：`skills/learntrace/`
 - 项目设计和团队说明：`docs/`
 
-不要把 Schema、测试样例或长篇设计文档放入 `src/learntrace/`。
+Schema 属于运行时包资源；测试样例或长篇设计文档不要放入 `src/learntrace/`。
 
 ## 开发一个功能
 
@@ -43,7 +43,7 @@ src/learntrace/
 1. 从最新 `main` 创建 `feature/git-metadata-parser` 分支。
 2. 在 `src/learntrace/parsers/` 增加或修改解析代码。
 3. 在 `tests/unit/parsers/` 增加对应单元测试。
-4. 如果输出格式发生变化，同步与数据契约负责人确认 `models/` 和 `schemas/v0/`。
+4. 如果输出格式发生变化，同步与数据契约负责人确认 `models/` 和 `src/learntrace/schemas/v0/`。
 5. 运行质量检查并通过 PR 合并。
 
 ```powershell
