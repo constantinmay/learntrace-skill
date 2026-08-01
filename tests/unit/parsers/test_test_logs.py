@@ -1,5 +1,7 @@
 from pathlib import Path
 
+import pytest
+
 from learntrace.models import ContractValidator, SourceType
 from learntrace.parsers import parse_test_logs
 
@@ -174,3 +176,56 @@ def test_reports_oversized_test_log(tmp_path: Path) -> None:
 
     assert result.events == ()
     assert result.warnings[0].code == "file_too_large"
+
+
+@pytest.mark.parametrize(
+    ("node", "expected_file_ref"),
+    [
+        (r"tests\test_parser.py::test_safe", "tests/test_parser.py"),
+        ("../../outside/test_parser.py::test_escape", None),
+        ("/outside/test_parser.py::test_absolute", None),
+        (r"C:\outside\test_parser.py::test_drive", None),
+        (r"\\server\share\test_parser.py::test_unc", None),
+    ],
+)
+def test_only_adds_confirmed_project_relative_case_file_references(
+    tmp_path: Path,
+    node: str,
+    expected_file_ref: str | None,
+) -> None:
+    log = tmp_path / "pytest.log"
+    log.write_text(
+        "============================= test session starts =============================\n"
+        f"FAILED {node} - AssertionError\n",
+        encoding="utf-8",
+    )
+
+    result = parse_test_logs(tmp_path, [Path("pytest.log")])
+
+    assert len(result.events) == 1
+    file_refs = [ref.ref for ref in result.events[0].source_refs if ref.type is SourceType.FILE]
+    assert file_refs == ([] if expected_file_ref is None else [expected_file_ref])
+
+
+def test_does_not_add_case_file_reference_through_outside_symlink(tmp_path: Path) -> None:
+    project = tmp_path / "project"
+    tests = project / "tests"
+    tests.mkdir(parents=True)
+    outside = tmp_path / "outside.py"
+    outside.write_text("PRIVATE = True\n", encoding="utf-8")
+    link = tests / "linked_test.py"
+    try:
+        link.symlink_to(outside)
+    except OSError:
+        pytest.skip("creating symlinks is not permitted on this platform")
+    log = project / "pytest.log"
+    log.write_text(
+        "============================= test session starts =============================\n"
+        "FAILED tests/linked_test.py::test_private - AssertionError\n",
+        encoding="utf-8",
+    )
+
+    result = parse_test_logs(project, [Path("pytest.log")])
+
+    assert len(result.events) == 1
+    assert all(ref.type is not SourceType.FILE for ref in result.events[0].source_refs)

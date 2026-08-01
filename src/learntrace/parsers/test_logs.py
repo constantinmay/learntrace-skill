@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Iterable
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
 
 from learntrace.models import EventKind, ObservableEvent, SourceRef, SourceType
 from learntrace.parsers._common import (
@@ -131,6 +131,31 @@ def _maven_case(line: str) -> tuple[str, str] | None:
     return match.group("node"), outcome
 
 
+def _case_file_reference(root: Path, raw_path: str) -> str | None:
+    """Return a normalized project-relative path for a pytest node, if safe."""
+    if not raw_path or "\x00" in raw_path:
+        return None
+    windows_path = PureWindowsPath(raw_path)
+    normalized = raw_path.replace("\\", "/")
+    posix_path = PurePosixPath(normalized)
+    if windows_path.drive or windows_path.root or posix_path.is_absolute():
+        return None
+    if any(part == ".." for part in posix_path.parts):
+        return None
+    safe_parts = tuple(part for part in posix_path.parts if part not in {"", "."})
+    if not safe_parts:
+        return None
+    try:
+        candidate = (root / Path(*safe_parts)).resolve()
+    except (OSError, RuntimeError):
+        return None
+    try:
+        relative = candidate.relative_to(root)
+    except ValueError:
+        return None
+    return relative.as_posix()
+
+
 def _count_summary(counts: dict[str, int]) -> str:
     labels = {pattern.rstrip("?").rstrip("s"): chinese for pattern, chinese in _COUNT_LABELS}
     ordered: list[str] = []
@@ -198,8 +223,9 @@ def _parse_test_log(root: Path, requested_path: Path) -> ParseResult:
         node = compact_text(raw_node)
         source_refs = [SourceRef(type=SourceType.TEST_LOG, ref=f"{relative}:{number}")]
         test_path = raw_node.split("::", maxsplit=1)[0]
-        if pytest_case and test_path and not Path(test_path).is_absolute():
-            source_refs.append(SourceRef(type=SourceType.FILE, ref=Path(test_path).as_posix()))
+        file_reference = _case_file_reference(root, test_path) if pytest_case else None
+        if file_reference is not None:
+            source_refs.append(SourceRef(type=SourceType.FILE, ref=file_reference))
         events.append(
             ObservableEvent(
                 id=stable_event_id("test", relative, str(number), outcome, raw_node),

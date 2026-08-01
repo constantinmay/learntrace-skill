@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import errno
+import os
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
@@ -23,9 +25,48 @@ class _GitFileChange:
     deletions: int | None
 
 
+def _is_within(path: Path, root: Path) -> bool:
+    try:
+        path.relative_to(root)
+    except ValueError:
+        return False
+    return True
+
+
+def _git_candidate_names() -> tuple[str, ...]:
+    if os.name != "nt":
+        return ("git",)
+    extensions = os.environ.get("PATHEXT", ".COM;.EXE;.BAT;.CMD").split(os.pathsep)
+    normalized = tuple(extension.upper() for extension in extensions if extension.startswith("."))
+    return tuple(f"git{extension}" for extension in dict.fromkeys(normalized))
+
+
+def _resolve_git_executable(root: Path) -> Path:
+    """Resolve Git from absolute PATH entries, excluding the analyzed project."""
+    for raw_entry in os.environ.get("PATH", "").split(os.pathsep):
+        entry = raw_entry.strip().strip('"')
+        if not entry:
+            continue
+        directory = Path(entry)
+        if not directory.is_absolute():
+            continue
+        for name in _git_candidate_names():
+            candidate = directory / name
+            try:
+                resolved = candidate.resolve(strict=True)
+            except OSError:
+                continue
+            if not resolved.is_file() or _is_within(resolved, root):
+                continue
+            if os.name != "nt" and not os.access(resolved, os.X_OK):
+                continue
+            return resolved
+    raise FileNotFoundError(errno.ENOENT, "trusted Git executable was not found")
+
+
 def _git(root: Path, *arguments: str) -> subprocess.CompletedProcess[str]:
     command = [
-        "git",
+        str(_resolve_git_executable(root)),
         "-C",
         str(root),
         "-c",
@@ -195,6 +236,26 @@ def parse_git_history(
         return _warning("git_timeout", root, "Git repository check timed out")
     if repository.returncode != 0 or repository.stdout.strip() != "true":
         return _warning("not_git_repository", root, "project root is not a Git work tree")
+
+    try:
+        top_level = _git(root, "rev-parse", "--show-toplevel")
+    except OSError as error:
+        return _warning("git_read_error", root, safe_os_error(error))
+    except subprocess.TimeoutExpired:
+        return _warning("git_timeout", root, "Git repository root check timed out")
+    if top_level.returncode != 0 or not top_level.stdout.strip():
+        message = compact_text(top_level.stderr) or "Git did not report a repository root"
+        return _warning("git_read_error", root, message)
+    try:
+        actual_root = Path(top_level.stdout.strip()).resolve(strict=True)
+    except OSError as error:
+        return _warning("git_read_error", root, safe_os_error(error))
+    if os.path.normcase(str(actual_root)) != os.path.normcase(str(root)):
+        return _warning(
+            "git_root_mismatch",
+            root,
+            "project root is a subdirectory of a different Git work tree",
+        )
 
     try:
         head = _git(root, "rev-parse", "--verify", "HEAD")

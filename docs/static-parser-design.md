@@ -12,7 +12,7 @@ Task2 将用户确认范围内的本地项目材料转换为 schema v0 `Observab
 2. 宿主展示候选范围，由用户确认或删减。
 3. `parse_static_materials(...)` 只解析确认路径，可选读取 Git 元数据。
 4. `ParseResult.to_dict()` 在输出前逐条调用 schema v0 校验器，并检查整批事件 id 唯一性。
-5. `write_parse_result(...)` 将通过校验的批量结果以 UTF-8 JSON 原子写入本地路径。
+5. `write_parse_result(...)` 将通过校验的批量结果写入输出目录内随机、排他创建的临时文件，刷新后再以 UTF-8 JSON 原子替换目标路径；失败时清理临时文件。
 
 项目清单是解析报告的上下文，不伪装成 `ObservableEvent`。它记录文件树、常见源码、测试文件、文档、日志，以及任务书/报告/设计文档的确定性路径分类，供宿主展示分析范围。
 
@@ -49,6 +49,8 @@ Task2 将用户确认范围内的本地项目材料转换为 schema v0 `Observab
 
 ### Git
 
+- Git 可执行文件只从 `PATH` 的绝对目录中解析为绝对路径，并排除位于待分析项目内的候选；后续子进程始终使用该绝对路径，避免 Windows 从当前项目目录执行伪造的 `git.exe`。
+- `git rev-parse --show-toplevel` 返回的规范化仓库根目录必须与调用方确认的项目根目录一致。传入父仓库子目录时产生 `git_root_mismatch`，不读取父仓库提交或同级文件。
 - 按从新到旧的提交顺序读取，默认最多 50 个提交；超过限制产生 `git_history_truncated`。
 - 每个提交产生一条总览事件，包含提交哈希、时间、提交信息和文件变更计数。
 - 每个新增、修改、删除、重命名或可识别的复制文件产生一条文件级事实，记录增删行数；二进制文件明确标记行数不可用。
@@ -60,7 +62,7 @@ Task2 将用户确认范围内的本地项目材料转换为 schema v0 `Observab
 ### Markdown/TXT
 
 - 仅接受不超过 1 MiB 的 UTF-8 `.md` 和 `.txt`。
-- Markdown 按标题分节，再以段落或反引号/波浪线围栏代码块为不可拆事实块组合成约 600 字符的事件。
+- Markdown 只在反引号/波浪线围栏代码块外识别标题，再以段落或完整代码块为不可拆事实块组合成约 600 字符的事件；代码中的 `#` 不会拆分章节。
 - TXT 按段落生成事件。
 - 不以省略号截断正文；较长章节拆成多条带准确行号的事件，从而保留全部可解析文本。
 
@@ -69,17 +71,18 @@ Task2 将用户确认范围内的本地项目材料转换为 schema v0 `Observab
 - 支持 pytest 计数、耗时、`FAILED`/`ERROR` 用例，以及 Maven/JUnit 常见的 `Tests run` 汇总行和 Surefire 失败用例行。
 - pytest 计数必须符合完整汇总行；用例行必须处于可识别的 pytest/JUnit 上下文。普通应用日志中的 `1 failed`、`2 errors` 或孤立的 `ERROR server.py` 不会被写成测试事实。
 - 同一日志包含多轮汇总时全部保留，不只取最后一轮。
+- pytest 用例路径同时按 POSIX 和 Windows 语法检查。只有确认位于项目根目录内的相对路径才生成文件 `SourceRef`；绝对路径、含 `..` 的越界路径、UNC/盘符路径及解析到项目外的符号链接都只保留测试日志来源。
 - 非空但格式未知的日志保留一条“文件存在但格式未识别”的事实，并产生 `unsupported_test_log_format`，不把普通命令输出误写成测试结论。
 - 解析器只读日志文件，从不调用 `pytest`、`npm test`、`mvn test` 等命令。
 
 ## 稳定性与失败策略
 
-文档、日志和 Git 文件级事件 id 使用来源、位置与原始事实的 SHA-256 摘要确定性生成；提交总览 id 使用完整提交哈希。同一输入重复解析应得到完全一致的 JSON。整批输出发现重复 id 或不符合 schema v0 的事件时拒绝写出。
+文档、日志和 Git 文件级事件 id 使用来源、位置与原始事实的 SHA-256 摘要确定性生成；提交总览 id 使用完整提交哈希。同一输入重复解析应得到完全一致的 JSON。整批输出发现重复 id 或不符合 schema v0 的事件时拒绝写出。JSON 写出使用同目录随机临时文件和原子替换，固定旧式 `.tmp` 路径即使已存在或为符号链接也不会被打开；并发写入只会留下某一份完整结果，不会产生交错 JSON。
 
 单个来源失败不会中止其他来源。常见告警包括：
 
 - 路径/文件：`discovery_error`、`invalid_source`、`unsupported_document`、`file_too_large`、`invalid_utf8`、`read_error`、`empty_document`、`empty_test_log`；
-- Git：`git_unavailable`、`not_git_repository`、`git_no_commits`、`git_timeout`、`git_read_error`、`git_history_truncated`、`git_commit_timeout`、`git_commit_read_error`、`git_commit_format_error`；
+- Git：`git_unavailable`、`not_git_repository`、`git_root_mismatch`、`git_no_commits`、`git_timeout`、`git_read_error`、`git_history_truncated`、`git_commit_timeout`、`git_commit_read_error`、`git_commit_format_error`；
 - 日志格式：`unsupported_test_log_format`。
 
 ## M1 已知限制

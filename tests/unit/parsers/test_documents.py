@@ -98,6 +98,35 @@ def test_keeps_tilde_fenced_code_block_in_one_document_event(tmp_path: Path) -> 
     assert "~~~python value = 1 print(value) ~~~" in result.events[0].summary
 
 
+@pytest.mark.parametrize(
+    ("opening_fence", "closing_fence"),
+    [("```python", "```"), ("~~~python", "~~~")],
+)
+def test_does_not_treat_heading_marker_inside_fence_as_markdown_heading(
+    tmp_path: Path,
+    opening_fence: str,
+    closing_fence: str,
+) -> None:
+    document = tmp_path / "design.md"
+    document.write_text(
+        "# 示例\n"
+        "围栏前内容。\n\n"
+        f"{opening_fence}\n"
+        "# code comment\n"
+        f"{closing_fence}\n\n"
+        "## 后续\n"
+        "围栏后内容。\n",
+        encoding="utf-8",
+    )
+
+    result = parse_documents(tmp_path, [Path("design.md")])
+
+    assert len(result.events) == 2
+    assert "文档章节“示例”" in result.events[0].summary
+    assert "# code comment" in result.events[0].summary
+    assert "文档章节“后续”" in result.events[1].summary
+
+
 def test_reports_empty_and_unsupported_documents_without_stopping(tmp_path: Path) -> None:
     (tmp_path / "empty.md").write_text("\n", encoding="utf-8")
     (tmp_path / "data.json").write_text('{"value": 1}\n', encoding="utf-8")

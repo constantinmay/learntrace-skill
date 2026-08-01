@@ -16,6 +16,10 @@ from learntrace.parsers import parse_git_history
 class _MonkeyPatch(Protocol):
     def setattr(self, target: object, name: str, value: object) -> None: ...
 
+    def chdir(self, path: str | os.PathLike[str]) -> None: ...
+
+    def setenv(self, name: str, value: str) -> None: ...
+
 
 class _GitRunner(Protocol):
     def __call__(
@@ -83,6 +87,49 @@ def test_reports_non_git_directory(tmp_path: Path) -> None:
 
     assert result.events == ()
     assert result.warnings[0].code == "not_git_repository"
+
+
+def test_uses_trusted_absolute_git_when_project_contains_fake_executable(
+    tmp_path: Path,
+    monkeypatch: _MonkeyPatch,
+) -> None:
+    repository = tmp_path / "repository"
+    _make_repository(repository)
+    resolver = cast(object, vars(git_module)["_resolve_git_executable"])
+    assert callable(resolver)
+    trusted_git = resolver(repository)
+    assert isinstance(trusted_git, Path)
+
+    fake_git = repository / ("git.exe" if os.name == "nt" else "git")
+    fake_git.write_text("this project file must never be executed\n", encoding="utf-8")
+    if os.name != "nt":
+        fake_git.chmod(0o755)
+    monkeypatch.chdir(repository)
+    monkeypatch.setenv("PATH", f"{repository}{os.pathsep}{trusted_git.parent}")
+
+    result = parse_git_history(repository)
+
+    assert result.warnings == ()
+    assert result.events
+
+
+def test_rejects_project_root_that_is_only_a_parent_repository_subdirectory(
+    tmp_path: Path,
+) -> None:
+    parent = tmp_path / "parent-repository"
+    _make_repository(parent)
+    project = parent / "target-project"
+    project.mkdir()
+    sibling = parent / "PRIVATE_OUTSIDE_PROJECT.txt"
+    sibling.write_text("must not appear in Task2 output\n", encoding="utf-8")
+    _git(parent, "add", "PRIVATE_OUTSIDE_PROJECT.txt")
+    _git(parent, "commit", "-q", "-m", "add sibling file")
+
+    result = parse_git_history(project)
+
+    assert result.events == ()
+    assert [warning.code for warning in result.warnings] == ["git_root_mismatch"]
+    assert "PRIVATE_OUTSIDE_PROJECT.txt" not in str(result.to_dict())
 
 
 def test_reports_file_rename_and_history_limit(tmp_path: Path) -> None:

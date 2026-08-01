@@ -19,8 +19,26 @@ from learntrace.parsers._common import (
 from learntrace.parsers.types import ParseResult, ParseWarning
 
 _HEADING_RE = re.compile(r"^(#{1,6})\s+(.+?)\s*#*\s*$")
-_FENCE_RE = re.compile(r"^(?P<fence>`{3,}|~{3,})")
+_FENCE_RE = re.compile(r"^ {0,3}(?P<fence>`{3,}|~{3,})(?P<rest>.*)$")
 _CHUNK_TARGET_CHARS = 600
+
+
+def _fence_transition(
+    line: str,
+    current: tuple[str, int] | None,
+) -> tuple[tuple[str, int] | None, bool]:
+    match = _FENCE_RE.match(line)
+    if match is None:
+        return current, False
+    fence = match.group("fence")
+    rest = match.group("rest")
+    if current is None:
+        if fence[0] == "`" and "`" in rest:
+            return None, False
+        return (fence[0], len(fence)), True
+    if fence[0] == current[0] and len(fence) >= current[1] and not rest.strip():
+        return None, True
+    return current, True
 
 
 def _text_blocks(lines: list[tuple[int, str]]) -> list[tuple[int, int, str]]:
@@ -38,17 +56,13 @@ def _text_blocks(lines: list[tuple[int, str]]) -> list[tuple[int, int, str]]:
 
     for number, line in lines:
         stripped = line.strip()
-        fence_match = _FENCE_RE.match(stripped)
-        if fence_match is not None:
-            fence = fence_match.group("fence")
+        next_fence, is_fence_line = _fence_transition(line, code_fence)
+        if is_fence_line:
             if not body:
                 start = number
             body.append(line)
             end = number
-            if code_fence is None:
-                code_fence = (fence[0], len(fence))
-            elif fence[0] == code_fence[0] and len(fence) >= code_fence[1]:
-                code_fence = None
+            code_fence = next_fence
             continue
         if not stripped and code_fence is None:
             append_block()
@@ -92,12 +106,18 @@ def _markdown_sections(
     title = fallback_title
     heading_line = 1
     body: list[tuple[int, str]] = []
+    code_fence: tuple[str, int] | None = None
 
     def append_section() -> None:
         if _text_blocks(body):
             sections.append((heading_line, title, list(body)))
 
     for number, line in enumerate(lines, start=1):
+        next_fence, is_fence_line = _fence_transition(line, code_fence)
+        if code_fence is not None or is_fence_line:
+            body.append((number, line))
+            code_fence = next_fence
+            continue
         match = _HEADING_RE.match(line)
         if match is None:
             body.append((number, line))
