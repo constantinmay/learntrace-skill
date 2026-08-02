@@ -49,6 +49,23 @@ def _pending_question_count(bundle: ArchiveBundle) -> int:
     return sum(candidate.status.value == "proposed" for candidate in bundle.candidates)
 
 
+def _inference_mode_lines(bundle: ArchiveBundle) -> list[str]:
+    if bundle.inference_mode == "llm":
+        return [
+            "- 本次候选包含远程 LLM 推断，输出在进入档案前经过 schema 校验。",
+            "- AI 类候选必须至少绑定一条 `trace_record`，避免把推断直接写成事实。",
+        ]
+    if bundle.inference_mode == "stub":
+        return [
+            "- 本次候选由本地确定性规则生成，未启用远程 LLM 推断。",
+            "- 候选仍保持在 `candidate_inference` 层，不会自动写成 `observable_fact`。",
+        ]
+    return [
+        f"- 本次候选由自定义推断器生成（模式：`{bundle.inference_mode}`）。",
+        "- 无论推断器来源如何，候选都不会自动上升为事实记录。",
+    ]
+
+
 def render_markdown(bundle: ArchiveBundle, *, source_dir: Path | None = None) -> str:
     confirmations_by_candidate = {
         confirmation.candidate_id: confirmation for confirmation in bundle.confirmations
@@ -162,8 +179,9 @@ def render_markdown(bundle: ArchiveBundle, *, source_dir: Path | None = None) ->
     lines.extend(
         [
             "## AI 使用声明",
+            f"- 候选生成模式：`{bundle.inference_mode}`",
             "- `observable_fact` 仅来自 Git、文档、测试日志和授权轨迹。",
-            "- `candidate_inference` 保持为候选推断，不自动写成事实。",
+            *_inference_mode_lines(bundle),
             "- 学生未说明的内容一律展示为“未记录”。",
             "",
         ]

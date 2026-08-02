@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
-import hashlib
 import json
 import os
 import re
+import sys
 import urllib.error
 import urllib.request
 from collections.abc import Mapping
@@ -23,6 +23,7 @@ from learntrace.reporting.pipeline import (
     CandidateDraft,
     CandidateInferencer,
     StubCandidateInferencer,
+    stable_candidate_id,
 )
 
 LLM_API_KEY_ENV = "LEARNTRACE_LLM_API_KEY"
@@ -32,7 +33,6 @@ LLM_ENABLED_ENV = "LEARNTRACE_LLM_ENABLED"
 DEFAULT_LLM_BASE_URL = "https://api.llm.ustc.edu.cn/v1"
 DEFAULT_LLM_MODEL = "smart/default"
 _UNCERTAINTY_PREFIXES = ("\u9ad8\uff1a", "\u4e2d\uff1a", "\u4f4e\uff1a")
-_STABLE_SCENARIO_PATTERN = re.compile(r"^evt-([^-]+)-")
 
 
 @dataclass(frozen=True, slots=True)
@@ -51,6 +51,8 @@ class LLMInferenceError(RuntimeError):
 class OpenAIChatCandidateInferencer:
     """LLM-backed inferencer for OpenAI-compatible chat completion endpoints."""
 
+    inference_mode = "llm"
+
     def __init__(
         self,
         config: LLMConfig,
@@ -68,10 +70,25 @@ class OpenAIChatCandidateInferencer:
         raw_candidates = _extract_llm_candidates(content)
         return self._validated_drafts(raw_candidates, events)
 
+    @staticmethod
+    def _redacted_event(event: ObservableEvent) -> dict[str, str | None]:
+        """Project an event to only the fields the LLM needs to infer with.
+
+        Deliberately omits ``source_refs`` (which may embed filesystem paths or
+        notes) and any student-identifying metadata: the model receives only the
+        event kind, a human-readable summary, and an optional timestamp.
+        """
+        return {
+            "id": event.id,
+            "kind": str(event.kind),
+            "summary": event.summary,
+            "occurred_at": event.occurred_at,
+        }
+
     def _build_payload(self, events: tuple[ObservableEvent, ...]) -> dict[str, object]:
         node_types = ", ".join(item.value for item in NodeType)
         event_json = json.dumps(
-            [event.to_dict() for event in sorted(events, key=_event_sort_key)],
+            [self._redacted_event(event) for event in sorted(events, key=_event_sort_key)],
             ensure_ascii=False,
             indent=2,
         )
@@ -152,7 +169,7 @@ class OpenAIChatCandidateInferencer:
             draft = _candidate_draft_from_llm(raw, event_ids, event_by_id)
             if draft is None:
                 continue
-            candidate_id = _candidate_id_for(draft, index)
+            candidate_id = stable_candidate_id(draft)
             if candidate_id in used_ids:
                 candidate_id = f"{candidate_id}-{index}"
             used_ids.add(candidate_id)
@@ -195,9 +212,11 @@ def default_candidate_inferencer() -> CandidateInferencer:
 
     print(
         "INFO: LLM candidate inference is enabled. "
-        "The following data will be sent to the configured LLM endpoint: "
-        "event summaries, source references, and metadata. "
-        "No repository code or student personal data will be transmitted.",
+        "For each event the following fields are sent to the configured LLM "
+        "endpoint: id, kind, summary, occurred_at. "
+        "source_refs (which may contain paths), notes, and repository code are "
+        "NOT transmitted.",
+        file=sys.stderr,
     )
     return OpenAIChatCandidateInferencer(config)
 
@@ -287,22 +306,3 @@ def _candidate_draft_from_llm(
         uncertainty=uncertainty.strip(),
         question_to_student=question_to_student.strip(),
     )
-
-
-def _candidate_id_for(draft: CandidateDraft, index: int) -> str:  # noqa: ARG001
-    """Generate a stable candidate ID from draft content.
-
-    Always includes a content-based hash of node_type + sorted
-    basis_event_ids + statement so that two candidates with different
-    basis or statements never collide.
-    """
-    content = json.dumps(
-        [draft.node_type.value, sorted(draft.basis_event_ids), draft.statement],
-        sort_keys=True,
-    )
-    suffix = hashlib.sha256(content.encode("utf-8")).hexdigest()[:8]
-    for event_id in draft.basis_event_ids:
-        match = _STABLE_SCENARIO_PATTERN.match(event_id)
-        if match is not None:
-            return f"cand-{match.group(1)}-{draft.node_type.value}-{suffix}"
-    return f"cand-{draft.node_type.value}-{suffix}"

@@ -12,6 +12,10 @@ dependencies = [
 [project.scripts]
 learntrace = "learntrace.cli:main"
 
+[build-system]
+requires = ["uv_build>=0.11.0,<0.12.0"]
+build-backend = "uv_build"
+
 [project.optional-dependencies]
 dev = [
     "pre-commit>=4.0,<5",
@@ -21,10 +25,6 @@ dev = [
     "ruff>=0.12,<1",
 ]
 
-[build-system]
-requires = ["hatchling>=1.26,<2"]
-build-backend = "hatchling.build"
-
 [dependency-groups]
 dev = [
     "pre-commit>=4.0,<5",
@@ -33,9 +33,6 @@ dev = [
     "pytest-cov>=6.0,<8",
     "ruff>=0.12,<1",
 ]
-
-[tool.hatch.build.targets.wheel]
-include = ["src/**", "schemas/**"]
 
 [tool.pytest.ini_options]
 addopts = "-ra --strict-config --strict-markers"

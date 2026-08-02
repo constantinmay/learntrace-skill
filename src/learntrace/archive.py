@@ -5,11 +5,10 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import re
 import tempfile
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import cast
+from typing import Any, cast
 
 import jsonschema
 
@@ -41,6 +40,7 @@ _IGNORED_DIR_NAMES = frozenset(
         ".eggs",
         ".git",
         ".hg",
+        ".learntrace",
         ".mypy_cache",
         ".pytest_cache",
         ".pyright",
@@ -58,7 +58,6 @@ _IGNORED_DIR_NAMES = frozenset(
 )
 _LEARNTRACE_CONTAINER_KEYS = frozenset({"events", "confirmations", "warnings"})
 _LEARNTRACE_BUNDLE_MARKER = "learntrace_bundle"
-_COMMIT_OVERVIEW_PATTERN = re.compile(r"^提交\s+[a-f0-9]+\s*[：:]")
 
 
 @dataclass(frozen=True, slots=True)
@@ -66,6 +65,7 @@ class LoadedProjectRecords:
     events: tuple[ObservableEvent, ...]
     confirmations: tuple[StudentConfirmation, ...]
     warnings: tuple[ArchiveWarning, ...] = ()
+    task2_meta: dict[str, Any] = field(default_factory=dict[str, Any])
 
 
 @dataclass(frozen=True, slots=True)
@@ -149,13 +149,60 @@ def _read_json_object(path: Path, *, strict_inputs: bool) -> JsonObject | None:
     return None
 
 
+def _is_object_list(value: object) -> bool:
+    if not isinstance(value, list):
+        return False
+    items = cast(list[object], value)
+    return all(isinstance(item, dict) for item in items)
+
+
+def _looks_like_observable_event_object(data: JsonObject) -> bool:
+    return (
+        isinstance(data.get("id"), str)
+        and isinstance(data.get("kind"), str)
+        and isinstance(data.get("summary"), str)
+        and isinstance(data.get("source_refs"), list)
+    )
+
+
+def _looks_like_learntrace_container(data: JsonObject) -> bool:
+    events = data.get("events")
+    if not _is_object_list(events):
+        return False
+    event_objects = cast(list[JsonObject], events)
+    if event_objects and not all(
+        _looks_like_observable_event_object(item) for item in event_objects
+    ):
+        return False
+
+    confirmations = data.get("confirmations")
+    if confirmations is not None and not _is_object_list(confirmations):
+        return False
+
+    warnings = data.get("warnings")
+    return warnings is None or _is_object_list(warnings)
+
+
+def _looks_like_generated_archive_json(data: JsonObject) -> bool:
+    return (
+        data.get(_LEARNTRACE_BUNDLE_MARKER) is True
+        and "archive_manifest" in data
+        and "record_counts" in data
+        and "quality_checks" in data
+        and "risk_flags" in data
+        and "source_index" in data
+        and "candidate_links" in data
+    )
+
+
 def _looks_like_learntrace_json(data: JsonObject) -> bool:
     if data.get("evidence_level") is not None:
         return True
-    if data.get(_LEARNTRACE_BUNDLE_MARKER) is True:
-        return True
-    # Accept container-style JSON (Task2 parse-result with events list, etc.).
-    return bool(_LEARNTRACE_CONTAINER_KEYS & set(data.keys()))
+    if _looks_like_generated_archive_json(data):
+        return False
+    if not (_LEARNTRACE_CONTAINER_KEYS & set(data.keys())):
+        return False
+    return _looks_like_learntrace_container(data)
 
 
 def _validate_record(
@@ -307,10 +354,21 @@ def _collect_records_from_json(
     raw: JsonObject,
     path: Path,
     validator: ContractValidator,
-) -> tuple[list[ObservableEvent], list[StudentConfirmation], list[ArchiveWarning]]:
+) -> tuple[
+    list[ObservableEvent],
+    list[StudentConfirmation],
+    list[ArchiveWarning],
+    dict[str, object],
+]:
     events: list[ObservableEvent] = []
     confirmations: list[StudentConfirmation] = []
     warnings: list[ArchiveWarning] = []
+
+    task2_meta: dict[str, object] = {}
+    for key in ("parser_version", "analysis_scope", "inventory"):
+        value = raw.get(key)
+        if value is not None:
+            task2_meta[key] = value
     evidence_level = raw.get("evidence_level")
     if evidence_level == ObservableEvent.EVIDENCE_LEVEL:
         _validate_record(validator, "observable_event", raw, path)
@@ -337,7 +395,7 @@ def _collect_records_from_json(
     if raw_warnings is not None:
         warnings.extend(_parse_warning(item, path) for item in _require_list(raw, "warnings", path))
 
-    return events, confirmations, warnings
+    return events, confirmations, warnings, task2_meta
 
 
 def load_project_artifacts(
@@ -355,23 +413,58 @@ def load_project_artifacts(
     events: list[ObservableEvent] = []
     confirmations: list[StudentConfirmation] = []
     warnings: list[ArchiveWarning] = []
+    task2_meta: dict[str, object] = {}
+    event_sources: dict[str, tuple[ObservableEvent, Path]] = {}
+    confirmation_sources: dict[str, tuple[StudentConfirmation, Path]] = {}
 
     for path in _iter_json_files(root):
         raw = _read_json_object(path, strict_inputs=strict_inputs)
         if raw is None:
+            continue
+        if _looks_like_generated_archive_json(raw):
             continue
         if not _looks_like_learntrace_json(raw):
             if strict_inputs:
                 msg = f"{path}: does not look like a LearnTrace JSON record"
                 raise ValueError(msg)
             continue
-        loaded_events, loaded_confirmations, loaded_warnings = _collect_records_from_json(
+        (
+            loaded_events,
+            loaded_confirmations,
+            loaded_warnings,
+            file_meta,
+        ) = _collect_records_from_json(
             raw,
             path,
             contract_validator,
         )
-        events.extend(loaded_events)
-        confirmations.extend(loaded_confirmations)
+        task2_meta.update(file_meta)
+        for event in loaded_events:
+            existing = event_sources.get(event.id)
+            if existing is None:
+                event_sources[event.id] = (event, path)
+                events.append(event)
+                continue
+            existing_event, existing_path = existing
+            if existing_event.to_dict() != event.to_dict():
+                msg = (
+                    f"conflicting observable_event records for id {event.id}: "
+                    f"{existing_path} vs {path}"
+                )
+                raise ValueError(msg)
+        for confirmation in loaded_confirmations:
+            existing = confirmation_sources.get(confirmation.id)
+            if existing is None:
+                confirmation_sources[confirmation.id] = (confirmation, path)
+                confirmations.append(confirmation)
+                continue
+            existing_confirmation, existing_path = existing
+            if existing_confirmation.to_dict() != confirmation.to_dict():
+                msg = (
+                    f"conflicting student_confirmation records for id {confirmation.id}: "
+                    f"{existing_path} vs {path}"
+                )
+                raise ValueError(msg)
         warnings.extend(loaded_warnings)
 
     if not events:
@@ -385,6 +478,7 @@ def load_project_artifacts(
         events=tuple(events),
         confirmations=tuple(confirmations),
         warnings=tuple(warnings),
+        task2_meta=task2_meta,
     )
 
 
@@ -420,6 +514,7 @@ def write_learning_record_result(
         warnings=loaded.warnings,
         validator=contract_validator,
         inferencer=inferencer,
+        task2_meta=loaded.task2_meta,
     )
     markdown = render_markdown(bundle, source_dir=project_dir.resolve())
     destination = (
