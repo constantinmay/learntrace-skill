@@ -9,6 +9,11 @@ if (-not $env:LEARNTRACE_LLM_API_KEY) {
     Write-Warning "LEARNTRACE_LLM_API_KEY is not set; learntrace will fall back to the deterministic stub."
 }
 
+# LLM inference is opt-in: this demo enables it only when a key is present.
+if ($env:LEARNTRACE_LLM_API_KEY) {
+    $env:LEARNTRACE_LLM_ENABLED = "1"
+}
+
 & (Join-Path $root ".venv\Scripts\python.exe") -m learntrace.archive `
     $demo `
     --output (Join-Path $out "learning-record.md") `
