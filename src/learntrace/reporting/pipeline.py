@@ -96,7 +96,7 @@ class CandidateInferencer(Protocol):
 _SCENARIO_ID_PATTERN = re.compile(r"^evt-([^-]+)-")
 
 _COMMIT_OVERVIEW_PATTERN = re.compile(
-    r"^(?:提交|commit)\s+[a-f0-9]+\s*(?:[：:]|的提交信息为|\b)",
+    r"^(?:提交|commit)\s+[a-f0-9]+\s*(?:[：:]|的提交信息为)",
     re.IGNORECASE,
 )
 
