@@ -84,7 +84,7 @@ data = event.to_dict()  # 保证通过 schema
 from learntrace.models import ContractValidator
 
 validator = ContractValidator()  # 源码布局和 wheel 安装布局均从包资源加载 Schema
-validator.validate("observable_event", data)        # 不合规抛 ValidationError
+validator.validate("observable_event", data)  # 不合规抛 ValidationError
 errors = validator.iter_errors("learning_node_candidate", data)  # 拿全部错误
 ```
 

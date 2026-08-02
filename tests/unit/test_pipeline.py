@@ -219,3 +219,24 @@ def test_archive_manifest_empty_when_no_task2_meta() -> None:
     bundle = build_archive_bundle((commit,), inferencer=SingleCommitInferencer())
 
     assert "task2_meta" not in archive_manifest(bundle)
+
+
+def test_file_level_commit_changes_not_treated_as_overview() -> None:
+    """Task2-style file-level events must not be used as commit overviews."""
+    events = (
+        _event(
+            "evt-git-file-1",
+            EventKind.GIT_COMMIT,
+            "提交 a1b2c3d 修改文件 src/math.py（新增 2 行、删除 0 行）。",
+        ),
+        _event(
+            "evt-git-2",
+            EventKind.GIT_COMMIT,
+            "提交 a1b2c3d 的提交信息为 fix: 修复除零错误。",
+        ),
+        _event("evt-test-1", EventKind.TEST_LOG, "测试日志记录用例 test_div 出现失败。"),
+    )
+    bundle = build_archive_bundle(events, inferencer=StubCandidateInferencer())
+    assert len(bundle.candidates) == 1
+    assert "evt-git-2" in bundle.candidates[0].basis_event_ids
+    assert "evt-git-file-1" not in bundle.candidates[0].basis_event_ids
