@@ -149,14 +149,14 @@ The adapter requires this batch skeleton:
 }
 ```
 
-Unknown extra fields are ignored. The root, `info`, `info.id`, `info.version`, and `messages` must have the expected types. A version other than major `1` does not prove the export is incompatible; it adds a warning while structural checks remain authoritative.
+Unknown extra fields are ignored. The root, `info`, `info.id`, `info.version`, and `messages` must have the expected types. Session, message, and part IDs must match the short ASCII profile `[A-Za-z0-9][A-Za-z0-9._~-]{0,127}`; IDs are rejected rather than truncated so source references remain traceable and bounded. An invalid batch session ID rejects the export, while an invalid message or part ID skips only that record with a safe warning. A version other than major `1` does not prove the export is incompatible; it adds a warning while structural checks remain authoritative.
 
 Only parts with `type="tool"` are evidence inputs. User text, assistant text, reasoning, system reminders, file contents, patches, snapshots, and tool outputs are ignored by construction.
 
 A message can contain evidence inputs only when:
 
 - the message and `message.info` are objects
-- `message.info.id` is a non-empty string
+- `message.info.id` matches the short ASCII ID profile
 - `message.info.sessionID` matches the top-level session ID
 - `message.info.role` is exactly `assistant`
 - `message.parts` is an array
@@ -165,7 +165,7 @@ Other roles are ignored. Malformed assistant messages are skipped with `invalid_
 
 A supported tool part must provide:
 
-- non-empty `id`
+- `id` matches the short ASCII ID profile
 - matching `sessionID`
 - `messageID` matching the containing message
 - non-empty `tool`
@@ -236,7 +236,7 @@ Optional safe details are appended from a strict whitelist:
 - File tools (`read`, `edit`, `write`, `apply_patch`) may include a normalized `filePath` or `path`.
 - `bash` may include only a conservative command verb summary derived from `command`; `workdir`, arguments, payloads, and outputs are not retained.
 - `task` remains generic. It records only that the task tool reached the observed state and never includes `description`, `subagent_type`, `prompt`, child output, or inferred child actions.
-- Other tools remain generic unless a safe path field is present.
+- Other tools remain generic and do not contribute input fields.
 
 Summaries never include tool output, error messages, old/new file contents, prompts, reasoning, patches, or metadata.
 

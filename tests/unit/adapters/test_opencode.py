@@ -13,6 +13,7 @@ from learntrace.adapters import (
     TraceInputStatus,
     UnsupportedOpenCodeFormatError,
     adapt_opencode_export,
+    write_trace_result,
 )
 from learntrace.models import ContractValidator, EventKind, SourceType
 
@@ -157,6 +158,69 @@ def test_malformed_sibling_is_skipped_with_a_safe_warning(tmp_path: Path) -> Non
     assert "RAW_SECRET" not in json.dumps([warning.message for warning in result.warnings])
 
 
+@pytest.mark.parametrize("session_id", ["s" * 129, "ses_\ud800"])
+def test_invalid_batch_session_id_is_rejected_safely(
+    tmp_path: Path,
+    session_id: str,
+) -> None:
+    data = _export()
+    data["info"]["id"] = session_id
+    export_path = _write_export(tmp_path / "export.json", data)
+
+    with pytest.raises(UnsupportedOpenCodeFormatError) as caught:
+        adapt_opencode_export(export_path, authorized=True)
+
+    assert session_id not in str(caught.value)
+
+
+@pytest.mark.parametrize("message_id", ["m" * 129, "msg_\ud800"])
+def test_invalid_message_id_is_skipped_without_losing_healthy_sibling(
+    tmp_path: Path,
+    message_id: str,
+) -> None:
+    invalid_message = _message(
+        _tool_part(part_id="prt_invalid_message", message_id=message_id),
+        message_id=message_id,
+    )
+    valid_message = _message(_tool_part(part_id="prt_valid"))
+    export_path = _write_export(
+        tmp_path / "export.json",
+        _export(invalid_message, valid_message),
+    )
+
+    result = adapt_opencode_export(export_path, authorized=True)
+
+    assert [event.source_refs[0].ref for event in result.events] == [
+        "trace://opencode/ses_main/message/msg_main/part/prt_valid"
+    ]
+    assert [warning.code for warning in result.warnings] == ["invalid_message"]
+    assert message_id not in result.warnings[0].message
+
+
+@pytest.mark.parametrize("part_id", ["p" * 129, "prt_\ud800"])
+def test_invalid_part_id_is_skipped_without_losing_healthy_sibling(
+    tmp_path: Path,
+    part_id: str,
+) -> None:
+    export_path = _write_export(
+        tmp_path / "export.json",
+        _export(
+            _message(
+                _tool_part(part_id=part_id),
+                _tool_part(part_id="prt_valid"),
+            )
+        ),
+    )
+
+    result = adapt_opencode_export(export_path, authorized=True)
+
+    assert [event.source_refs[0].ref for event in result.events] == [
+        "trace://opencode/ses_main/message/msg_main/part/prt_valid"
+    ]
+    assert [warning.code for warning in result.warnings] == ["invalid_tool_part"]
+    assert part_id not in result.warnings[0].message
+
+
 def test_only_matching_assistant_messages_can_produce_events(tmp_path: Path) -> None:
     valid = _message(_tool_part(part_id="prt_valid"))
     user_message = _message(
@@ -298,6 +362,42 @@ def test_summaries_use_strict_whitelists_and_never_copy_sensitive_fields(
         assert forbidden not in serialized
 
 
+def test_unknown_tool_does_not_read_unapproved_path_fields(tmp_path: Path) -> None:
+    marker = "FORBIDDEN_UNKNOWN_TOOL_INPUT"
+    export_path = _write_export(
+        tmp_path / "export.json",
+        _export(
+            _message(
+                _tool_part(
+                    tool="unknown_extension",
+                    input_data={"path": marker},
+                )
+            )
+        ),
+    )
+
+    result = adapt_opencode_export(export_path, authorized=True)
+
+    assert len(result.events) == 1
+    assert "unknown_extension" in result.events[0].summary
+    assert marker not in result.events[0].summary
+
+
+def test_surrogate_in_file_path_is_redacted_before_result_write(tmp_path: Path) -> None:
+    export_path = _write_export(
+        tmp_path / "export.json",
+        _export(_message(_tool_part(input_data={"filePath": "src/\ud800-private.txt"}))),
+    )
+
+    result = adapt_opencode_export(export_path, authorized=True)
+    output_path = tmp_path / "trace-result.json"
+    write_trace_result(result, output_path)
+
+    assert "[unsafe-path]" in result.events[0].summary
+    serialized = output_path.read_text(encoding="utf-8")
+    assert "\ud800" not in serialized
+
+
 @pytest.mark.parametrize(
     "raw",
     [
@@ -315,6 +415,29 @@ def test_invalid_json_or_incompatible_root_is_rejected_safely(tmp_path: Path, ra
         adapt_opencode_export(export_path, authorized=True)
 
     assert str(export_path) not in str(caught.value)
+
+
+def test_deeply_nested_json_is_rejected_as_an_unsupported_export(tmp_path: Path) -> None:
+    export_path = tmp_path / "deep.json"
+    nested_messages = "[" * 1_500 + "0" + "]" * 1_500
+    export_path.write_text(
+        '{"info":{"id":"ses_main","version":"1.18.6"},"messages":' + nested_messages + "}",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(UnsupportedOpenCodeFormatError):
+        adapt_opencode_export(export_path, authorized=True)
+
+
+def test_oversized_json_integer_is_rejected_as_an_unsupported_export(tmp_path: Path) -> None:
+    export_path = tmp_path / "oversized-integer.json"
+    export_path.write_text(
+        '{"info":{"id":"ses_main","version":"1.18.6"},"messages":[],"extra":' + "9" * 5_000 + "}",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(UnsupportedOpenCodeFormatError):
+        adapt_opencode_export(export_path, authorized=True)
 
 
 def test_oversized_export_is_rejected_without_exposing_its_path(tmp_path: Path) -> None:
@@ -369,6 +492,30 @@ def test_invalid_timestamp_is_omitted_and_events_are_sorted_deterministically(
         "prt_no_time",
     ]
     assert result.events[2].occurred_at is None
+    assert [warning.code for warning in result.warnings] == ["invalid_timestamp"]
+
+
+def test_extreme_timestamp_does_not_abort_healthy_sibling(tmp_path: Path) -> None:
+    export_path = _write_export(
+        tmp_path / "export.json",
+        _export(
+            _message(
+                _tool_part(part_id="prt_extreme", start=10**4_000),
+                _tool_part(part_id="prt_valid", start=1_000),
+            )
+        ),
+    )
+
+    result = adapt_opencode_export(export_path, authorized=True)
+
+    assert {event.source_refs[0].ref.rsplit("/", maxsplit=1)[-1] for event in result.events} == {
+        "prt_extreme",
+        "prt_valid",
+    }
+    extreme_event = next(
+        event for event in result.events if event.source_refs[0].ref.endswith("/prt_extreme")
+    )
+    assert extreme_event.occurred_at is None
     assert [warning.code for warning in result.warnings] == ["invalid_timestamp"]
 
 

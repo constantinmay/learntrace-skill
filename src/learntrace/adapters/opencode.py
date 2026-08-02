@@ -8,7 +8,7 @@ import math
 import re
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import cast
+from typing import TypeGuard, cast
 from urllib.parse import quote
 
 from learntrace.adapters.types import (
@@ -49,6 +49,7 @@ _KNOWN_NON_TOOL_PARTS = frozenset(
     }
 )
 _SAFE_TOOL_RE = re.compile(r"^[A-Za-z0-9_.-]{1,64}$")
+_SAFE_EXTERNAL_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._~-]{0,127}$")
 
 
 def _issue(code: str, location: str, message: str) -> TraceParseIssue:
@@ -76,7 +77,7 @@ def _load_export(export_path: Path) -> dict[str, object]:
         raise UnsupportedOpenCodeFormatError("OpenCode 导出文件不是有效 UTF-8。") from exc
     try:
         parsed: object = json.loads(text)
-    except json.JSONDecodeError as exc:
+    except (ValueError, RecursionError) as exc:
         raise UnsupportedOpenCodeFormatError("OpenCode 导出文件不是有效 JSON。") from exc
     if not isinstance(parsed, dict):
         raise UnsupportedOpenCodeFormatError("OpenCode 导出的根结构必须是对象。")
@@ -91,14 +92,13 @@ def _batch_fields(root: dict[str, object]) -> tuple[str, str, list[object]]:
     info = cast("dict[str, object]", info_value)
     session_id = info.get("id")
     version = info.get("version")
-    if (
-        not isinstance(session_id, str)
-        or not session_id
-        or not isinstance(version, str)
-        or not version
-    ):
+    if not _is_safe_external_id(session_id) or not isinstance(version, str) or not version:
         raise UnsupportedOpenCodeFormatError("OpenCode 导出的 info 字段不兼容。")
     return session_id, version, cast("list[object]", messages_value)
+
+
+def _is_safe_external_id(value: object) -> TypeGuard[str]:
+    return isinstance(value, str) and _SAFE_EXTERNAL_ID_RE.fullmatch(value) is not None
 
 
 def _safe_tool_name(value: str) -> str:
@@ -129,16 +129,14 @@ def _occurred_at(
     time_data = cast("dict[str, object]", time_value)
     if "start" not in time_data:
         return None
-    start = time_data["start"]
-    if (
-        isinstance(start, bool)
-        or not isinstance(start, (int, float))
-        or not math.isfinite(start)
-        or start < 0
-    ):
+    start_value = time_data["start"]
+    if isinstance(start_value, bool) or not isinstance(start_value, (int, float)):
         warnings.append(_issue("invalid_timestamp", location, "工具开始时间无效，已省略。"))
         return None
     try:
+        start = float(start_value)
+        if not math.isfinite(start) or start < 0:
+            raise ValueError
         timestamp = datetime.fromtimestamp(start / 1000, tz=UTC)
     except (OverflowError, OSError, ValueError):
         warnings.append(_issue("invalid_timestamp", location, "工具开始时间无效，已省略。"))
@@ -168,7 +166,7 @@ def _summary(
         command = input_data.get("command")
         if isinstance(command, str):
             summary += f" 命令类型：{summarize_command(command)}。"
-    elif safe_tool != "task":
+    elif safe_tool in _FILE_TOOLS:
         path_value = input_data.get("filePath")
         if not isinstance(path_value, str):
             path_value = input_data.get("path")
@@ -240,8 +238,7 @@ def adapt_opencode_export(
         message_session_id = message_info.get("sessionID")
         parts_value = message.get("parts")
         if (
-            not isinstance(message_id, str)
-            or not message_id
+            not _is_safe_external_id(message_id)
             or message_session_id != session_id
             or not isinstance(parts_value, list)
         ):
@@ -273,8 +270,7 @@ def adapt_opencode_export(
             tool = part.get("tool")
             state_value = part.get("state")
             if (
-                not isinstance(part_id, str)
-                or not part_id
+                not _is_safe_external_id(part_id)
                 or part_session_id != session_id
                 or part_message_id != message_id
                 or not isinstance(tool, str)

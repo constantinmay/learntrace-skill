@@ -12,6 +12,12 @@ _WINDOWS_DRIVE_RE = re.compile(r"^[A-Za-z]:")
 _WINDOWS_ABSOLUTE_RE = re.compile(r"^[A-Za-z]:[\\/]")
 _SAFE_EXECUTABLE_RE = re.compile(r"^[A-Za-z0-9_.+-]{1,64}$")
 _ENV_ASSIGNMENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=.*$", re.DOTALL)
+_HOME_PREFIX_RE = re.compile(
+    r"^(?:~[^\\/]*|\$(?:HOME|USERPROFILE|HOMEPATH)|"
+    r"\$\{(?:HOME|USERPROFILE|HOMEPATH)\}|\$env:(?:HOME|USERPROFILE|HOMEPATH)|"
+    r"%(?:HOME|USERPROFILE|HOMEPATH)%)(?:[\\/]|$)",
+    re.IGNORECASE,
+)
 
 _PRIVATE_KEY_RE = re.compile(
     r"-----BEGIN [^-]*PRIVATE KEY-----.*?-----END [^-]*PRIVATE KEY-----",
@@ -68,9 +74,15 @@ def _normalized_parts(value: str) -> tuple[str, ...] | None:
 def normalize_project_path(value: str, project_root: Path | None) -> str:
     """Return a safe relative POSIX path or a non-identifying placeholder."""
 
+    try:
+        value.encode("utf-8")
+    except UnicodeEncodeError:
+        return "[unsafe-path]"
+
     if (
         not value
         or _CONTROL_RE.search(value)
+        or _HOME_PREFIX_RE.match(value)
         or (_WINDOWS_DRIVE_RE.match(value) and not _WINDOWS_ABSOLUTE_RE.match(value))
     ):
         return "[unsafe-path]"
