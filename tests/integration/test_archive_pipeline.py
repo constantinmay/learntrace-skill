@@ -176,6 +176,37 @@ def test_loads_task2_style_batch_json(tmp_path: Path) -> None:
     assert "unsupported_test_log_format [logs/unknown.log]" in markdown
 
 
+def test_loads_task2_style_batch_json_without_marker_when_events_look_valid(tmp_path: Path) -> None:
+    scenario_dir = SCENARIOS_DIR / "05-add-tests-confirmed"
+    batch = {
+        "parser_version": "v0",
+        "events": [
+            _load_json(scenario_dir / "observable-event-commit.json"),
+            _load_json(scenario_dir / "observable-event-testlog.json"),
+        ],
+        "confirmations": [
+            _load_json(scenario_dir / "student-confirmation.json"),
+        ],
+    }
+    (tmp_path / "parse-result.json").write_text(
+        json.dumps(batch, ensure_ascii=False),
+        encoding="utf-8",
+    )
+
+    validator = ContractValidator(schema_dir=SCHEMA_DIR)
+    loaded = load_project_artifacts(tmp_path, validator=validator)
+    bundle = build_archive_bundle(
+        loaded.events,
+        confirmations=loaded.confirmations,
+        warnings=loaded.warnings,
+        validator=validator,
+    )
+
+    assert [candidate.to_dict() for candidate in bundle.candidates] == _expected_candidates(
+        scenario_dir
+    )
+
+
 def test_cli_writes_machine_readable_archive_and_questions(tmp_path: Path) -> None:
     output_path = tmp_path / "learning-record.md"
     records_output = tmp_path / "archive-records.json"
@@ -268,6 +299,19 @@ def test_machine_readable_archive_includes_provenance_indexes(tmp_path: Path) ->
     ]
 
 
+def test_machine_readable_archive_reports_stub_inference_mode(tmp_path: Path) -> None:
+    records_output = tmp_path / "archive-records.json"
+    write_learning_record(
+        SCENARIOS_DIR / "05-add-tests-confirmed",
+        output_path=tmp_path / "learning-record.md",
+        records_output_path=records_output,
+        validator=ContractValidator(schema_dir=SCHEMA_DIR),
+    )
+
+    records = cast(dict[str, Any], _load_json(records_output))
+    assert records["candidate_inference_mode"] == "stub"
+
+
 def test_output_files_are_overwritten_atomically(tmp_path: Path) -> None:
     records_output = tmp_path / "archive-records.json"
     questions_output = tmp_path / "learning-questions.md"
@@ -324,6 +368,46 @@ def test_archive_json_can_be_reloaded_without_duplicate_record_failures(tmp_path
     record_counts = cast(dict[str, int], records["record_counts"])
     assert record_counts["observable_fact"] == 2
     assert record_counts["student_confirmation"] == 1
+
+
+def test_loader_skips_generated_archive_outputs_and_learntrace_dir(tmp_path: Path) -> None:
+    scenario_dir = SCENARIOS_DIR / "05-add-tests-confirmed"
+    generated_records = tmp_path / "historical-snapshot.json"
+
+    write_learning_record(
+        scenario_dir,
+        output_path=tmp_path / "learning-record.md",
+        records_output_path=generated_records,
+        validator=ContractValidator(schema_dir=SCHEMA_DIR),
+    )
+
+    for source in scenario_dir.glob("*.json"):
+        (tmp_path / source.name).write_text(source.read_text(encoding="utf-8"), encoding="utf-8")
+
+    learntrace_dir = tmp_path / ".learntrace"
+    learntrace_dir.mkdir()
+    (learntrace_dir / "ignored.json").write_text(
+        json.dumps({"events": [_load_json(scenario_dir / "observable-event-commit.json")]}),
+        encoding="utf-8",
+    )
+    (tmp_path / "business-events.json").write_text(
+        json.dumps({"events": {"foo": 1}}, ensure_ascii=False),
+        encoding="utf-8",
+    )
+
+    validator = ContractValidator(schema_dir=SCHEMA_DIR)
+    loaded = load_project_artifacts(tmp_path, validator=validator)
+    bundle = build_archive_bundle(
+        loaded.events,
+        confirmations=loaded.confirmations,
+        warnings=loaded.warnings,
+        validator=validator,
+    )
+
+    assert [event.id for event in bundle.events] == ["evt-s05-1", "evt-s05-2"]
+    assert [candidate.to_dict() for candidate in bundle.candidates] == _expected_candidates(
+        scenario_dir
+    )
 
 
 def test_stable_candidate_id_regardless_of_order() -> None:
@@ -385,6 +469,19 @@ def test_bundle_marker_accepted_for_container_json(tmp_path: Path) -> None:
 
     assert len(loaded.events) == 1
     assert loaded.events[0].id == "evt-s05-1"
+
+
+def test_render_markdown_reports_stub_inference_mode() -> None:
+    validator = ContractValidator(schema_dir=SCHEMA_DIR)
+    events, confirmations = load_project_records(
+        SCENARIOS_DIR / "05-add-tests-confirmed",
+        validator=validator,
+    )
+    bundle = build_archive_bundle(events, confirmations=confirmations, validator=validator)
+    markdown = render_markdown(bundle, source_dir=SCENARIOS_DIR / "05-add-tests-confirmed")
+
+    assert "候选生成模式：`stub`" in markdown
+    assert "本次候选由本地确定性规则生成" in markdown
 
 
 def test_symlink_json_is_skipped(tmp_path: Path) -> None:
@@ -525,3 +622,35 @@ def test_loader_reports_schema_errors_with_source_path(tmp_path: Path) -> None:
     assert "bad-event.json" in message
     assert "invalid observable_event" in message
     assert "source_refs" in message
+
+
+def test_loader_reports_conflicting_duplicate_event_paths(tmp_path: Path) -> None:
+    source_path = (
+        SCENARIOS_DIR / "09-sparse-evidence-high-uncertainty" / "observable-event-commit.json"
+    )
+    source = cast(
+        dict[str, Any],
+        _load_json(source_path),
+    )
+    conflicting = dict(source)
+    conflicting["summary"] = f"{source['summary']}（冲突副本）"
+
+    (tmp_path / "event-a.json").write_text(
+        json.dumps(source, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    (tmp_path / "event-b.json").write_text(
+        json.dumps(conflicting, ensure_ascii=False),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError) as exc_info:
+        load_project_artifacts(
+            tmp_path,
+            validator=ContractValidator(schema_dir=SCHEMA_DIR),
+        )
+
+    message = str(exc_info.value)
+    assert "event-a.json" in message
+    assert "event-b.json" in message
+    assert "conflicting observable_event records" in message

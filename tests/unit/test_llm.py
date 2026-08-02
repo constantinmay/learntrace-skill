@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import json
+from typing import cast
 
 import pytest
 
 from learntrace.models import EventKind, ObservableEvent, SourceRef, SourceType
+from learntrace.reporting import render_markdown
 from learntrace.reporting.llm import (
     LLM_API_KEY_ENV,
     LLM_BASE_URL_ENV,
@@ -77,6 +79,23 @@ def test_default_candidate_inferencer_uses_llm_when_explicitly_enabled(
     assert isinstance(default_candidate_inferencer(), OpenAIChatCandidateInferencer)
 
 
+def test_default_candidate_inferencer_announces_llm_to_stderr(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    from learntrace.reporting.llm import LLM_ENABLED_ENV
+
+    monkeypatch.setenv(LLM_API_KEY_ENV, "test-key")
+    monkeypatch.setenv(LLM_BASE_URL_ENV, "https://example.test/v1")
+    monkeypatch.setenv(LLM_ENABLED_ENV, "1")
+
+    default_candidate_inferencer()
+    captured = capsys.readouterr()
+
+    assert captured.out == ""
+    assert "LLM candidate inference is enabled" in captured.err
+
+
 def test_default_candidate_inferencer_stub_despite_key_without_enable(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -117,6 +136,38 @@ def test_llm_inferencer_returns_schema_valid_candidate() -> None:
     assert bundle.candidates[0].basis_event_ids == ("evt-demo-trace", "evt-demo-commit")
     assert inferencer.payloads
     assert inferencer.payloads[0]["max_tokens"] == 3000
+    assert bundle.inference_mode == "llm"
+    assert "候选生成模式：`llm`" in render_markdown(bundle)
+
+
+def test_llm_payload_omits_source_refs_and_private_fields() -> None:
+    """The outbound LLM payload must never contain source_refs or paths."""
+    content = json.dumps({"candidates": []}, ensure_ascii=False)
+    inferencer = FakeLLMInferencer(content)
+    event = ObservableEvent(
+        id="evt-secret-1",
+        kind=EventKind.TEST_LOG,
+        summary="pytest passed.",
+        source_refs=(
+            SourceRef(
+                type=SourceType.FILE,
+                ref="C:/Users/student/Documents/project/src/secret_test.py",
+                note="含用户名路径",
+            ),
+        ),
+        occurred_at="2026-05-01T10:00:00+08:00",
+    )
+
+    inferencer.infer((event,))
+
+    payload = inferencer.payloads[0]
+    messages = cast(list[dict[str, object]], payload["messages"])
+    content = cast(str, messages[1]["content"])
+    sent_fields = json.loads(content.rsplit("ObservableEvent records:\n", 1)[1])[0]
+    assert set(sent_fields.keys()) == {"id", "kind", "summary", "occurred_at"}
+    assert sent_fields["summary"] == "pytest passed."
+    assert sent_fields["id"] == "evt-secret-1"
+    assert "source_refs" not in sent_fields
 
 
 def test_llm_inferencer_accepts_fenced_json() -> None:

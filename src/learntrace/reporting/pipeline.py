@@ -5,13 +5,16 @@ from __future__ import annotations
 import hashlib
 import json
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from datetime import UTC, datetime
+from enum import Enum
 from typing import Any, Protocol
 
 from learntrace import __version__
 from learntrace.models import (
     SCHEMA_VERSION,
     CandidateStatus,
+    ConfirmationDecision,
     ContractValidator,
     EventKind,
     LearningNodeCandidate,
@@ -64,6 +67,10 @@ class ArchiveBundle:
 
     warnings: tuple[ArchiveWarning, ...] = ()
 
+    inference_mode: str = "stub"
+
+    task2_meta: dict[str, Any] = field(default_factory=dict[str, Any])
+
 
 @dataclass(slots=True)
 class SourceIndexEntry:
@@ -88,8 +95,10 @@ class CandidateInferencer(Protocol):
 
 _SCENARIO_ID_PATTERN = re.compile(r"^evt-([^-]+)-")
 
-
-_COMMIT_OVERVIEW_PATTERN = re.compile(r"^提交\s+[a-f0-9]+\s*(?:[：:]|的提交信息为)")
+_COMMIT_OVERVIEW_PATTERN = re.compile(
+    r"^(?:提交|commit)\s+[a-f0-9]+\s*(?:[：:]|的提交信息为|\b)",
+    re.IGNORECASE,
+)
 
 
 def _is_commit_overview(summary: str) -> bool:
@@ -112,6 +121,8 @@ class StubCandidateInferencer:
 
 
     """
+
+    inference_mode = "stub"
 
     def infer(self, events: tuple[ObservableEvent, ...]) -> tuple[CandidateDraft, ...]:
 
@@ -164,7 +175,7 @@ class StubCandidateInferencer:
         commit: ObservableEvent,
     ) -> CandidateDraft:
 
-        plausible = _temporally_plausible(trace, commit)
+        plausible = _plausibility_is_plausible(_temporally_plausible(trace, commit))
 
         if "默认类型推断" in trace.summary and "显式指定 dtype" in commit.summary:
             return CandidateDraft(
@@ -214,7 +225,7 @@ class StubCandidateInferencer:
         commit: ObservableEvent,
     ) -> CandidateDraft:
 
-        plausible = _temporally_plausible(test_log, commit)
+        plausible = _plausibility_is_plausible(_temporally_plausible(test_log, commit))
 
         if "ZeroDivisionError" in test_log.summary and "返回 None" in commit.summary:
             uncertainty = (
@@ -277,7 +288,7 @@ class StubCandidateInferencer:
         second_trace: ObservableEvent,
     ) -> CandidateDraft:
 
-        plausible = _temporally_plausible(first_trace, second_trace)
+        plausible = _plausibility_is_plausible(_temporally_plausible(first_trace, second_trace))
 
         if "成绩分布" in first_trace.summary and "缺失" in second_trace.summary:
             return CandidateDraft(
@@ -310,7 +321,7 @@ class StubCandidateInferencer:
         commit: ObservableEvent,
     ) -> CandidateDraft:
 
-        plausible = _temporally_plausible(document, commit)
+        plausible = _plausibility_is_plausible(_temporally_plausible(document, commit))
 
         if "等级制" in document.summary and "等级制" in commit.summary:
             return CandidateDraft(
@@ -382,16 +393,61 @@ def _has_failure_log(test_logs: tuple[ObservableEvent, ...]) -> bool:
     return any("失败" in log.summary or "error" in log.summary.lower() for log in test_logs)
 
 
-def _temporally_plausible(before: ObservableEvent | None, after: ObservableEvent | None) -> bool:
-    """Check that *before* occurred earlier than *after* when timestamps are available."""
+class TemporalPlausibility(Enum):
+    """Whether an event ordering can be established from timestamps.
 
+    :attr CONFIRMED: both timestamps present and *before* is strictly earlier.
+    :attr REJECTED: both timestamps present and *before* is NOT strictly earlier.
+    :attr UNVERIFIABLE: at least one timestamp is missing or unparseable.
+    """
+
+    CONFIRMED = "confirmed"
+    REJECTED = "rejected"
+    UNVERIFIABLE = "unverifiable"
+
+
+def _parse_rfc3339(value: str) -> datetime | None:
+    """Parse an RFC3339 timestamp into an aware UTC datetime.
+
+    Normalizes offsets so that ``10:00+08:00`` compares equal to ``02:00Z``.
+    Returns ``None`` when the value is missing, malformed, or naive.
+    """
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except (ValueError, TypeError):
+        return None
+    if parsed.tzinfo is None:
+        return None  # naive timestamp: cannot reason about ordering
+    return parsed.astimezone(UTC)
+
+
+def _temporally_plausible(
+    before: ObservableEvent | None,
+    after: ObservableEvent | None,
+) -> TemporalPlausibility:
+    """Establish whether *before* occurred earlier than *after*.
+
+    Timestamps are parsed as timezone-aware RFC3339 values and normalized to
+    UTC before comparison so that ``10:00+08:00`` and ``02:00Z`` (the same
+    instant) are treated consistently. When either timestamp is missing or
+    unparseable the ordering is ``UNVERIFIABLE`` rather than guessed.
+    """
     if before is None or after is None:
-        return True  # cannot verify
+        return TemporalPlausibility.UNVERIFIABLE
 
-    if before.occurred_at is None or after.occurred_at is None:
-        return True  # cannot verify
+    before_dt = _parse_rfc3339(before.occurred_at) if before.occurred_at else None
+    after_dt = _parse_rfc3339(after.occurred_at) if after.occurred_at else None
+    if before_dt is None or after_dt is None:
+        return TemporalPlausibility.UNVERIFIABLE
 
-    return before.occurred_at < after.occurred_at
+    if before_dt < after_dt:
+        return TemporalPlausibility.CONFIRMED
+    return TemporalPlausibility.REJECTED
+
+
+def _plausibility_is_plausible(plausibility: TemporalPlausibility) -> bool:
+    """Backward-compatible bool view: only CONFIRMED counts as plausible."""
+    return plausibility == TemporalPlausibility.CONFIRMED
 
 
 def _looks_like_test_addition(commit: ObservableEvent) -> bool:
@@ -456,7 +512,23 @@ def _dedupe_confirmations(
 
             raise ValueError(msg)
 
-    return tuple(by_id.values())
+    deduped = tuple(by_id.values())
+
+    decisions_by_candidate: dict[str, set[ConfirmationDecision]] = {}
+    for confirmation in deduped:
+        decisions_by_candidate.setdefault(confirmation.candidate_id, set()).add(
+            confirmation.decision
+        )
+
+    for candidate_id, decisions in decisions_by_candidate.items():
+        if len(decisions) > 1:
+            msg = (
+                f"conflicting student confirmations for candidate {candidate_id}: "
+                f"decisions {', '.join(sorted(d.value for d in decisions))}"
+            )
+            raise ValueError(msg)
+
+    return deduped
 
 
 def _dedupe_warnings(warnings: tuple[ArchiveWarning, ...]) -> tuple[ArchiveWarning, ...]:
@@ -478,34 +550,35 @@ def _dedupe_warnings(warnings: tuple[ArchiveWarning, ...]) -> tuple[ArchiveWarni
     return tuple(unique)
 
 
-def _stable_candidate_id(draft: CandidateDraft) -> str:
+def stable_candidate_id(
+    draft: CandidateDraft,
+    *,
+    include_text_fields: bool = False,
+) -> str:
     """Generate a stable candidate ID from draft content.
 
 
 
 
 
-    Always includes a content-based hash of ``node_type`` + sorted
-
-
-    ``basis_event_ids`` so that two candidates with the same scenario
-
-
-    prefix but different basis events never collide.  The scenario prefix
-
-
-    (``evt-s01-`` \u2192 ``cand-s01-``) is kept as a human-readable namespace
-
-
-    when available; the hash suffix guarantees uniqueness.
+    The primary ID remains compatible with existing golden fixtures:
+    ``node_type`` + sorted ``basis_event_ids``. When different drafts would
+    otherwise collide on that base ID, callers can opt into hashing the text
+    fields as well so semantically different candidates receive distinct,
+    order-independent IDs without falling back to ``-2`` / ``-3`` suffixes.
 
 
     """
 
-    content = json.dumps(
-        [draft.node_type.value, sorted(draft.basis_event_ids)],
-        sort_keys=True,
-    )
+    content_parts: list[object] = [draft.node_type.value, sorted(draft.basis_event_ids)]
+    if include_text_fields:
+        question = (
+            draft.question_to_student.to_dict()
+            if isinstance(draft.question_to_student, MissingInfo)
+            else draft.question_to_student
+        )
+        content_parts.extend([draft.statement, draft.uncertainty, question])
+    content = json.dumps(content_parts, sort_keys=True)
 
     suffix = _sha256_content(content)[:8]
 
@@ -525,7 +598,7 @@ def _sha256_content(text: str) -> str:
 
 def _candidate_id_for(draft: CandidateDraft, index: int) -> str:  # noqa: ARG001
 
-    return _stable_candidate_id(draft)
+    return stable_candidate_id(draft)
 
 
 def _materialize_candidates(
@@ -534,6 +607,13 @@ def _materialize_candidates(
 ) -> tuple[LearningNodeCandidate, ...]:
 
     confirmation_ids = {confirmation.candidate_id for confirmation in confirmations}
+    base_ids = [stable_candidate_id(draft) for draft in drafts]
+    base_id_counts: dict[str, int] = {}
+    for candidate_id in base_ids:
+        base_id_counts[candidate_id] = base_id_counts.get(candidate_id, 0) + 1
+    duplicate_base_ids = {
+        candidate_id for candidate_id, count in base_id_counts.items() if count > 1
+    }
 
     materialized: list[LearningNodeCandidate] = []
 
@@ -541,6 +621,8 @@ def _materialize_candidates(
 
     for index, draft in enumerate(drafts, start=1):
         candidate_id = _candidate_id_for(draft, index)
+        if candidate_id in duplicate_base_ids:
+            candidate_id = stable_candidate_id(draft, include_text_fields=True)
 
         if candidate_id in used_ids:
             candidate_id = f"{candidate_id}-{index}"
@@ -639,6 +721,7 @@ def build_archive_bundle(
     warnings: tuple[ArchiveWarning, ...] = (),
     validator: ContractValidator | None = None,
     inferencer: CandidateInferencer | None = None,
+    task2_meta: dict[str, object] | None = None,
 ) -> ArchiveBundle:
 
     deduped_events = _dedupe_events(events)
@@ -662,6 +745,8 @@ def build_archive_bundle(
         candidates=candidates,
         confirmations=sorted_confirmations,
         warnings=_dedupe_warnings(warnings),
+        inference_mode=str(getattr(candidate_inferencer, "inference_mode", "custom")),
+        task2_meta=dict(task2_meta) if task2_meta is not None else {},
     )
 
     validate_bundle(bundle, validator=validator)
@@ -754,6 +839,11 @@ def _sha256(value: object) -> str:
     return hashlib.sha256(_canonical_bytes(value)).hexdigest()
 
 
+_TASK2_AUDIT_FIELDS = frozenset(
+    ("parser_version", "analysis_scope", "inventory", "tool", "tool_version")
+)
+
+
 def archive_manifest(bundle: ArchiveBundle) -> dict[str, object]:
     """Return deterministic metadata for reproducing and auditing an archive."""
 
@@ -764,7 +854,7 @@ def archive_manifest(bundle: ArchiveBundle) -> dict[str, object]:
         "warnings": [warning.to_dict() for warning in bundle.warnings],
     }
 
-    return {
+    manifest: dict[str, object] = {
         "tool": "learntrace",
         "tool_version": __version__,
         "archive_version": ARCHIVE_VERSION,
@@ -775,6 +865,15 @@ def archive_manifest(bundle: ArchiveBundle) -> dict[str, object]:
             record_type: _sha256(records) for record_type, records in record_sets.items()
         },
     }
+
+    if bundle.task2_meta:
+        # Preserve upstream Task 2 parsing context so the archive remains
+        # auditable back to the parser version / analysis scope / inventory.
+        manifest["task2_meta"] = {
+            key: bundle.task2_meta[key] for key in _TASK2_AUDIT_FIELDS if key in bundle.task2_meta
+        }
+
+    return manifest
 
 
 def bundle_to_dict(
@@ -803,6 +902,7 @@ def bundle_to_dict(
         "learntrace_bundle": True,
         "archive_version": ARCHIVE_VERSION,
         "archive_manifest": archive_manifest(bundle),
+        "candidate_inference_mode": bundle.inference_mode,
         "record_counts": {
             "observable_fact": len(bundle.events),
             "candidate_inference": len(bundle.candidates),
