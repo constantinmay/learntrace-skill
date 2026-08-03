@@ -28,8 +28,10 @@ The script reads `LEARNTRACE_LLM_API_KEY`, `LEARNTRACE_LLM_BASE_URL`, and
 so the CLI uses the remote model. LLM inference is opt-in: without
 `LEARNTRACE_LLM_ENABLED=1` the CLI falls back to the deterministic stub even
 when an API key is present. When LLM inference is enabled, the CLI sends only
-each event's `id`, `kind`, `summary`, and `occurred_at`; `source_refs`
-(potential paths), notes, and repository code are never transmitted.
+each event's `id`, `kind`, a sanitized `summary`, and `occurred_at`;
+`source_refs` (potential paths), notes, and repository code are never
+transmitted, and any email, token, or absolute path embedded in a summary is
+stripped before the request leaves the boundary.
 
 Generated files are written under `examples/task4-llm-demo/out/`, which is
 ignored by git so demo outputs do not become source-controlled artifacts.

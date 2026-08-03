@@ -6,7 +6,7 @@
 2. `adapters` 将宿主轨迹转换为统一记录；M1 只实现 OpenCode。
 3. `privacy` 默认只保留时间、工具类型、文件路径、命令摘要和来源宿主。
 4. `models` 对应版本化 Schema，不包含未经确认的学习结论。
-5. `reporting` 根据事实、候选推断和学生确认生成本地 Markdown 学习档案。
+5. `reporting` 根据事实、候选推断和学生确认生成本地 Markdown 学习档案，并正式负责候选学习节点的推断（stub 或显式启用的 LLM 两路）。
 6. `skills/learntrace` 编排解析、少量追问和档案输出，不承担确定性文件解析。
 
 ## 数据流
@@ -25,3 +25,5 @@
 - 不把系统候选推断写成事实。
 - 缺少证据或轨迹时明确标记“未记录”。
 - 默认只生成本地结果，分享版必须经过脱敏。
+- LLM 候选推断必须显式启用（提供 API key 且设置 `LEARNTRACE_LLM_ENABLED=1`），否则走本地确定性 stub。
+- LLM 出站载荷只在边界发送 `id`/`kind`/脱敏 `summary`/`occurred_at`；`source_refs`、备注和仓库代码不发送，`summary` 中的邮箱、token 与绝对路径会在出站前清除。

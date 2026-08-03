@@ -49,10 +49,15 @@ Task 4：学习档案
 |
 +-- 4. 推理层
 |   |
-|   +-- 选择 inferencer
+|   +-- 选择 inferencer（reporting 正式负责学习节点推断）
 |   |   |
-|   |   +-- 没有 LLM 环境变量 -> 走确定性 stub inferencer
-|   |   +-- 有 LLM 环境变量 -> 走 OpenAI 兼容 LLM inferencer
+|   |   +-- 未显式启用 LLM -> 走确定性 stub inferencer
+|   |   |   |
+|   |   |   +-- 无 LLM 环境变量
+|   |   |   +-- 或有 key 但未设置 LEARNTRACE_LLM_ENABLED=1
+|   |   +-- 显式启用（key + LEARNTRACE_LLM_ENABLED=1）-> 走 OpenAI 兼容 LLM inferencer
+|   |   |
+|   |   +-- 两路都必须通过同样证据分层与 schema 校验
 |   |
 |   +-- 产出候选学习节点
 |   |   |
@@ -139,6 +144,9 @@ Task 4：学习档案
     +-- 不把系统猜测写成结论
     +-- 不编造缺失证据
     +-- API key 只允许从环境变量读取
+    +-- LLM 出站载荷只含脱敏 summary（清邮箱/token/绝对路径）
+    +--   source_refs、备注、仓库代码不发送
+    +-- LLM 路径必须显式启用，缺省走本地 stub
 ```
 
 ## 评审检查清单
