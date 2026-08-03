@@ -97,6 +97,29 @@ def test_stable_candidate_ids_disambiguate_same_basis_by_content() -> None:
     assert ids_by_statement == reversed_ids_by_statement
 
 
+class IdenticalCandidateInferencer:
+    def infer(self, events: tuple[ObservableEvent, ...]) -> tuple[CandidateDraft, ...]:
+        commit = next(event for event in events if event.kind == EventKind.GIT_COMMIT)
+        draft = CandidateDraft(
+            node_type=NodeType.FIX_FAILED_APPROACH,
+            statement="identical statement",
+            basis_event_ids=(commit.id,),
+            uncertainty="高：只有提交记录。",
+            question_to_student="这是否为了修复？",
+        )
+        return (draft, draft)
+
+
+def test_identical_candidates_rejected_not_order_disambiguated() -> None:
+    """Two byte-identical candidates still collide even after full content
+    hashing; they must be rejected, never disambiguated by order, because an
+    order-based suffix would silently rebind a confirmation."""
+    events = (_event("evt-sy-1", EventKind.GIT_COMMIT, "提交 a1b2c3d：重写。"),)
+
+    with pytest.raises(ValueError, match="candidate id collision"):
+        build_archive_bundle(events, inferencer=IdenticalCandidateInferencer())
+
+
 def test_english_commit_overview_is_recognized() -> None:
     events = (
         _event(
@@ -240,3 +263,57 @@ def test_file_level_commit_changes_not_treated_as_overview() -> None:
     assert len(bundle.candidates) == 1
     assert "evt-git-2" in bundle.candidates[0].basis_event_ids
     assert "evt-git-file-1" not in bundle.candidates[0].basis_event_ids
+
+
+def test_stub_binds_to_failing_log_and_can_emit_multiple() -> None:
+    """The stub must reference the FAILING log (not the first test log) and
+    accumulate multiple candidates instead of early-returning one."""
+    events = (
+        _event(
+            "evt-pass-1",
+            EventKind.TEST_LOG,
+            "已有测试日志记录：2 个通过，耗时 1 秒。",
+            occurred_at="2026-05-02T10:00:00+08:00",
+        ),
+        _event(
+            "evt-fail-1",
+            EventKind.TEST_LOG,
+            "测试日志记录用例 test_div 出现失败。",
+            occurred_at="2026-05-02T11:00:00+08:00",
+        ),
+        _event(
+            "evt-commit-1",
+            EventKind.GIT_COMMIT,
+            "提交 d9e0f1a：修复除零错误，divide 返回 None 保护。",
+            occurred_at="2026-05-02T12:00:00+08:00",
+        ),
+    )
+    bundle = build_archive_bundle(events, inferencer=StubCandidateInferencer())
+
+    assert len(bundle.candidates) == 1
+    candidate = bundle.candidates[0]
+    assert candidate.node_type.value == "fix_failed_approach"
+    assert "evt-fail-1" in candidate.basis_event_ids
+    assert "evt-pass-1" not in candidate.basis_event_ids
+
+
+def test_stub_does_not_generate_fix_candidate_when_commit_precedes_failure() -> None:
+    """REJECTED ordering (failure after commit) must not yield a fix candidate:
+    the commit cannot be presented as following the failure."""
+    events = (
+        _event(
+            "evt-commit-1",
+            EventKind.GIT_COMMIT,
+            "提交 d9e0f1a：修复除零错误，divide 返回 None 保护。",
+            occurred_at="2026-05-02T09:00:00+08:00",
+        ),
+        _event(
+            "evt-fail-1",
+            EventKind.TEST_LOG,
+            "测试日志记录用例 test_div 出现失败。",
+            occurred_at="2026-05-02T12:00:00+08:00",
+        ),
+    )
+    bundle = build_archive_bundle(events, inferencer=StubCandidateInferencer())
+
+    assert bundle.candidates == ()
