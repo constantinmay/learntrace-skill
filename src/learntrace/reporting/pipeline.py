@@ -146,28 +146,75 @@ class StubCandidateInferencer:
 
         documents = tuple(event for event in ordered if event.kind == EventKind.DOCUMENT)
 
+        failing_logs = tuple(log for log in test_logs if _is_failure(log.summary))
+
+        drafts: list[CandidateDraft] = []
+
+        # Candidate-affecting ordering: a commit may not be presented as
+        # *following* another event when the timestamps prove the reverse
+        # (REJECTED); CONFIRMED and UNVERIFIABLE (missing timestamps) both
+        # remain acceptable, the latter with conservative copy.
+        def precedes(earlier: ObservableEvent, later: ObservableEvent) -> bool:
+            return _temporally_plausible(earlier, later) != TemporalPlausibility.REJECTED
+
+        # Follow-up: consecutive authorizations that ask deepening questions,
+        # with no commit or document present to anchor a different node.
         if len(traces) >= 2 and not commits and not documents:
-            return (self._follow_up_candidate(traces[0], traces[1]),)
+            drafts.append(self._follow_up_candidate(traces[0], traces[1]))
 
-        if traces and commits:
-            return (self._revise_ai_candidate(traces[0], commits[-1]),)
+        # Revising AI suggestions: an authorized trace followed by a commit.
+        # Bind only to the matching summary pair, and only when the trace
+        # does not provably succeed the commit.
+        for trace in traces:
+            for commit in commits:
+                if self._revise_ai_matches(trace, commit) and precedes(trace, commit):
+                    drafts.append(self._revise_ai_candidate(trace, commit))
 
-        if commits and _has_failure_log(test_logs):
-            return (self._fix_failed_candidate(test_logs[0], commits[-1]),)
+        # Fixes: bind the FAILING log (not an arbitrary first test log) to the
+        # commit that follows it.
+        for failing_log in failing_logs:
+            for commit in commits:
+                if not precedes(failing_log, commit):
+                    continue
+                drafts.append(self._fix_failed_candidate(failing_log, commit))
 
-        if commits and test_logs and _looks_like_test_addition(commits[-1]):
-            return (self._add_tests_candidate(commits[-1], test_logs[-1]),)
+        # Added tests: a test-addition commit followed by a test log.
+        for commit in commits:
+            if not _looks_like_test_addition(commit):
+                continue
+            for test_log in test_logs:
+                if precedes(commit, test_log):
+                    drafts.append(self._add_tests_candidate(commit, test_log))
 
-        if documents and commits:
-            return (self._adjust_constraints_candidate(documents[-1], commits[-1]),)
+        # Constraint/design changes: a document followed by a commit.
+        for document in documents:
+            for commit in commits:
+                if precedes(document, commit):
+                    drafts.append(self._adjust_constraints_candidate(document, commit))
 
-        if commits and _looks_like_rewrite(commits[-1]):
-            return (self._commit_only_fix_candidate(commits[-1]),)
+        # Commit-only fallbacks: emit at most one, only when no higher-certainty
+        # candidate already covered this commit.
+        covered_commits = {bid for d in drafts for bid in d.basis_event_ids}
+        for commit in commits:
+            if commit.id in covered_commits:
+                continue
+            if _looks_like_rewrite(commit):
+                drafts.append(self._commit_only_fix_candidate(commit))
+            elif _looks_like_constraint_change(commit):
+                drafts.append(self._commit_only_constraint_candidate(commit))
 
-        if commits and _looks_like_constraint_change(commits[-1]):
-            return (self._commit_only_constraint_candidate(commits[-1]),)
+        return tuple(drafts)
 
-        return ()
+    def _revise_ai_matches(self, trace: ObservableEvent, commit: ObservableEvent) -> bool:
+        """Whether a trace/commit pair is a topical AI-suggestion revision.
+
+        The temporal ordering is applied by the caller (``precedes``); here we
+        only check that the summaries actually correspond, so unrelated nearby
+        commits are not turned into a revision claim.
+        """
+        return ("默认类型推断" in trace.summary and "显式指定 dtype" in commit.summary) or (
+            "正则表达式" in trace.summary and "isdigit" in commit.summary
+        )
 
     def _revise_ai_candidate(
         self,
@@ -388,9 +435,9 @@ def _event_sort_key(event: ObservableEvent) -> tuple[str, str]:
     return (event.occurred_at or "", event.id)
 
 
-def _has_failure_log(test_logs: tuple[ObservableEvent, ...]) -> bool:
+def _is_failure(summary: str) -> bool:
 
-    return any("失败" in log.summary or "error" in log.summary.lower() for log in test_logs)
+    return "失败" in summary or "error" in summary.lower()
 
 
 class TemporalPlausibility(Enum):
@@ -554,10 +601,9 @@ def stable_candidate_id(
     draft: CandidateDraft,
     *,
     include_text_fields: bool = False,
+    digest_len: int = 8,
 ) -> str:
     """Generate a stable candidate ID from draft content.
-
-
 
 
 
@@ -565,8 +611,8 @@ def stable_candidate_id(
     ``node_type`` + sorted ``basis_event_ids``. When different drafts would
     otherwise collide on that base ID, callers can opt into hashing the text
     fields as well so semantically different candidates receive distinct,
-    order-independent IDs without falling back to ``-2`` / ``-3`` suffixes.
-
+    order-independent IDs; a longer ``digest_len`` makes the disambiguating
+    digest effectively collision-free.
 
     """
 
@@ -580,7 +626,7 @@ def stable_candidate_id(
         content_parts.extend([draft.statement, draft.uncertainty, question])
     content = json.dumps(content_parts, sort_keys=True)
 
-    suffix = _sha256_content(content)[:8]
+    suffix = _sha256_content(content)[:digest_len]
 
     for event_id in draft.basis_event_ids:
         match = _SCENARIO_ID_PATTERN.match(event_id)
@@ -596,39 +642,41 @@ def _sha256_content(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
-def _candidate_id_for(draft: CandidateDraft, index: int) -> str:  # noqa: ARG001
-
-    return stable_candidate_id(draft)
-
-
 def _materialize_candidates(
     drafts: tuple[CandidateDraft, ...],
     confirmations: tuple[StudentConfirmation, ...],
 ) -> tuple[LearningNodeCandidate, ...]:
 
     confirmation_ids = {confirmation.candidate_id for confirmation in confirmations}
-    base_ids = [stable_candidate_id(draft) for draft in drafts]
-    base_id_counts: dict[str, int] = {}
-    for candidate_id in base_ids:
-        base_id_counts[candidate_id] = base_id_counts.get(candidate_id, 0) + 1
-    duplicate_base_ids = {
-        candidate_id for candidate_id, count in base_id_counts.items() if count > 1
-    }
+
+    # Assign every draft a content-stable ID. The base ID (node_type + sorted
+    # basis) is kept for golden-fixture compatibility; when several drafts
+    # share that base, the disambiguating ID is derived from the full content
+    # with a long digest, so it is deterministic and order-independent.
+    ids: list[str] = []
+    for draft in drafts:
+        candidate_id = stable_candidate_id(draft)
+        duplicate_bases = sum(1 for other in drafts if stable_candidate_id(other) == candidate_id)
+        if duplicate_bases > 1:
+            candidate_id = stable_candidate_id(draft, include_text_fields=True, digest_len=64)
+        ids.append(candidate_id)
+
+    # A remaining duplicate means the full-content digest itself collided (a
+    # genuine SHA-256 collision). Do not fall back to an order-dependent suffix,
+    # which would silently rebind a student confirmation; reject instead.
+    seen_ids: set[str] = set()
+    for i, candidate_id in enumerate(ids):
+        if candidate_id in seen_ids:
+            msg = (
+                f"candidate id collision at index {i}: {candidate_id!r}; "
+                "refusing to disambiguate by order as confirmations would "
+                "silently rebind"
+            )
+            raise ValueError(msg)
+        seen_ids.add(candidate_id)
 
     materialized: list[LearningNodeCandidate] = []
-
-    used_ids: set[str] = set()
-
-    for index, draft in enumerate(drafts, start=1):
-        candidate_id = _candidate_id_for(draft, index)
-        if candidate_id in duplicate_base_ids:
-            candidate_id = stable_candidate_id(draft, include_text_fields=True)
-
-        if candidate_id in used_ids:
-            candidate_id = f"{candidate_id}-{index}"
-
-        used_ids.add(candidate_id)
-
+    for draft, candidate_id in zip(drafts, ids, strict=True):
         status = (
             CandidateStatus.RESOLVED
             if candidate_id in confirmation_ids

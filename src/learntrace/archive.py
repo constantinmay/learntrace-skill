@@ -166,13 +166,17 @@ def _looks_like_observable_event_object(data: JsonObject) -> bool:
 
 
 def _looks_like_learntrace_container(data: JsonObject) -> bool:
+    # The events list must be non-empty and every element a well-shaped
+    # observable event. An empty "events" is not proof of LearnTrace data — a
+    # plain business JSON like {"events": []} must not be treated as a
+    # LearnTrace container (see "default scan misreading ordinary JSON").
     events = data.get("events")
     if not _is_object_list(events):
         return False
     event_objects = cast(list[JsonObject], events)
-    if event_objects and not all(
-        _looks_like_observable_event_object(item) for item in event_objects
-    ):
+    if not event_objects:
+        return False
+    if not all(_looks_like_observable_event_object(item) for item in event_objects):
         return False
 
     confirmations = data.get("confirmations")

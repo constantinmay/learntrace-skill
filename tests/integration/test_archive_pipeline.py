@@ -592,6 +592,28 @@ def test_loader_ignores_unrelated_json_and_dependency_dirs(tmp_path: Path) -> No
     assert [event.id for event in loaded.events] == ["evt-s09-1"]
 
 
+def test_empty_events_business_json_is_not_misread_as_learntrace(tmp_path: Path) -> None:
+    """An ordinary business JSON with an empty ``events`` list must not be
+    treated as a LearnTrace container (previously it passed, and a malformed
+    sibling ``warnings`` shape could abort the whole batch)."""
+    source = SCENARIOS_DIR / "09-sparse-evidence-high-uncertainty" / "observable-event-commit.json"
+    (tmp_path / source.name).write_text(source.read_text(encoding="utf-8"), encoding="utf-8")
+    (tmp_path / "stock.json").write_text(
+        json.dumps({"events": [], "warnings": [{"code": "low-stock", "message": "..."}]}),
+        encoding="utf-8",
+    )
+
+    loaded = load_project_artifacts(
+        tmp_path,
+        validator=ContractValidator(schema_dir=SCHEMA_DIR),
+    )
+
+    # Only the real LearnTrace event is loaded; the empty-events business JSON
+    # is ignored rather than misread as a container and aborting on its
+    # non-LearnTrace warning shape.
+    assert [event.id for event in loaded.events] == ["evt-s09-1"]
+
+
 def test_strict_inputs_rejects_unrelated_json(tmp_path: Path) -> None:
     source = SCENARIOS_DIR / "09-sparse-evidence-high-uncertainty" / "observable-event-commit.json"
     (tmp_path / source.name).write_text(source.read_text(encoding="utf-8"), encoding="utf-8")
