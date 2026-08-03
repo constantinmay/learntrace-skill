@@ -170,6 +170,36 @@ def test_llm_payload_omits_source_refs_and_private_fields() -> None:
     assert "source_refs" not in sent_fields
 
 
+def test_llm_payload_sanitizes_private_markers_in_summary() -> None:
+    """A summary that itself embeds an email, path, or token must be scrubbed
+    before leaving the boundary, so the payload matches the disclosure that
+    personal identifiers / code are not transmitted."""
+    content = json.dumps({"candidates": []}, ensure_ascii=False)
+    inferencer = FakeLLMInferencer(content)
+    event = ObservableEvent(
+        id="evt-leak-1",
+        kind=EventKind.TEST_LOG,
+        summary=(
+            "跑了 alice@example.com 的用例，C:/Users/alice/proj/src/x.py 失败；"
+            "api_key=sk-1234567890 的命令被跳过。"
+        ),
+        source_refs=(SourceRef(type=SourceType.FILE, ref="logs/a.log"),),
+    )
+
+    inferencer.infer((event,))
+
+    payload = inferencer.payloads[0]
+    messages = cast(list[dict[str, object]], payload["messages"])
+    content = cast(str, messages[1]["content"])
+    sent_fields = json.loads(content.rsplit("ObservableEvent records:\n", 1)[1])[0]
+
+    summary = cast(str, sent_fields["summary"])
+    assert "alice@example.com" not in summary
+    assert "C:/Users/alice" not in summary
+    assert "sk-1234567890" not in summary
+    assert "alice@example.com" not in json.dumps(payload, ensure_ascii=False)
+
+
 def test_llm_inferencer_accepts_fenced_json() -> None:
     payload = {
         "candidates": [
