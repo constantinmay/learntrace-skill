@@ -34,6 +34,34 @@ DEFAULT_LLM_BASE_URL = "https://api.llm.ustc.edu.cn/v1"
 DEFAULT_LLM_MODEL = "smart/default"
 _UNCERTAINTY_PREFIXES = ("\u9ad8\uff1a", "\u4e2d\uff1a", "\u4f4e\uff1a")
 
+# Outbound-boundary redaction: even though `source_refs` (with filesystem
+# paths) and notes are never transmitted, a summary may itself embed an email,
+# a token, or an absolute path. These are scrubbed here so the LLM payload
+# matches the privacy disclosure: repository code and personal identifiers are
+# not sent out.
+_EMAIL_RE = re.compile(r"[\w.+-]+@[\w-]+(?:\.[\w-]+)+")
+_TOKEN_RE = re.compile(r"\b(?:api[_-]?key|token|secret|password)\b[:=]\s*\S+", re.IGNORECASE)
+_DISK_PATH_RE = re.compile(
+    r"([A-Za-z]:[\\/][^\s\uff0c\u3002\uff1b\u3001\"'`]+|[\\/][^\s\uff0c\u3002\uff1b\u3001\"'`]*[\\/][^\s\uff0c\u3002\uff1b\u3001\"'`]+)"
+)
+_WINDOWS_HOME_RE = re.compile(
+    r"[Cc]:[\\/][Uu]sers[\\/][^\\/]+(?:[\\/][^\s\uff0c\u3002\uff1b\u3001\"'`]*)?"
+)
+
+
+def _sanitize_summary(summary: str) -> str:
+    """Redact personal identifiers and filesystem hints from a summary.
+
+    Preserves the semantic gist for candidate inference while removing emails,
+    key/value secrets, absolute (incl. Windows user) paths, and bare tokens
+    that could tie an archive back to an individual.
+    """
+    text = _EMAIL_RE.sub("<email>", summary)
+    text = _TOKEN_RE.sub("<token>", text)
+    text = _WINDOWS_HOME_RE.sub("<user-path>", text)
+    text = _DISK_PATH_RE.sub("<path>", text)
+    return text
+
 
 @dataclass(frozen=True, slots=True)
 class LLMConfig:
@@ -76,12 +104,14 @@ class OpenAIChatCandidateInferencer:
 
         Deliberately omits ``source_refs`` (which may embed filesystem paths or
         notes) and any student-identifying metadata: the model receives only the
-        event kind, a human-readable summary, and an optional timestamp.
+        event kind, a sanitized summary, and an optional timestamp. The summary
+        is scrubbed at the outbound boundary (emails, tokens, paths) so the
+        payload matches the privacy disclosure.
         """
         return {
             "id": event.id,
             "kind": str(event.kind),
-            "summary": event.summary,
+            "summary": _sanitize_summary(event.summary),
             "occurred_at": event.occurred_at,
         }
 
@@ -213,9 +243,9 @@ def default_candidate_inferencer() -> CandidateInferencer:
     print(
         "INFO: LLM candidate inference is enabled. "
         "For each event the following fields are sent to the configured LLM "
-        "endpoint: id, kind, summary, occurred_at. "
-        "source_refs (which may contain paths), notes, and repository code are "
-        "NOT transmitted.",
+        "endpoint: id, kind, a sanitized summary, occurred_at. "
+        "Each summary is scrubbed at the outbound boundary; source_refs (which "
+        "may contain paths), notes, and repository code are NOT transmitted.",
         file=sys.stderr,
     )
     return OpenAIChatCandidateInferencer(config)
