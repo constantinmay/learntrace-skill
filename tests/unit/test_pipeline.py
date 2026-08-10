@@ -16,6 +16,7 @@ from learntrace.models import (
 )
 from learntrace.reporting import CandidateDraft, build_archive_bundle
 from learntrace.reporting.pipeline import (
+    MAX_CANDIDATES,
     StubCandidateInferencer,
     TemporalPlausibility,
     _temporally_plausible,
@@ -317,3 +318,102 @@ def test_stub_does_not_generate_fix_candidate_when_commit_precedes_failure() -> 
     bundle = build_archive_bundle(events, inferencer=StubCandidateInferencer())
 
     assert bundle.candidates == ()
+
+
+def test_stub_adjust_constraints_selects_one_topical_document_per_commit() -> None:
+    events = (
+        _event(
+            "evt-doc-grade",
+            EventKind.DOCUMENT,
+            "设计文档更新：成绩上限由百分制调整为等级制。",
+        ),
+        _event(
+            "evt-doc-time",
+            EventKind.DOCUMENT,
+            "接口文档约定 created_at 字段使用统一时间格式。",
+        ),
+        _event(
+            "evt-doc-unrelated",
+            EventKind.DOCUMENT,
+            "项目说明记录了目录结构和启动步骤。",
+        ),
+        _event(
+            "evt-commit-grade",
+            EventKind.GIT_COMMIT,
+            "提交 a1b2c3d：统计逻辑按等级制重写，移除百分制边界判断。",
+        ),
+        _event(
+            "evt-commit-time",
+            EventKind.GIT_COMMIT,
+            "提交 d4e5f6a：统一 created_at 字段格式。",
+        ),
+    )
+
+    bundle = build_archive_bundle(events, inferencer=StubCandidateInferencer())
+    constraint_candidates = [
+        candidate
+        for candidate in bundle.candidates
+        if candidate.node_type == NodeType.ADJUST_CONSTRAINTS
+    ]
+
+    assert len(constraint_candidates) == 2
+    assert {candidate.basis_event_ids for candidate in constraint_candidates} == {
+        ("evt-doc-grade", "evt-commit-grade"),
+        ("evt-doc-time", "evt-commit-time"),
+    }
+
+
+def test_stub_links_minimal_trace_to_nearest_following_commit() -> None:
+    events = (
+        _event(
+            "evt-trace-write",
+            EventKind.TRACE_RECORD,
+            "OpenCode 工具 write 已完成。路径：frontend/src/App.tsx。",
+            occurred_at="2026-08-10T09:40:00Z",
+        ),
+        _event(
+            "evt-trace-edit",
+            EventKind.TRACE_RECORD,
+            "OpenCode 工具 edit 已完成。路径：frontend/src/App.tsx。",
+            occurred_at="2026-08-10T09:44:00Z",
+        ),
+        _event(
+            "evt-commit-ui",
+            EventKind.GIT_COMMIT,
+            "提交 a1b2c3d：完成前端列表页面。",
+            occurred_at="2026-08-10T17:45:00+08:00",
+        ),
+    )
+
+    bundle = build_archive_bundle(events, inferencer=StubCandidateInferencer())
+
+    assert len(bundle.candidates) == 1
+    candidate = bundle.candidates[0]
+    assert candidate.node_type == NodeType.FOLLOW_UP
+    assert candidate.basis_event_ids == ("evt-trace-edit", "evt-commit-ui")
+    assert candidate.uncertainty.startswith("高：")
+
+
+class ManyCandidateInferencer:
+    def infer(self, events: tuple[ObservableEvent, ...]) -> tuple[CandidateDraft, ...]:
+        commit = events[0]
+        return tuple(
+            CandidateDraft(
+                node_type=NodeType.ADJUST_CONSTRAINTS,
+                statement=f"候选 {index}",
+                basis_event_ids=(commit.id,),
+                uncertainty="高：仅用于验证候选总量边界。",
+                question_to_student=f"是否确认候选 {index}？",
+            )
+            for index in range(MAX_CANDIDATES + 10)
+        )
+
+
+def test_build_archive_bundle_enforces_candidate_limit() -> None:
+    event = _event("evt-cap-commit", EventKind.GIT_COMMIT, "提交 a1b2c3d：调整实现。")
+
+    bundle = build_archive_bundle((event,), inferencer=ManyCandidateInferencer())
+
+    assert len(bundle.candidates) == MAX_CANDIDATES
+    assert bundle.warnings[0].code == "candidate_limit_applied"
+    assert "省略 10 条" in bundle.warnings[0].message
