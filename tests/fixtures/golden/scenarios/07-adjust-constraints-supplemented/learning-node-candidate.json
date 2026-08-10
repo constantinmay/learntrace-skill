@@ -1,0 +1,14 @@
+{
+  "schema_version": "v0",
+  "id": "cand-s07",
+  "evidence_level": "candidate_inference",
+  "node_type": "adjust_constraints",
+  "statement": "学生可能因设计约束从百分制改为等级制而重写了统计逻辑。",
+  "basis_event_ids": [
+    "evt-s07-1",
+    "evt-s07-2"
+  ],
+  "uncertainty": "中：文档与提交时间相邻，但文档更新者身份未记录，无法确认是学生本人调整。",
+  "question_to_student": "等级制这个约束调整是你自己提出的，还是课程要求变更？",
+  "status": "resolved"
+}

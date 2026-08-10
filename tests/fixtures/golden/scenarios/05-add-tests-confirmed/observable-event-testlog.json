@@ -1,0 +1,14 @@
+{
+  "schema_version": "v0",
+  "id": "evt-s05-2",
+  "evidence_level": "observable_fact",
+  "kind": "test_log",
+  "summary": "测试日志显示新增 4 条用例全部通过。",
+  "source_refs": [
+    {
+      "type": "test_log",
+      "ref": "logs/pytest-20260419T2015.txt"
+    }
+  ],
+  "occurred_at": "2026-04-19T20:15:00+08:00"
+}

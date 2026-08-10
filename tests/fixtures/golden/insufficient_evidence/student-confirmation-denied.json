@@ -1,0 +1,11 @@
+{
+  "schema_version": "v0",
+  "id": "conf-1001",
+  "evidence_level": "student_confirmation",
+  "candidate_id": "cand-1001",
+  "decision": "denied",
+  "student_statement": {
+    "status": "not_recorded",
+    "note": "学生仅作否认，未提供补充说明"
+  }
+}

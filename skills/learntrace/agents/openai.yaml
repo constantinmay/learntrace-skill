@@ -1,0 +1,4 @@
+interface:
+  display_name: "LearnTrace"
+  short_description: "Build evidence-based AI learning portfolios"
+  default_prompt: "Use $learntrace to organize this project into a traceable AI-assisted learning portfolio."

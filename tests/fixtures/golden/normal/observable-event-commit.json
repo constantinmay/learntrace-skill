@@ -1,0 +1,15 @@
+{
+  "schema_version": "v0",
+  "id": "evt-0001",
+  "evidence_level": "observable_fact",
+  "kind": "git_commit",
+  "summary": "该提交新增 CSV 解析模块与最小命令行入口。",
+  "occurred_at": "2026-03-02T14:23:11+08:00",
+  "source_refs": [
+    {
+      "type": "git_commit",
+      "ref": "9fceb02d0ae598e95dc970b74767f19372d61af8",
+      "note": "人工构造的脱敏示例提交哈希"
+    }
+  ]
+}

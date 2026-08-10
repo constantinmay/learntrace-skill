@@ -1,0 +1,14 @@
+{
+  "schema_version": "v0",
+  "id": "evt-s07-2",
+  "evidence_level": "observable_fact",
+  "kind": "git_commit",
+  "summary": "提交 b7c8d9e：统计逻辑按等级制重写，移除百分制边界判断。",
+  "source_refs": [
+    {
+      "type": "git_commit",
+      "ref": "b7c8d9e"
+    }
+  ],
+  "occurred_at": "2026-04-23T14:30:00+08:00"
+}

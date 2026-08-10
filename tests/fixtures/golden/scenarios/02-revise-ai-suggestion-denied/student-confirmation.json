@@ -1,0 +1,12 @@
+{
+  "schema_version": "v0",
+  "id": "conf-s02",
+  "evidence_level": "student_confirmation",
+  "candidate_id": "cand-s02",
+  "decision": "denied",
+  "student_statement": {
+    "status": "not_recorded",
+    "note": "学生仅否认，未补充说明"
+  },
+  "confirmed_at": "2026-04-13T10:20:00+08:00"
+}

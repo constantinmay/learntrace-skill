@@ -1,0 +1,14 @@
+{
+  "schema_version": "v0",
+  "id": "evt-s02-2",
+  "evidence_level": "observable_fact",
+  "kind": "git_commit",
+  "summary": "提交 a1b2c3d：学号校验改用 str.isdigit 加长度判断实现。",
+  "source_refs": [
+    {
+      "type": "git_commit",
+      "ref": "a1b2c3d"
+    }
+  ],
+  "occurred_at": "2026-04-11T15:40:00+08:00"
+}

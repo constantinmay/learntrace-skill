@@ -1,0 +1,15 @@
+{
+  "schema_version": "v0",
+  "id": "evt-s01-1",
+  "evidence_level": "observable_fact",
+  "kind": "trace_record",
+  "summary": "AI 建议用 pandas.read_csv 的默认类型推断解析课程数据文件。",
+  "source_refs": [
+    {
+      "type": "trace_record",
+      "ref": "trace://opencode/session-s01/turn-3",
+      "note": "opencode"
+    }
+  ],
+  "occurred_at": "2026-04-10T20:15:00+08:00"
+}

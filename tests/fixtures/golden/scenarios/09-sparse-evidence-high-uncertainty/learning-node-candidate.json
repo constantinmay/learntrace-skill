@@ -1,0 +1,13 @@
+{
+  "schema_version": "v0",
+  "id": "cand-s09",
+  "evidence_level": "candidate_inference",
+  "node_type": "adjust_constraints",
+  "statement": "学生可能放宽了输入约束，允许缺失的数据文件被跳过。",
+  "basis_event_ids": [
+    "evt-s09-1"
+  ],
+  "uncertainty": "高：仅有单次提交，无测试日志、无轨迹、无文档，约束调整的原因与过程均不可知。",
+  "question_to_student": "增加 --ignore-missing 是出于什么考虑？",
+  "status": "proposed"
+}
