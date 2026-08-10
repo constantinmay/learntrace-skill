@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import replace
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, cast
 
@@ -11,9 +12,12 @@ from learntrace.archive import load_project_artifacts, load_project_records, wri
 from learntrace.models import (
     ConfirmationDecision,
     ContractValidator,
+    EventKind,
     MissingInfo,
     NodeType,
     ObservableEvent,
+    SourceRef,
+    SourceType,
     StudentConfirmation,
 )
 from learntrace.reporting import (
@@ -22,6 +26,7 @@ from learntrace.reporting import (
     bundle_to_dict,
     render_markdown,
 )
+from learntrace.reporting.pipeline import MAX_CANDIDATES, StubCandidateInferencer
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SCHEMA_DIR = REPO_ROOT / "src" / "learntrace" / "schemas" / "v0"
@@ -174,6 +179,72 @@ def test_loads_task2_style_batch_json(tmp_path: Path) -> None:
     assert [confirmation.to_dict() for confirmation in bundle.confirmations] == confirmation_records
     markdown = render_markdown(bundle, source_dir=tmp_path)
     assert "unsupported_test_log_format [logs/unknown.log]" in markdown
+
+
+def test_realistic_task2_task3_chain_avoids_candidate_explosion(tmp_path: Path) -> None:
+    base_time = datetime(2026, 8, 10, 9, 30, tzinfo=UTC)
+    documents = tuple(
+        ObservableEvent(
+            id=f"evt-real-doc-{index:02d}",
+            kind=EventKind.DOCUMENT,
+            summary=f"文档章节 {index} 记录项目功能说明和运行步骤。",
+            source_refs=(SourceRef(type=SourceType.DOCUMENT, ref=f"README.md:{index * 5 + 1}"),),
+        )
+        for index in range(13)
+    )
+    commits = tuple(
+        ObservableEvent(
+            id=f"evt-real-commit-{index:02d}",
+            kind=EventKind.GIT_COMMIT,
+            summary=f"提交 a1b2c{index:x}：完成 module_{index} 功能实现。",
+            source_refs=(
+                SourceRef(type=SourceType.GIT_COMMIT, ref=f"a1b2c{index:x}"),
+                SourceRef(type=SourceType.FILE, ref=f"src/module_{index}.py"),
+            ),
+            occurred_at=(base_time + timedelta(minutes=(index + 1) * 3)).isoformat(),
+        )
+        for index in range(12)
+    )
+    traces = tuple(
+        ObservableEvent(
+            id=f"evt-real-trace-{index:03d}",
+            kind=EventKind.TRACE_RECORD,
+            summary=(f"OpenCode 工具 write 已完成。路径：src/module_{min(index // 10, 11)}.py。"),
+            source_refs=(SourceRef(type=SourceType.TRACE_RECORD, ref=f"trace://opencode/{index}"),),
+            occurred_at=(base_time + timedelta(seconds=index * 20)).isoformat(),
+        )
+        for index in range(125)
+    )
+    batch = {
+        "learntrace_bundle": True,
+        "parser_version": "v0",
+        "events": [event.to_dict() for event in (*documents, *commits, *traces)],
+        "warnings": [],
+    }
+    (tmp_path / "merged-result.json").write_text(
+        json.dumps(batch, ensure_ascii=False),
+        encoding="utf-8",
+    )
+
+    loaded = load_project_artifacts(tmp_path, validator=ContractValidator(schema_dir=SCHEMA_DIR))
+    bundle = build_archive_bundle(
+        loaded.events,
+        inferencer=StubCandidateInferencer(),
+        validator=ContractValidator(schema_dir=SCHEMA_DIR),
+    )
+
+    assert 0 < len(bundle.candidates) <= MAX_CANDIDATES
+    assert all(
+        candidate.node_type != NodeType.ADJUST_CONSTRAINTS for candidate in bundle.candidates
+    )
+    event_kind_by_id = {event.id: event.kind for event in bundle.events}
+    assert all(
+        any(
+            event_kind_by_id[event_id] == EventKind.TRACE_RECORD
+            for event_id in candidate.basis_event_ids
+        )
+        for candidate in bundle.candidates
+    )
 
 
 def test_loads_task2_style_batch_json_without_marker_when_events_look_valid(tmp_path: Path) -> None:

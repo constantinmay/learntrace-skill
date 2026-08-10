@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from enum import Enum
@@ -27,8 +28,36 @@ from learntrace.models import (
 
 ARCHIVE_VERSION = "v0"
 
-
 HASH_ALGORITHM = "sha256"
+MAX_CANDIDATES = 50
+_MAX_TRACE_COMMIT_GAP_SECONDS = 30 * 60
+
+_CONSTRAINT_TERMS = (
+    "等级制",
+    "百分制",
+    "必填",
+    "可选",
+    "默认",
+    "上限",
+    "下限",
+    "边界",
+    "约束",
+    "限制",
+    "格式",
+    "评分",
+    "状态",
+)
+_IDENTIFIER_PATTERN = re.compile(r"[A-Za-z_][A-Za-z0-9_-]{3,}")
+_LOW_SIGNAL_TRACE_TERMS = (
+    "命令类型：git add",
+    "命令类型：git status",
+    "命令类型：kill",
+    "命令类型：pgrep",
+    "命令类型：pkill",
+    "命令类型：ss",
+    "工具 todowrite",
+)
+_UNCERTAINTY_PRIORITY = {"低：": 0, "中：": 1, "高：": 2}
 
 
 @dataclass(frozen=True, slots=True)
@@ -157,8 +186,8 @@ class StubCandidateInferencer:
         def precedes(earlier: ObservableEvent, later: ObservableEvent) -> bool:
             return _temporally_plausible(earlier, later) != TemporalPlausibility.REJECTED
 
-        # Follow-up: consecutive authorizations that ask deepening questions,
-        # with no commit or document present to anchor a different node.
+        # Follow-up: consecutive authorizations that ask deepening questions.
+        # Keep the original no-anchor behavior for semantic trace-only cases.
         if len(traces) >= 2 and not commits and not documents:
             drafts.append(self._follow_up_candidate(traces[0], traces[1]))
 
@@ -169,6 +198,12 @@ class StubCandidateInferencer:
             for commit in commits:
                 if self._revise_ai_matches(trace, commit) and precedes(trace, commit):
                     drafts.append(self._revise_ai_candidate(trace, commit))
+
+        # Minimal Task 3 traces often record only a completed tool operation.
+        # Associate those conservatively with the nearest following commit,
+        # one-to-one and within a bounded time window. This preserves trace
+        # provenance without claiming that a particular AI suggestion was used.
+        drafts.extend(self._trace_commit_follow_ups(traces, commits, drafts))
 
         # Fixes: bind the FAILING log (not an arbitrary first test log) to the
         # commit that follows it.
@@ -186,11 +221,22 @@ class StubCandidateInferencer:
                 if precedes(commit, test_log):
                     drafts.append(self._add_tests_candidate(commit, test_log))
 
-        # Constraint/design changes: a document followed by a commit.
-        for document in documents:
-            for commit in commits:
-                if precedes(document, commit):
-                    drafts.append(self._adjust_constraints_candidate(document, commit))
+        # Constraint/design changes: retain only the strongest topical document
+        # match for each commit. Temporal plausibility alone is insufficient:
+        # documents without timestamps otherwise create a Cartesian product.
+        for commit in commits:
+            matches = (
+                (self._adjust_constraints_match_score(document, commit), document)
+                for document in documents
+                if precedes(document, commit)
+            )
+            best_score, best_document = max(
+                matches,
+                key=lambda item: (item[0], item[1].id),
+                default=(0, None),
+            )
+            if best_score > 0 and best_document is not None:
+                drafts.append(self._adjust_constraints_candidate(best_document, commit))
 
         # Commit-only fallbacks: emit at most one, only when no higher-certainty
         # candidate already covered this commit.
@@ -204,6 +250,60 @@ class StubCandidateInferencer:
                 drafts.append(self._commit_only_constraint_candidate(commit))
 
         return tuple(drafts)
+
+    def _trace_commit_follow_ups(
+        self,
+        traces: tuple[ObservableEvent, ...],
+        commits: tuple[ObservableEvent, ...],
+        existing_drafts: Iterable[CandidateDraft],
+    ) -> tuple[CandidateDraft, ...]:
+        used_event_ids = {
+            event_id
+            for draft in existing_drafts
+            if draft.node_type == NodeType.REVISE_AI_SUGGESTION
+            for event_id in draft.basis_event_ids
+        }
+        available = [
+            trace
+            for trace in traces
+            if trace.id not in used_event_ids and not _is_low_signal_trace(trace)
+        ]
+        follow_ups: list[CandidateDraft] = []
+        for commit in commits:
+            if commit.id in used_event_ids:
+                continue
+            preceding: list[tuple[float, ObservableEvent]] = []
+            for trace in available:
+                gap_seconds = _trace_commit_gap_seconds(trace, commit)
+                if gap_seconds is not None and gap_seconds <= _MAX_TRACE_COMMIT_GAP_SECONDS:
+                    preceding.append((gap_seconds, trace))
+            if not preceding:
+                continue
+            _, trace = min(
+                preceding,
+                key=lambda item: (item[0], item[1].id),
+            )
+            available.remove(trace)
+            follow_ups.append(self._trace_commit_follow_up_candidate(trace, commit))
+        return tuple(follow_ups)
+
+    @staticmethod
+    def _adjust_constraints_match_score(
+        document: ObservableEvent,
+        commit: ObservableEvent,
+    ) -> int:
+        document_terms = _constraint_terms(document.summary)
+        commit_terms = _constraint_terms(commit.summary)
+        shared_terms = document_terms & commit_terms
+        if shared_terms:
+            return len(shared_terms) * 10
+
+        shared_identifiers = _specific_identifiers(document.summary) & _specific_identifiers(
+            commit.summary
+        )
+        if shared_identifiers and (document_terms or commit_terms):
+            return len(shared_identifiers)
+        return 0
 
     def _revise_ai_matches(self, trace: ObservableEvent, commit: ObservableEvent) -> bool:
         """Whether a trace/commit pair is a topical AI-suggestion revision.
@@ -362,6 +462,21 @@ class StubCandidateInferencer:
             question_to_student="后续追问是否让你形成了新的理解？",
         )
 
+    @staticmethod
+    def _trace_commit_follow_up_candidate(
+        trace: ObservableEvent,
+        commit: ObservableEvent,
+    ) -> CandidateDraft:
+        return CandidateDraft(
+            node_type=NodeType.FOLLOW_UP,
+            statement="学生可能在使用编码助手完成一项工具操作后继续推进，并形成了后续代码提交。",
+            basis_event_ids=(trace.id, commit.id),
+            uncertainty=(
+                "高：轨迹与提交仅在时间上邻近，工具操作的目的、提交内容与学习收获均需学生确认。"
+            ),
+            question_to_student="这次工具操作是否帮助你推进了后续提交？你从中形成了什么新理解？",
+        )
+
     def _adjust_constraints_candidate(
         self,
         document: ObservableEvent,
@@ -466,6 +581,35 @@ def _parse_rfc3339(value: str) -> datetime | None:
     if parsed.tzinfo is None:
         return None  # naive timestamp: cannot reason about ordering
     return parsed.astimezone(UTC)
+
+
+def _trace_commit_gap_seconds(
+    trace: ObservableEvent,
+    commit: ObservableEvent,
+) -> float | None:
+    if trace.occurred_at is None or commit.occurred_at is None:
+        return None
+    trace_time = _parse_rfc3339(trace.occurred_at)
+    commit_time = _parse_rfc3339(commit.occurred_at)
+    if trace_time is None or commit_time is None or trace_time >= commit_time:
+        return None
+    return (commit_time - trace_time).total_seconds()
+
+
+def _is_low_signal_trace(trace: ObservableEvent) -> bool:
+    return any(term in trace.summary for term in _LOW_SIGNAL_TRACE_TERMS)
+
+
+def _constraint_terms(summary: str) -> frozenset[str]:
+    return frozenset(term for term in _CONSTRAINT_TERMS if term in summary)
+
+
+def _specific_identifiers(summary: str) -> frozenset[str]:
+    return frozenset(
+        identifier
+        for identifier in _IDENTIFIER_PATTERN.findall(summary.lower())
+        if "_" in identifier or "-" in identifier
+    )
 
 
 def _temporally_plausible(
@@ -698,6 +842,30 @@ def _materialize_candidates(
     return tuple(materialized)
 
 
+def _limit_candidate_drafts(
+    drafts: tuple[CandidateDraft, ...],
+) -> tuple[tuple[CandidateDraft, ...], int]:
+    if len(drafts) <= MAX_CANDIDATES:
+        return drafts, 0
+
+    ranked = sorted(
+        enumerate(drafts),
+        key=lambda item: (
+            next(
+                (
+                    priority
+                    for prefix, priority in _UNCERTAINTY_PRIORITY.items()
+                    if item[1].uncertainty.startswith(prefix)
+                ),
+                len(_UNCERTAINTY_PRIORITY),
+            ),
+            item[0],
+        ),
+    )
+    selected = tuple(draft for _, draft in ranked[:MAX_CANDIDATES])
+    return selected, len(drafts) - len(selected)
+
+
 def validate_bundle(
     bundle: ArchiveBundle,
     *,
@@ -784,7 +952,22 @@ def build_archive_bundle(
 
         candidate_inferencer = default_candidate_inferencer()
 
-    drafts = candidate_inferencer.infer(deduped_events)
+    inferred_drafts = candidate_inferencer.infer(deduped_events)
+    drafts, truncated_count = _limit_candidate_drafts(inferred_drafts)
+
+    effective_warnings = warnings
+    if truncated_count:
+        effective_warnings = (
+            *warnings,
+            ArchiveWarning(
+                code="candidate_limit_applied",
+                source="candidate_inference",
+                message=(
+                    f"候选总量超过 {MAX_CANDIDATES} 条，已优先保留低/中不确定性候选，"
+                    f"省略 {truncated_count} 条。"
+                ),
+            ),
+        )
 
     candidates = _materialize_candidates(drafts, sorted_confirmations)
 
@@ -792,7 +975,7 @@ def build_archive_bundle(
         events=deduped_events,
         candidates=candidates,
         confirmations=sorted_confirmations,
-        warnings=_dedupe_warnings(warnings),
+        warnings=_dedupe_warnings(effective_warnings),
         inference_mode=str(getattr(candidate_inferencer, "inference_mode", "custom")),
         task2_meta=dict(task2_meta) if task2_meta is not None else {},
     )
