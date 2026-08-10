@@ -1,0 +1,103 @@
+{
+  "info": {
+    "id": "ses_fixture",
+    "version": "1.18.6",
+    "title": "FORBIDDEN_SESSION_TITLE"
+  },
+  "messages": [
+    {
+      "info": {
+        "id": "msg_fixture",
+        "sessionID": "ses_fixture",
+        "role": "assistant",
+        "error": {
+          "message": "FORBIDDEN_ERROR_BODY"
+        }
+      },
+      "parts": [
+        {
+          "id": "prt_chat",
+          "type": "text",
+          "text": "FORBIDDEN_CHAT_TEXT"
+        },
+        {
+          "id": "prt_read",
+          "sessionID": "ses_fixture",
+          "messageID": "msg_fixture",
+          "type": "tool",
+          "callID": "call_read",
+          "tool": "read",
+          "state": {
+            "status": "completed",
+            "input": {
+              "filePath": "D:\\repo\\src\\app.py"
+            },
+            "output": "FORBIDDEN_READ_OUTPUT",
+            "time": {
+              "start": 1700000000000,
+              "end": 1700000000100
+            }
+          }
+        },
+        {
+          "id": "prt_bash",
+          "sessionID": "ses_fixture",
+          "messageID": "msg_fixture",
+          "type": "tool",
+          "callID": "call_bash",
+          "tool": "bash",
+          "state": {
+            "status": "completed",
+            "input": {
+              "command": "TOKEN=FORBIDDEN_TOKEN git status --short && echo FORBIDDEN_COMMAND_TAIL",
+              "workdir": "C:\\Users\\Fixture Person\\private-project"
+            },
+            "output": "FORBIDDEN_BASH_OUTPUT",
+            "time": {
+              "start": 1700000001000,
+              "end": 1700000001100
+            }
+          }
+        },
+        {
+          "id": "prt_task",
+          "sessionID": "ses_fixture",
+          "messageID": "msg_fixture",
+          "type": "tool",
+          "callID": "call_task",
+          "tool": "task",
+          "state": {
+            "status": "completed",
+            "input": {
+              "description": "FORBIDDEN_TASK_DESCRIPTION",
+              "subagent_type": "FORBIDDEN_SUBAGENT_TYPE",
+              "prompt": "FORBIDDEN_TASK_PROMPT"
+            },
+            "output": "FORBIDDEN_TASK_OUTPUT",
+            "time": {
+              "start": 1700000002000,
+              "end": 1700000002100
+            }
+          }
+        },
+        {
+          "id": "prt_malformed",
+          "sessionID": "ses_fixture",
+          "messageID": "msg_fixture",
+          "type": "tool",
+          "tool": "write",
+          "state": {
+            "status": {
+              "not": "a string"
+            },
+            "input": {
+              "filePath": "C:\\Users\\Fixture Person\\secrets.txt",
+              "content": "FORBIDDEN_MALFORMED_CONTENT"
+            },
+            "output": "FORBIDDEN_MALFORMED_OUTPUT"
+          }
+        }
+      ]
+    }
+  ]
+}
