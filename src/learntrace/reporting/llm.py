@@ -19,6 +19,7 @@ from learntrace.models import (
     NodeType,
     ObservableEvent,
 )
+from learntrace.privacy import redact_sensitive_text
 from learntrace.reporting.pipeline import (
     CandidateDraft,
     CandidateInferencer,
@@ -39,8 +40,12 @@ _UNCERTAINTY_PREFIXES = ("\u9ad8\uff1a", "\u4e2d\uff1a", "\u4f4e\uff1a")
 # a token, or an absolute path. These are scrubbed here so the LLM payload
 # matches the privacy disclosure: repository code and personal identifiers are
 # not sent out.
+#
+# Secret shapes (Bearer headers, ghp_/sk-/xox tokens, key=value assignments,
+# private-key blocks) are delegated to `learntrace.privacy.redact_sensitive_text`
+# so the outbound boundary reuses one shared, tested redaction implementation
+# instead of a second, weaker regex.
 _EMAIL_RE = re.compile(r"[\w.+-]+@[\w-]+(?:\.[\w-]+)+")
-_TOKEN_RE = re.compile(r"\b(?:api[_-]?key|token|secret|password)\b[:=]\s*\S+", re.IGNORECASE)
 _DISK_PATH_RE = re.compile(
     r"([A-Za-z]:[\\/][^\s\uff0c\u3002\uff1b\u3001\"'`]+|[\\/][^\s\uff0c\u3002\uff1b\u3001\"'`]*[\\/][^\s\uff0c\u3002\uff1b\u3001\"'`]+)"
 )
@@ -52,12 +57,15 @@ _WINDOWS_HOME_RE = re.compile(
 def _sanitize_summary(summary: str) -> str:
     """Redact personal identifiers and filesystem hints from a summary.
 
-    Preserves the semantic gist for candidate inference while removing emails,
-    key/value secrets, absolute (incl. Windows user) paths, and bare tokens
-    that could tie an archive back to an individual.
+    Preserves the semantic gist for candidate inference while removing secrets
+    (Bearer headers, bare tokens, key=value assignments), emails, and absolute
+    (incl. Windows user) paths that could tie an archive back to an individual.
+
+    Secret scrubbing reuses `learntrace.privacy.redact_sensitive_text`; a large
+    ``limit`` is passed so a long summary's semantics are not truncated here.
     """
-    text = _EMAIL_RE.sub("<email>", summary)
-    text = _TOKEN_RE.sub("<token>", text)
+    text = redact_sensitive_text(summary, limit=len(summary) or 1)
+    text = _EMAIL_RE.sub("<email>", text)
     text = _WINDOWS_HOME_RE.sub("<user-path>", text)
     text = _DISK_PATH_RE.sub("<path>", text)
     return text

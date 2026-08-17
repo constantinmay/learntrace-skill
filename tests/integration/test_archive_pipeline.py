@@ -685,6 +685,34 @@ def test_empty_events_business_json_is_not_misread_as_learntrace(tmp_path: Path)
     assert [event.id for event in loaded.events] == ["evt-s09-1"]
 
 
+def test_foreign_json_with_unknown_evidence_level_is_skipped(tmp_path: Path) -> None:
+    """A foreign JSON that happens to carry an ``evidence_level`` key with a
+    non-LearnTrace value must be skipped by the default scan, not swallowed as a
+    LearnTrace record (previously any non-null ``evidence_level`` was enough)."""
+    source = SCENARIOS_DIR / "09-sparse-evidence-high-uncertainty" / "observable-event-commit.json"
+    (tmp_path / source.name).write_text(source.read_text(encoding="utf-8"), encoding="utf-8")
+    (tmp_path / "lesson-plan.json").write_text(
+        json.dumps(
+            {
+                "evidence_level": "standard",
+                "subject": "math",
+                "score": 92,
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    loaded = load_project_artifacts(
+        tmp_path,
+        validator=ContractValidator(schema_dir=SCHEMA_DIR),
+    )
+
+    # Only the real LearnTrace event is loaded; the foreign "evidence_level"
+    # JSON is ignored rather than swallowed as a record and then rejected.
+    assert [event.id for event in loaded.events] == ["evt-s09-1"]
+
+
 def test_strict_inputs_rejects_unrelated_json(tmp_path: Path) -> None:
     source = SCENARIOS_DIR / "09-sparse-evidence-high-uncertainty" / "observable-event-commit.json"
     (tmp_path / source.name).write_text(source.read_text(encoding="utf-8"), encoding="utf-8")

@@ -200,6 +200,37 @@ def test_llm_payload_sanitizes_private_markers_in_summary() -> None:
     assert "alice@example.com" not in json.dumps(payload, ensure_ascii=False)
 
 
+def test_llm_payload_sanitizes_bearer_header_and_bare_token() -> None:
+    """Bearer auth headers and bare ``ghp_``/``sk-`` tokens embedded in a
+    summary must be scrubbed by the shared redaction implementation, not the
+    old key=value-only regex which missed both shapes."""
+    content = json.dumps({"candidates": []}, ensure_ascii=False)
+    inferencer = FakeLLMInferencer(content)
+    event = ObservableEvent(
+        id="evt-token-1",
+        kind=EventKind.TRACE_RECORD,
+        summary=(
+            "用 git push 时脚本带了 Authorization: Bearer ghp_ABC1234567890 的头，"
+            "另外还打印了 sk-abcdefgh12345 这个 token。"
+        ),
+        source_refs=(SourceRef(type=SourceType.FILE, ref="run.sh"),),
+    )
+
+    inferencer.infer((event,))
+
+    payload = inferencer.payloads[0]
+    messages = cast(list[dict[str, object]], payload["messages"])
+    content = cast(str, messages[1]["content"])
+    sent_fields = json.loads(content.rsplit("ObservableEvent records:\n", 1)[1])[0]
+    summary = cast(str, sent_fields["summary"])
+
+    assert "ghp_ABC1234567890" not in summary
+    assert "sk-abcdefgh12345" not in summary
+    assert "ghp_" not in summary
+    assert "Authorization: Bearer ghp_" not in summary
+    assert "ghp_ABC1234567890" not in json.dumps(payload, ensure_ascii=False)
+
+
 def test_llm_inferencer_accepts_fenced_json() -> None:
     payload = {
         "candidates": [

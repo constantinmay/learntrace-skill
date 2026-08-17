@@ -58,6 +58,16 @@ _IGNORED_DIR_NAMES = frozenset(
 )
 _LEARNTRACE_CONTAINER_KEYS = frozenset({"events", "confirmations", "warnings"})
 _LEARNTRACE_BUNDLE_MARKER = "learntrace_bundle"
+# A single LearnTrace record is tagged with one of these three evidence levels.
+# Anything else carrying an "evidence_level" key is an unrelated JSON document
+# and must not be swallowed by the default directory scan.
+_LEARNTRACE_EVIDENCE_LEVELS = frozenset(
+    {
+        ObservableEvent.EVIDENCE_LEVEL,
+        StudentConfirmation.EVIDENCE_LEVEL,
+        "candidate_inference",
+    }
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -200,8 +210,12 @@ def _looks_like_generated_archive_json(data: JsonObject) -> bool:
 
 
 def _looks_like_learntrace_json(data: JsonObject) -> bool:
-    if data.get("evidence_level") is not None:
-        return True
+    evidence_level = data.get("evidence_level")
+    if evidence_level is not None:
+        # A single record is only LearnTrace data when its evidence level is one
+        # of the three known values; a foreign JSON that happens to carry an
+        # "evidence_level" key (e.g. a business object) must not be swallowed.
+        return evidence_level in _LEARNTRACE_EVIDENCE_LEVELS
     if _looks_like_generated_archive_json(data):
         return False
     if not (_LEARNTRACE_CONTAINER_KEYS & set(data.keys())):
@@ -306,9 +320,19 @@ def _parse_confirmation(raw: JsonObject, path: Path) -> StudentConfirmation:
 
 def _parse_warning(raw: object, path: Path) -> ArchiveWarning:
     data = _require_object(raw, "warning", path)
+    # Task 2's ParseWarning and this task's ArchiveWarning both serialize the
+    # origin field as "source", but Task 3's TraceParseIssue serializes it as
+    # "location". Accept both so a Task 3 result carrying warnings loads
+    # instead of failing on a missing "source" key.
+    source = data.get("source")
+    if not isinstance(source, str):
+        source = data.get("location")
+    if not isinstance(source, str):
+        msg = f"{path}: expected string field 'source' or 'location'"
+        raise ValueError(msg)
     return ArchiveWarning(
         code=_require_string(data, "code", path),
-        source=_require_string(data, "source", path),
+        source=source,
         message=_require_string(data, "message", path),
     )
 
