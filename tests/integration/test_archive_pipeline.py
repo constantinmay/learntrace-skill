@@ -654,6 +654,9 @@ def test_loader_ignores_unrelated_json_and_dependency_dirs(tmp_path: Path) -> No
     venv_dir = tmp_path / ".venv"
     venv_dir.mkdir()
     (venv_dir / "broken.json").write_text("{", encoding="utf-8")
+    opencode_dir = tmp_path / ".opencode" / "skills" / "learntrace-skill"
+    opencode_dir.mkdir(parents=True)
+    (opencode_dir / "invalid-fixture.json").write_text("{", encoding="utf-8")
 
     loaded = load_project_artifacts(
         tmp_path,
@@ -661,6 +664,7 @@ def test_loader_ignores_unrelated_json_and_dependency_dirs(tmp_path: Path) -> No
     )
 
     assert [event.id for event in loaded.events] == ["evt-s09-1"]
+    assert loaded.warnings == ()
 
 
 def test_empty_events_business_json_is_not_misread_as_learntrace(tmp_path: Path) -> None:
@@ -726,23 +730,45 @@ def test_strict_inputs_rejects_unrelated_json(tmp_path: Path) -> None:
         )
 
 
-def test_loader_reports_schema_errors_with_source_path(tmp_path: Path) -> None:
+def test_loader_downgrades_discovered_schema_errors_to_warning(tmp_path: Path) -> None:
+    valid_record = (
+        SCENARIOS_DIR / "09-sparse-evidence-high-uncertainty" / "observable-event-commit.json"
+    )
+    (tmp_path / "valid-event.json").write_text(
+        valid_record.read_text(encoding="utf-8"), encoding="utf-8"
+    )
     bad_record = (
         REPO_ROOT / "tests" / "fixtures" / "golden" / "invalid" / "event-missing-source-refs.json"
     )
     target = tmp_path / "bad-event.json"
     target.write_text(bad_record.read_text(encoding="utf-8"), encoding="utf-8")
 
-    with pytest.raises(ValueError) as exc_info:
+    loaded = load_project_artifacts(
+        tmp_path,
+        validator=ContractValidator(schema_dir=SCHEMA_DIR),
+    )
+
+    assert [event.id for event in loaded.events] == ["evt-s09-1"]
+    assert [warning.code for warning in loaded.warnings] == ["invalid_learntrace_input"]
+    assert loaded.warnings[0].source == "bad-event.json"
+    assert "invalid observable_event" in loaded.warnings[0].message
+    assert "source_refs" in loaded.warnings[0].message
+
+
+def test_strict_inputs_keeps_discovered_schema_errors_fatal(tmp_path: Path) -> None:
+    bad_record = (
+        REPO_ROOT / "tests" / "fixtures" / "golden" / "invalid" / "event-missing-source-refs.json"
+    )
+    (tmp_path / "bad-event.json").write_text(
+        bad_record.read_text(encoding="utf-8"), encoding="utf-8"
+    )
+
+    with pytest.raises(ValueError, match="invalid observable_event"):
         load_project_artifacts(
             tmp_path,
             validator=ContractValidator(schema_dir=SCHEMA_DIR),
+            strict_inputs=True,
         )
-
-    message = str(exc_info.value)
-    assert "bad-event.json" in message
-    assert "invalid observable_event" in message
-    assert "source_refs" in message
 
 
 def test_loader_reports_conflicting_duplicate_event_paths(tmp_path: Path) -> None:

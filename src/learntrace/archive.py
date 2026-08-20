@@ -42,6 +42,7 @@ _IGNORED_DIR_NAMES = frozenset(
         ".hg",
         ".learntrace",
         ".mypy_cache",
+        ".opencode",
         ".pytest_cache",
         ".pyright",
         ".ruff_cache",
@@ -157,6 +158,15 @@ def _read_json_object(path: Path, *, strict_inputs: bool) -> JsonObject | None:
         msg = f"{path}: expected a JSON object"
         raise ValueError(msg)
     return None
+
+
+def _invalid_input_warning(root: Path, path: Path, error: ValueError) -> ArchiveWarning:
+    """Build a project-relative warning without repeating an absolute source path."""
+    return ArchiveWarning(
+        code="invalid_learntrace_input",
+        source=path.relative_to(root).as_posix(),
+        message=str(error).removeprefix(f"{path}: "),
+    )
 
 
 def _is_object_list(value: object) -> bool:
@@ -446,7 +456,13 @@ def load_project_artifacts(
     confirmation_sources: dict[str, tuple[StudentConfirmation, Path]] = {}
 
     for path in _iter_json_files(root):
-        raw = _read_json_object(path, strict_inputs=strict_inputs)
+        try:
+            raw = _read_json_object(path, strict_inputs=strict_inputs)
+        except ValueError as exc:
+            if strict_inputs:
+                raise
+            warnings.append(_invalid_input_warning(root, path, exc))
+            continue
         if raw is None:
             continue
         if _looks_like_generated_archive_json(raw):
@@ -456,16 +472,22 @@ def load_project_artifacts(
                 msg = f"{path}: does not look like a LearnTrace JSON record"
                 raise ValueError(msg)
             continue
-        (
-            loaded_events,
-            loaded_confirmations,
-            loaded_warnings,
-            file_meta,
-        ) = _collect_records_from_json(
-            raw,
-            path,
-            contract_validator,
-        )
+        try:
+            (
+                loaded_events,
+                loaded_confirmations,
+                loaded_warnings,
+                file_meta,
+            ) = _collect_records_from_json(
+                raw,
+                path,
+                contract_validator,
+            )
+        except ValueError as exc:
+            if strict_inputs:
+                raise
+            warnings.append(_invalid_input_warning(root, path, exc))
+            continue
         task2_meta.update(file_meta)
         for event in loaded_events:
             existing = event_sources.get(event.id)

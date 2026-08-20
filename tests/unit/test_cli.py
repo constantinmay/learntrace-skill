@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 
 from _pytest.capture import CaptureFixture
@@ -73,6 +74,15 @@ def test_main_prints_write_summary(tmp_path: Path, capsys: CaptureFixture[str]) 
     assert "pending_questions=1" in summary
 
 
+def test_archive_subcommand_forwards_legacy_options(tmp_path: Path) -> None:
+    output_path = tmp_path / "learning-record.md"
+
+    exit_code = main(["archive", str(SCENARIO_DIR), "--output", str(output_path)])
+
+    assert exit_code == 0
+    assert output_path.is_file()
+
+
 def test_main_reports_missing_records_without_traceback(
     tmp_path: Path,
     capsys: CaptureFixture[str],
@@ -87,3 +97,60 @@ def test_main_reports_missing_records_without_traceback(
     captured = capsys.readouterr()
     assert "expected LearnTrace record JSON or a Task2 parse-result JSON" in captured.err
     assert "Traceback" not in captured.err
+
+
+def test_parse_command_discovers_documents_and_writes_events(tmp_path: Path) -> None:
+    (tmp_path / "task.md").write_text("# Goal\n\nImplement the parser safely.\n", encoding="utf-8")
+    output = tmp_path / "events.json"
+
+    exit_code = main(["parse", str(tmp_path), "--no-git", "--output", str(output)])
+
+    assert exit_code == 0
+    payload = json.loads(output.read_text(encoding="utf-8"))
+    assert payload["events"][0]["kind"] == "document"
+    assert payload["analysis_scope"]["documents"] == ["task.md"]
+
+
+def test_adapt_command_requires_explicit_authorization(tmp_path: Path) -> None:
+    output = tmp_path / "trace.json"
+
+    exit_code = main(["adapt", str(tmp_path / "missing.json"), "--output", str(output)])
+
+    assert exit_code == 0
+    payload = json.loads(output.read_text(encoding="utf-8"))
+    assert payload["status"] == "not_authorized"
+    assert payload["events"] == []
+
+
+def test_adapt_command_parses_authorized_fixture(tmp_path: Path) -> None:
+    output = tmp_path / "trace.json"
+    export = REPO_ROOT / "tests" / "fixtures" / "opencode" / "authorized-export.json"
+
+    exit_code = main(
+        ["adapt", str(export), "--project-root", str(REPO_ROOT), "--authorized", "-o", str(output)]
+    )
+
+    assert exit_code == 0
+    payload = json.loads(output.read_text(encoding="utf-8"))
+    assert payload["status"] == "parsed"
+    assert payload["events"]
+
+
+def test_run_command_builds_end_to_end_local_outputs(tmp_path: Path) -> None:
+    (tmp_path / "task.md").write_text("# Goal\n\nImplement the parser safely.\n", encoding="utf-8")
+
+    exit_code = main(["run", str(tmp_path), "--no-git"])
+
+    assert exit_code == 0
+    assert (tmp_path / "learning-record.md").is_file()
+    assert (tmp_path / ".learntrace" / "task2-result.json").is_file()
+    assert (tmp_path / ".learntrace" / "task3-result.json").is_file()
+    assert (tmp_path / ".learntrace" / "archive-records.json").is_file()
+    assert (tmp_path / ".learntrace" / "learning-questions.md").is_file()
+
+    first = json.loads((tmp_path / ".learntrace" / "task2-result.json").read_text(encoding="utf-8"))
+    assert main(["run", str(tmp_path), "--no-git"]) == 0
+    second = json.loads(
+        (tmp_path / ".learntrace" / "task2-result.json").read_text(encoding="utf-8")
+    )
+    assert second == first
