@@ -1,0 +1,10 @@
+{
+  "confirmations": [
+    {
+      "candidate_id": "cand-demo-revise_ai_suggestion-45217458f05c329a",
+      "decision": "supplemented",
+      "student_statement": "演示回答：我先验证了正则方案的失败用例，再根据 CSV 引号规则调整了解析策略。",
+      "confirmed_at": "2026-07-20T11:30:00+08:00"
+    }
+  ]
+}

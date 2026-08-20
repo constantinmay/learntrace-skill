@@ -17,10 +17,13 @@ import jsonschema
 from learntrace import __version__
 from learntrace.models import (
     SCHEMA_VERSION,
+    CandidateStatus,
     ConfirmationDecision,
     ContractValidator,
     EventKind,
+    LearningNodeCandidate,
     MissingInfo,
+    NodeType,
     ObservableEvent,
     RecordType,
     SourceRef,
@@ -29,12 +32,17 @@ from learntrace.models import (
     TextOrMissing,
 )
 from learntrace.reporting import (
+    ArchiveBundle,
     ArchiveWarning,
     CandidateInferencer,
+    LLMInferenceError,
+    apply_confirmations,
+    archive_manifest,
     build_archive_bundle,
     bundle_to_dict,
     render_markdown,
     render_questions_markdown,
+    validate_bundle,
 )
 
 JsonObject = dict[str, object]
@@ -122,6 +130,11 @@ def build_parser() -> argparse.ArgumentParser:
         type=Path,
         default=[],
         help="Explicit student-confirmation JSON file (repeatable).",
+    )
+    parser.add_argument(
+        "--snapshot",
+        type=Path,
+        help="Existing archive-records.json whose candidates must be reused.",
     )
     parser.add_argument(
         "--strict-inputs",
@@ -354,6 +367,26 @@ def _parse_confirmation(raw: JsonObject, path: Path) -> StudentConfirmation:
     )
 
 
+def _parse_candidate(raw: JsonObject, path: Path) -> LearningNodeCandidate:
+    basis_items = _require_list(raw, "basis_event_ids", path)
+    if not all(isinstance(item, str) for item in basis_items):
+        msg = f"{path}: expected string items in 'basis_event_ids'"
+        raise ValueError(msg)
+    return LearningNodeCandidate(
+        id=_require_string(raw, "id", path),
+        node_type=NodeType(_require_string(raw, "node_type", path)),
+        statement=_require_string(raw, "statement", path),
+        basis_event_ids=tuple(cast(list[str], basis_items)),
+        uncertainty=_require_string(raw, "uncertainty", path),
+        question_to_student=_parse_text_or_missing(
+            raw.get("question_to_student"),
+            path,
+            "question_to_student",
+        ),
+        status=CandidateStatus(_require_string(raw, "status", path)),
+    )
+
+
 def _confirmation_id(data: JsonObject) -> str:
     content = json.dumps(data, ensure_ascii=False, sort_keys=True)
     return f"conf-{hashlib.sha256(content.encode('utf-8')).hexdigest()[:16]}"
@@ -422,6 +455,71 @@ def load_confirmation_file(
             raise ValueError(msg)
     contract = validator if validator is not None else ContractValidator()
     return tuple(_parse_explicit_confirmation(entry, resolved, contract) for entry in entries)
+
+
+def load_archive_snapshot(
+    path: Path,
+    *,
+    validator: ContractValidator | None = None,
+) -> ArchiveBundle:
+    """Load the exact candidates and evidence produced by a previous run."""
+
+    resolved = path.expanduser().resolve()
+    if not resolved.is_file():
+        msg = f"analysis snapshot does not exist: {resolved}; run LearnTrace once before confirming"
+        raise FileNotFoundError(msg)
+    raw = _read_json_object(resolved, strict_inputs=True)
+    if raw is None or not _looks_like_generated_archive_json(raw):
+        msg = f"{resolved}: expected a generated LearnTrace archive snapshot"
+        raise ValueError(msg)
+
+    contract = validator if validator is not None else ContractValidator()
+    events: list[ObservableEvent] = []
+    for index, item in enumerate(_require_list(raw, "events", resolved), start=1):
+        event = _require_object(item, f"events[{index}]", resolved)
+        _validate_record(contract, "observable_event", event, resolved)
+        events.append(_parse_event(event, resolved))
+
+    candidates: list[LearningNodeCandidate] = []
+    for index, item in enumerate(_require_list(raw, "candidates", resolved), start=1):
+        candidate = _require_object(item, f"candidates[{index}]", resolved)
+        _validate_record(contract, "learning_node_candidate", candidate, resolved)
+        candidates.append(_parse_candidate(candidate, resolved))
+
+    confirmations: list[StudentConfirmation] = []
+    for index, item in enumerate(_require_list(raw, "confirmations", resolved), start=1):
+        confirmation = _require_object(item, f"confirmations[{index}]", resolved)
+        _validate_record(contract, "student_confirmation", confirmation, resolved)
+        confirmations.append(_parse_confirmation(confirmation, resolved))
+
+    warnings = tuple(
+        _parse_warning(item, resolved) for item in _require_list(raw, "warnings", resolved)
+    )
+    inference_mode = _require_string(raw, "candidate_inference_mode", resolved)
+    task2_meta: dict[str, Any] = {}
+    manifest_raw = raw.get("archive_manifest")
+    if isinstance(manifest_raw, dict):
+        manifest = cast(JsonObject, manifest_raw)
+        task2_meta_raw = manifest.get("task2_meta")
+        if isinstance(task2_meta_raw, dict):
+            task2_meta = dict(cast(dict[str, Any], task2_meta_raw))
+
+    bundle = ArchiveBundle(
+        events=tuple(events),
+        candidates=tuple(candidates),
+        confirmations=tuple(confirmations),
+        warnings=warnings,
+        inference_mode=inference_mode,
+        task2_meta=task2_meta,
+    )
+    validate_bundle(bundle, validator=contract)
+    stored_manifest = _require_object(raw.get("archive_manifest"), "archive_manifest", resolved)
+    stored_fingerprint = _require_string(stored_manifest, "content_fingerprint", resolved)
+    computed_fingerprint = cast(str, archive_manifest(bundle)["content_fingerprint"])
+    if stored_fingerprint != computed_fingerprint:
+        msg = f"{resolved}: analysis snapshot fingerprint does not match its records"
+        raise ValueError(msg)
+    return bundle
 
 
 def _parse_warning(raw: object, path: Path) -> ArchiveWarning:
@@ -648,32 +746,41 @@ def write_learning_record_result(
     inferencer: CandidateInferencer | None = None,
     strict_inputs: bool = False,
     confirmation_paths: Iterable[Path] = (),
+    snapshot_path: Path | None = None,
 ) -> LearningRecordWriteResult:
     contract_validator = validator if validator is not None else ContractValidator()
-    loaded = load_project_artifacts(
-        project_dir,
-        validator=contract_validator,
-        strict_inputs=strict_inputs,
-    )
-    if not loaded.events:
-        msg = (
-            f"no observable_event records found under {project_dir.resolve()}; "
-            "expected LearnTrace record JSON or a Task2 parse-result JSON with an events list"
-        )
-        raise ValueError(msg)
     explicit_confirmations = tuple(
         confirmation
         for path in confirmation_paths
         for confirmation in load_confirmation_file(path, validator=contract_validator)
     )
-    bundle = build_archive_bundle(
-        loaded.events,
-        confirmations=(*loaded.confirmations, *explicit_confirmations),
-        warnings=loaded.warnings,
-        validator=contract_validator,
-        inferencer=inferencer,
-        task2_meta=loaded.task2_meta,
-    )
+    if snapshot_path is not None:
+        snapshot = load_archive_snapshot(snapshot_path, validator=contract_validator)
+        bundle = apply_confirmations(
+            snapshot,
+            explicit_confirmations,
+            validator=contract_validator,
+        )
+    else:
+        loaded = load_project_artifacts(
+            project_dir,
+            validator=contract_validator,
+            strict_inputs=strict_inputs,
+        )
+        if not loaded.events:
+            msg = (
+                f"no observable_event records found under {project_dir.resolve()}; "
+                "expected LearnTrace record JSON or a Task2 parse-result JSON with an events list"
+            )
+            raise ValueError(msg)
+        bundle = build_archive_bundle(
+            loaded.events,
+            confirmations=(*loaded.confirmations, *explicit_confirmations),
+            warnings=loaded.warnings,
+            validator=contract_validator,
+            inferencer=inferencer,
+            task2_meta=loaded.task2_meta,
+        )
     markdown = render_markdown(bundle, source_dir=project_dir.resolve())
     destination = (
         output_path if output_path is not None else project_dir.resolve() / "learning-record.md"
@@ -708,6 +815,7 @@ def write_learning_record(
     inferencer: CandidateInferencer | None = None,
     strict_inputs: bool = False,
     confirmation_paths: Iterable[Path] = (),
+    snapshot_path: Path | None = None,
 ) -> Path:
     result = write_learning_record_result(
         project_dir,
@@ -718,6 +826,7 @@ def write_learning_record(
         inferencer=inferencer,
         strict_inputs=strict_inputs,
         confirmation_paths=confirmation_paths,
+        snapshot_path=snapshot_path,
     )
     return result.output_path
 
@@ -760,8 +869,9 @@ def main(argv: list[str] | tuple[str, ...] | None = None) -> int:
             questions_output_path=args.questions_output,
             strict_inputs=args.strict_inputs,
             confirmation_paths=tuple(args.confirmations),
+            snapshot_path=args.snapshot,
         )
-    except (FileNotFoundError, ValueError) as exc:
+    except (FileNotFoundError, LLMInferenceError, ValueError) as exc:
         parser.exit(1, f"{parser.prog}: error: {exc}\n")
     print(_format_cli_summary(result))
     return 0

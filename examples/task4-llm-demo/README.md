@@ -1,7 +1,13 @@
 # Task 4 LLM Demo
 
 This demo feeds Task 4 a small, hand-authored `ObservableEvent` bundle that has
-enough evidence for a real LLM to propose learning-node candidates.
+enough evidence for the deterministic stub and a real LLM to propose
+learning-node candidates.
+
+It exercises the archive and candidate-inference portion of LearnTrace. It is
+not a substitute for the end-to-end OpenCode Skill check described in the root
+README: that check additionally covers discovery, consent, command selection,
+and the student-question handoff.
 
 The bundle includes:
 
@@ -32,6 +38,23 @@ each event's `id`, `kind`, a sanitized `summary`, and `occurred_at`;
 `source_refs` (potential paths), notes, and repository code are never
 transmitted, and any email, token, or absolute path embedded in a summary is
 stripped before the request leaves the boundary.
+If the remote model fails or returns no valid candidates, the archive records
+the reason and falls back to the deterministic local inferencer.
 
 Generated files are written under `examples/task4-llm-demo/out/`, which is
 ignored by git so demo outputs do not become source-controlled artifacts.
+
+The first run produces one deterministic pending question when the stub is in
+use. To demonstrate the second stage without re-running inference, apply the
+clearly synthetic answer in `student-confirmations.json.example`:
+
+```powershell
+uv run --locked python -m learntrace archive `
+  examples/task4-llm-demo `
+  --snapshot examples/task4-llm-demo/out/archive-records.json `
+  --confirmations examples/task4-llm-demo/student-confirmations.json.example `
+  --output examples/task4-llm-demo/out/confirmed-learning-record.md `
+  --records-output examples/task4-llm-demo/out/confirmed-archive-records.json
+```
+
+The example statement is test data, not a real student's reflection.

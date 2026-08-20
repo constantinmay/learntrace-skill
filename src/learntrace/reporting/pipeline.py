@@ -5,11 +5,11 @@ from __future__ import annotations
 import hashlib
 import json
 import re
-from collections.abc import Iterable
-from dataclasses import dataclass, field
+from collections.abc import Callable, Iterable
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from enum import Enum
-from typing import Any, Protocol
+from typing import Any, Protocol, cast
 
 from learntrace import __version__
 from learntrace.models import (
@@ -29,7 +29,7 @@ from learntrace.models import (
 ARCHIVE_VERSION = "v0"
 
 HASH_ALGORITHM = "sha256"
-MAX_CANDIDATES = 50
+MAX_CANDIDATES = 10
 _MAX_TRACE_COMMIT_GAP_SECONDS = 30 * 60
 
 _CONSTRAINT_TERMS = (
@@ -47,7 +47,6 @@ _CONSTRAINT_TERMS = (
     "评分",
     "状态",
 )
-_IDENTIFIER_PATTERN = re.compile(r"[A-Za-z_][A-Za-z0-9_-]{3,}")
 _LOW_SIGNAL_TRACE_TERMS = (
     "命令类型：git add",
     "命令类型：git log",
@@ -76,6 +75,31 @@ _CHANGE_MARKERS = (
     "refactor",
     "rewrite",
     "switch",
+)
+_AI_SUGGESTION_TERMS = (
+    "建议",
+    "提议",
+    "推荐",
+    "suggest",
+    "suggested",
+    "recommend",
+    "recommended",
+    "proposal",
+)
+_TRACE_LEARNING_SIGNAL_TERMS = (
+    *_AI_SUGGESTION_TERMS,
+    "失败",
+    "错误",
+    "修复",
+    "测试",
+    "追问",
+    "决定",
+    "选择",
+    "error",
+    "fail",
+    "fix",
+    "question",
+    "test",
 )
 _TOPIC_FAMILIES: dict[str, tuple[str, ...]] = {
     "arithmetic": ("divide", "division", "test_div", "zero", "除零", "除数"),
@@ -325,7 +349,7 @@ class StubCandidateInferencer:
         for commit in commits:
             if commit.id in covered_commits:
                 continue
-            if _looks_like_rewrite(commit):
+            if (_looks_like_fix_commit(commit) and not test_logs) or _looks_like_rewrite(commit):
                 drafts.append(self._commit_only_fix_candidate(commit))
             elif _looks_like_constraint_change(commit):
                 drafts.append(self._commit_only_constraint_candidate(commit))
@@ -347,7 +371,9 @@ class StubCandidateInferencer:
         available = [
             trace
             for trace in traces
-            if trace.id not in used_event_ids and not _is_low_signal_trace(trace)
+            if trace.id not in used_event_ids
+            and not _is_low_signal_trace(trace)
+            and _has_trace_learning_signal(trace)
         ]
         follow_ups: list[CandidateDraft] = []
         for commit in commits:
@@ -386,11 +412,6 @@ class StubCandidateInferencer:
         if shared_terms:
             return len(shared_terms) * 10
 
-        shared_identifiers = _specific_identifiers(document.summary) & _specific_identifiers(
-            commit.summary
-        )
-        if shared_identifiers and (document_terms or commit_terms):
-            return len(shared_identifiers)
         return 0
 
     def _revise_ai_matches(self, trace: ObservableEvent, commit: ObservableEvent) -> bool:
@@ -400,8 +421,14 @@ class StubCandidateInferencer:
         only check that the summaries actually correspond, so unrelated nearby
         commits are not turned into a revision claim.
         """
-        return _topics_related(trace.summary, commit.summary) and _contains_change_marker(
-            commit.summary
+        trace_lowered = trace.summary.casefold()
+        has_explicit_suggestion = any(
+            _marker_present(trace_lowered, term) for term in _AI_SUGGESTION_TERMS
+        )
+        return (
+            has_explicit_suggestion
+            and _topics_related(trace.summary, commit.summary)
+            and _contains_change_marker(_commit_intent_text(commit.summary))
         )
 
     def _revise_ai_candidate(
@@ -601,6 +628,15 @@ class StubCandidateInferencer:
 
     def _commit_only_fix_candidate(self, commit: ObservableEvent) -> CandidateDraft:
 
+        if _looks_like_fix_commit(commit):
+            return CandidateDraft(
+                node_type=NodeType.FIX_FAILED_APPROACH,
+                statement="提交记录表明学生可能修复了一个实现问题。",
+                basis_event_ids=(commit.id,),
+                uncertainty="高：只有修复提交，缺少失败日志和测试结果，问题表现与验证过程仍未知。",
+                question_to_student="这次修复前出现了什么可复现问题，你如何验证修改有效？",
+            )
+
         if "parsing" in _semantic_topics(commit.summary):
             return CandidateDraft(
                 node_type=NodeType.FIX_FAILED_APPROACH,
@@ -694,6 +730,18 @@ def _is_low_signal_trace(trace: ObservableEvent) -> bool:
     return any(term.casefold() in lowered for term in _LOW_SIGNAL_TRACE_TERMS)
 
 
+def _has_trace_learning_signal(trace: ObservableEvent) -> bool:
+    """Require content beyond a generic completed tool operation.
+
+    Task 3 intentionally minimizes traces. A tool name, command class, or path
+    alone does not show a learning decision and must not be paired with a
+    nearby commit merely to manufacture a candidate.
+    """
+
+    lowered = trace.summary.casefold()
+    return any(_marker_present(lowered, term) for term in _TRACE_LEARNING_SIGNAL_TERMS)
+
+
 def _semantic_topics(summary: str) -> frozenset[str]:
     lowered = summary.casefold()
     return frozenset(
@@ -737,16 +785,21 @@ def _contains_change_marker(summary: str) -> bool:
     return any(_marker_present(lowered, marker) for marker in _CHANGE_MARKERS)
 
 
+_QUOTED_COMMIT_MESSAGE_RE = re.compile(r"提交信息为[‘'“\"](?P<message>.*?)[’'”\"]")
+_COMMIT_PREFIX_RE = re.compile(r"^(?:提交|commit)\s+[a-f0-9]+\s*[：:]\s*", re.IGNORECASE)
+
+
+def _commit_intent_text(summary: str) -> str:
+    """Strip parser boilerplate before classifying the commit's intent."""
+
+    quoted = _QUOTED_COMMIT_MESSAGE_RE.search(summary)
+    if quoted is not None:
+        return quoted.group("message")
+    return _COMMIT_PREFIX_RE.sub("", summary, count=1)
+
+
 def _constraint_terms(summary: str) -> frozenset[str]:
     return frozenset(term for term in _CONSTRAINT_TERMS if term in summary)
-
-
-def _specific_identifiers(summary: str) -> frozenset[str]:
-    return frozenset(
-        identifier
-        for identifier in _IDENTIFIER_PATTERN.findall(summary.lower())
-        if "_" in identifier or "-" in identifier
-    )
 
 
 def _temporally_plausible(
@@ -789,16 +842,27 @@ def _looks_like_test_addition(commit: ObservableEvent) -> bool:
 
 def _looks_like_rewrite(commit: ObservableEvent) -> bool:
 
-    return any(term in commit.summary for term in ("重写", "去掉", "改写"))
+    intent = _commit_intent_text(commit.summary)
+    return any(term in intent for term in ("重写", "去掉", "改写"))
+
+
+def _looks_like_fix_commit(commit: ObservableEvent) -> bool:
+    intent = _commit_intent_text(commit.summary).casefold().strip()
+    return (
+        re.match(r"^fix(?:\([^)]*\))?!?(?:\s*:|\s+)", intent) is not None
+        or "修复" in intent
+        or "纠正" in intent
+    )
 
 
 def _looks_like_constraint_change(commit: ObservableEvent) -> bool:
-    topics = _semantic_topics(commit.summary)
+    intent = _commit_intent_text(commit.summary)
+    topics = _semantic_topics(intent)
     return (
-        "约束" in commit.summary
-        or "边界" in commit.summary
+        "约束" in intent
+        or "边界" in intent
         or bool(topics & {"cli", "missing_data"})
-        and _contains_change_marker(commit.summary)
+        and _contains_change_marker(intent)
     )
 
 
@@ -979,6 +1043,27 @@ def _limit_candidate_drafts(
     return selected, len(drafts) - len(selected)
 
 
+def _dedupe_candidate_drafts(
+    drafts: tuple[CandidateDraft, ...],
+) -> tuple[tuple[CandidateDraft, ...], int]:
+    """Remove repeated questions that add no distinct learning value."""
+
+    unique: list[CandidateDraft] = []
+    seen: set[tuple[NodeType, str, str]] = set()
+    for draft in drafts:
+        question = (
+            draft.question_to_student
+            if isinstance(draft.question_to_student, str)
+            else json.dumps(draft.question_to_student.to_dict(), ensure_ascii=False, sort_keys=True)
+        )
+        key = (draft.node_type, draft.statement.strip(), question.strip())
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(draft)
+    return tuple(unique), len(drafts) - len(unique)
+
+
 def validate_bundle(
     bundle: ArchiveBundle,
     *,
@@ -1065,13 +1150,61 @@ def build_archive_bundle(
 
         candidate_inferencer = default_candidate_inferencer()
 
-    inferred_drafts = candidate_inferencer.infer(deduped_events)
-    drafts, truncated_count = _limit_candidate_drafts(inferred_drafts)
+    configured_inference_mode = str(getattr(candidate_inferencer, "inference_mode", "custom"))
+    inference_failure_warnings: tuple[ArchiveWarning, ...] = ()
+    try:
+        inferred_drafts = candidate_inferencer.infer(deduped_events)
+    except Exception as exc:
+        # Keep ordinary custom-inferencer failures visible. Only the explicit
+        # remote LLM adapter receives the documented local fallback.
+        from learntrace.reporting.llm import LLMInferenceError
 
-    effective_warnings = warnings
+        if configured_inference_mode != "llm" or not isinstance(exc, LLMInferenceError):
+            raise
+        inferred_drafts = ()
+        inference_failure_warnings = (
+            ArchiveWarning(
+                code="llm_inference_failed",
+                source="candidate_inference",
+                message="LLM 候选推断失败；已改用本地确定性规则。",
+            ),
+        )
+
+    fallback_used = (
+        configured_inference_mode == "llm" and not inferred_drafts and bool(deduped_events)
+    )
+    if fallback_used:
+        inferred_drafts = StubCandidateInferencer().infer(deduped_events)
+    unique_drafts, duplicate_count = _dedupe_candidate_drafts(inferred_drafts)
+    drafts, truncated_count = _limit_candidate_drafts(unique_drafts)
+
+    warning_provider = cast(
+        Callable[[], tuple[ArchiveWarning, ...]] | None,
+        getattr(candidate_inferencer, "inference_warnings", None),
+    )
+    inference_warnings = tuple(warning_provider()) if callable(warning_provider) else ()
+    effective_warnings = (*warnings, *inference_failure_warnings, *inference_warnings)
+    if fallback_used:
+        effective_warnings = (
+            *effective_warnings,
+            ArchiveWarning(
+                code="llm_fallback_to_stub",
+                source="candidate_inference",
+                message="LLM 未提供可用候选；本次候选已由本地确定性规则补充。",
+            ),
+        )
+    if duplicate_count:
+        effective_warnings = (
+            *effective_warnings,
+            ArchiveWarning(
+                code="duplicate_candidates_removed",
+                source="candidate_inference",
+                message=f"已移除 {duplicate_count} 条重复候选问题。",
+            ),
+        )
     if truncated_count:
         effective_warnings = (
-            *warnings,
+            *effective_warnings,
             ArchiveWarning(
                 code="candidate_limit_applied",
                 source="candidate_inference",
@@ -1089,13 +1222,43 @@ def build_archive_bundle(
         candidates=candidates,
         confirmations=sorted_confirmations,
         warnings=_dedupe_warnings(effective_warnings),
-        inference_mode=str(getattr(candidate_inferencer, "inference_mode", "custom")),
+        inference_mode=("llm_stub_fallback" if fallback_used else configured_inference_mode),
         task2_meta=dict(task2_meta) if task2_meta is not None else {},
     )
 
     validate_bundle(bundle, validator=validator)
 
     return bundle
+
+
+def apply_confirmations(
+    bundle: ArchiveBundle,
+    confirmations: tuple[StudentConfirmation, ...],
+    *,
+    validator: ContractValidator | None = None,
+) -> ArchiveBundle:
+    """Resolve a persisted candidate snapshot without running inference again."""
+
+    merged_confirmations = _dedupe_confirmations((*bundle.confirmations, *confirmations))
+    confirmed_candidate_ids = {confirmation.candidate_id for confirmation in merged_confirmations}
+    candidates = tuple(
+        replace(
+            candidate,
+            status=(
+                CandidateStatus.RESOLVED
+                if candidate.id in confirmed_candidate_ids
+                else CandidateStatus.PROPOSED
+            ),
+        )
+        for candidate in bundle.candidates
+    )
+    updated = replace(
+        bundle,
+        candidates=candidates,
+        confirmations=merged_confirmations,
+    )
+    validate_bundle(updated, validator=validator)
+    return updated
 
 
 def _text_or_missing_to_json(value: TextOrMissing) -> str | dict[str, Any]:

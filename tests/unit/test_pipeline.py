@@ -163,14 +163,14 @@ class IdenticalCandidateInferencer:
         return (draft, draft)
 
 
-def test_identical_candidates_rejected_not_order_disambiguated() -> None:
-    """Two byte-identical candidates still collide even after full content
-    hashing; they must be rejected, never disambiguated by order, because an
-    order-based suffix would silently rebind a confirmation."""
+def test_identical_candidates_are_deduplicated_without_order_suffixes() -> None:
+    """Repeated questions become one stable candidate, never order suffixes."""
     events = (_event("evt-sy-1", EventKind.GIT_COMMIT, "提交 a1b2c3d：重写。"),)
 
-    with pytest.raises(ValueError, match="candidate id collision"):
-        build_archive_bundle(events, inferencer=IdenticalCandidateInferencer())
+    bundle = build_archive_bundle(events, inferencer=IdenticalCandidateInferencer())
+
+    assert len(bundle.candidates) == 1
+    assert [warning.code for warning in bundle.warnings] == ["duplicate_candidates_removed"]
 
 
 def test_english_commit_overview_is_recognized() -> None:
@@ -415,7 +415,7 @@ def test_stub_adjust_constraints_selects_one_topical_document_per_commit() -> No
     }
 
 
-def test_stub_links_minimal_trace_to_nearest_following_commit() -> None:
+def test_stub_does_not_infer_learning_from_generic_tool_completion() -> None:
     events = (
         _event(
             "evt-trace-write",
@@ -439,12 +439,7 @@ def test_stub_links_minimal_trace_to_nearest_following_commit() -> None:
 
     bundle = build_archive_bundle(events, inferencer=StubCandidateInferencer())
 
-    assert len(bundle.candidates) == 1
-    candidate = bundle.candidates[0]
-    assert candidate.node_type == NodeType.FOLLOW_UP
-    assert candidate.basis_event_ids == ("evt-trace-edit", "evt-commit-ui")
-    assert candidate.uncertainty.startswith("高：")
-    assert "主题关联" in candidate.uncertainty
+    assert bundle.candidates == ()
 
 
 def test_low_signal_trace_batch_does_not_create_follow_up_flood() -> None:
@@ -477,8 +472,48 @@ def test_low_signal_trace_batch_does_not_create_follow_up_flood() -> None:
         (*traces, relevant, *commits), inferencer=StubCandidateInferencer()
     )
 
+    assert bundle.candidates == ()
+
+
+def test_generic_write_trace_does_not_become_ai_revision() -> None:
+    events = (
+        _event(
+            "evt-trace-write",
+            EventKind.TRACE_RECORD,
+            "OpenCode 工具 write 已完成。路径：.gitignore。",
+            occurred_at="2026-08-10T09:40:00Z",
+        ),
+        _event(
+            "evt-commit-ignore",
+            EventKind.GIT_COMMIT,
+            "提交 a1b2c3d：将编译产物加入 .gitignore 并从版本库移除。",
+            occurred_at="2026-08-10T09:45:00Z",
+        ),
+    )
+
+    bundle = build_archive_bundle(events, inferencer=StubCandidateInferencer())
+
+    assert bundle.candidates == ()
+
+
+def test_fix_commit_without_test_log_yields_conservative_question() -> None:
+    events = (
+        _event(
+            "evt-fix-commit",
+            EventKind.GIT_COMMIT,
+            "提交 a1b2c3d：fix: 修复 created_at 时间格式不一致。",
+        ),
+    )
+
+    bundle = build_archive_bundle(events, inferencer=StubCandidateInferencer())
+
     assert len(bundle.candidates) == 1
-    assert bundle.candidates[0].basis_event_ids[0] == "evt-relevant"
+    candidate = bundle.candidates[0]
+    assert candidate.node_type == NodeType.FIX_FAILED_APPROACH
+    assert candidate.basis_event_ids == ("evt-fix-commit",)
+    assert candidate.uncertainty.startswith("高：")
+    assert isinstance(candidate.question_to_student, str)
+    assert "如何验证" in candidate.question_to_student
 
 
 def test_stub_rejects_low_signal_and_topically_unrelated_nearby_traces() -> None:

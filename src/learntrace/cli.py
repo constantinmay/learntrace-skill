@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 from collections.abc import Sequence
 from pathlib import Path
@@ -12,8 +13,9 @@ from learntrace.adapters import adapt_opencode_export, write_trace_result
 from learntrace.archive import main as archive_main
 from learntrace.archive import write_learning_record_result
 from learntrace.parsers import discover_static_materials, parse_static_materials, write_parse_result
+from learntrace.reporting import LLMInferenceError
 
-_COMMANDS = frozenset({"adapt", "archive", "parse", "run"})
+_COMMANDS = frozenset({"adapt", "archive", "discover", "parse", "run"})
 
 
 def _add_parse_options(parser: argparse.ArgumentParser) -> None:
@@ -36,6 +38,12 @@ def build_parser() -> argparse.ArgumentParser:
     parse_parser = subparsers.add_parser("parse", help="Produce Task 2 events JSON.")
     _add_parse_options(parse_parser)
     parse_parser.add_argument("-o", "--output", type=Path)
+
+    discover_parser = subparsers.add_parser(
+        "discover",
+        help="List candidate evidence paths without reading file contents.",
+    )
+    discover_parser.add_argument("project_dir", type=Path)
 
     adapt_parser = subparsers.add_parser("adapt", help="Adapt an OpenCode JSON export.")
     adapt_parser.add_argument("export_path", type=Path)
@@ -90,6 +98,27 @@ def _run_command(args: argparse.Namespace, parser: argparse.ArgumentParser) -> i
     try:
         if args.command == "archive":
             return archive_main(args.args)
+        if args.command == "discover":
+            discovered = discover_static_materials(args.project_dir.resolve())
+            inventory = discovered.inventory
+            print(
+                json.dumps(
+                    {
+                        "git_available": discovered.has_git,
+                        "documents": [path.as_posix() for path in discovered.documents],
+                        "test_logs": [path.as_posix() for path in discovered.test_logs],
+                        "inventory_counts": {
+                            "files": len(inventory.files),
+                            "source_files": len(inventory.source_files),
+                            "test_files": len(inventory.test_files),
+                        },
+                        "warnings": [warning.to_dict() for warning in discovered.warnings],
+                    },
+                    ensure_ascii=False,
+                    indent=2,
+                )
+            )
+            return 0
         if args.command == "parse":
             output = args.output or args.project_dir.resolve() / ".learntrace/task2-result.json"
             events, warnings = _parse_project(args, output)
@@ -117,6 +146,20 @@ def _run_command(args: argparse.Namespace, parser: argparse.ArgumentParser) -> i
         work_dir = root / ".learntrace"
         parse_output = work_dir / "task2-result.json"
         output = args.output or root / "learning-record.md"
+        archive_snapshot = work_dir / "archive-records.json"
+        if args.confirmations:
+            archive_result = write_learning_record_result(
+                work_dir,
+                output_path=output,
+                records_output_path=archive_snapshot,
+                questions_output_path=work_dir / "learning-questions.md",
+                confirmation_paths=tuple(args.confirmations),
+                snapshot_path=archive_snapshot,
+            )
+            print(f"Applied confirmations to analysis snapshot: {archive_snapshot}")
+            print(f"Wrote learning record: {archive_result.output_path}")
+            return 0
+
         events, warnings = _parse_project(args, parse_output, excluded_documents=(output,))
         trace_result = adapt_opencode_export(
             args.opencode_export,
@@ -128,14 +171,14 @@ def _run_command(args: argparse.Namespace, parser: argparse.ArgumentParser) -> i
         archive_result = write_learning_record_result(
             work_dir,
             output_path=output,
-            records_output_path=work_dir / "archive-records.json",
+            records_output_path=archive_snapshot,
             questions_output_path=work_dir / "learning-questions.md",
             confirmation_paths=tuple(args.confirmations),
         )
         print(f"Wrote parse result: {parse_output} (events={events}, warnings={warnings})")
         print(f"Wrote learning record: {archive_result.output_path}")
         return 0
-    except (FileNotFoundError, OSError, ValueError) as exc:
+    except (FileNotFoundError, LLMInferenceError, OSError, ValueError) as exc:
         parser.exit(1, f"{parser.prog}: error: {exc}\n")
 
 

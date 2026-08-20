@@ -8,7 +8,13 @@ from typing import Any, cast
 
 import pytest
 
-from learntrace.archive import load_project_artifacts, load_project_records, write_learning_record
+from learntrace.archive import (
+    load_archive_snapshot,
+    load_project_artifacts,
+    load_project_records,
+    write_learning_record,
+    write_learning_record_result,
+)
 from learntrace.models import (
     ConfirmationDecision,
     ContractValidator,
@@ -27,16 +33,60 @@ from learntrace.reporting import (
     bundle_to_dict,
     render_markdown,
 )
-from learntrace.reporting.pipeline import MAX_CANDIDATES, StubCandidateInferencer
+from learntrace.reporting.pipeline import StubCandidateInferencer
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SCHEMA_DIR = REPO_ROOT / "src" / "learntrace" / "schemas" / "v0"
 SCENARIOS_DIR = REPO_ROOT / "tests" / "fixtures" / "golden" / "scenarios"
 SCENARIO_DIRS = tuple(sorted(path for path in SCENARIOS_DIR.iterdir() if path.is_dir()))
+DEMO_DIR = REPO_ROOT / "examples" / "task4-llm-demo"
 
 
 def _load_json(path: Path) -> Any:
     return json.loads(path.read_text(encoding="utf-8"))
+
+
+def test_archive_snapshot_rejects_records_that_do_not_match_fingerprint(
+    tmp_path: Path,
+) -> None:
+    snapshot = tmp_path / "archive-records.json"
+    write_learning_record_result(
+        SCENARIOS_DIR / "09-sparse-evidence-high-uncertainty",
+        output_path=tmp_path / "learning-record.md",
+        records_output_path=snapshot,
+    )
+    payload = _load_json(snapshot)
+    payload["events"][0]["summary"] = "tampered summary"
+    snapshot.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="snapshot fingerprint"):
+        load_archive_snapshot(snapshot)
+
+
+def test_public_demo_runs_both_analysis_and_snapshot_confirmation(tmp_path: Path) -> None:
+    snapshot = tmp_path / "archive-records.json"
+    first = write_learning_record_result(
+        DEMO_DIR,
+        output_path=tmp_path / "learning-record.md",
+        records_output_path=snapshot,
+        questions_output_path=tmp_path / "learning-questions.md",
+    )
+
+    first_counts = cast(dict[str, object], first.archive["record_counts"])
+    assert first_counts["candidate_inference"] == 1
+    assert first_counts["pending_questions"] == 1
+
+    confirmed = write_learning_record_result(
+        DEMO_DIR,
+        output_path=tmp_path / "confirmed-learning-record.md",
+        records_output_path=tmp_path / "confirmed-archive-records.json",
+        confirmation_paths=(DEMO_DIR / "student-confirmations.json.example",),
+        snapshot_path=snapshot,
+    )
+
+    confirmed_counts = cast(dict[str, object], confirmed.archive["record_counts"])
+    assert confirmed_counts["student_confirmation"] == 1
+    assert confirmed_counts["pending_questions"] == 0
 
 
 def _expected_candidates(scenario_dir: Path) -> list[dict[str, Any]]:
@@ -122,7 +172,7 @@ def test_render_markdown_redacts_paths_and_secrets_from_record_body(tmp_path: Pa
             ArchiveWarning(
                 code="private-warning",
                 source=f"{private_root}\\input.json",
-                message="用户目录 ~/.ssh/id_rsa 无法读取",
+                message="用户目录 ~/.ssh/id_rsa 和 /secret 无法读取",
             ),
         ),
     )
@@ -131,10 +181,43 @@ def test_render_markdown_redacts_paths_and_secrets_from_record_body(tmp_path: Pa
 
     assert private_root not in markdown
     assert "~/.ssh/id_rsa" not in markdown
+    assert "/secret" not in markdown
     assert secret not in markdown
     assert "[REDACTED]" in markdown
     assert "[absolute-path]" in markdown
     assert "[private-path]" in markdown
+
+
+def test_render_markdown_preserves_routes_urls_and_natural_slashes() -> None:
+    event = ObservableEvent(
+        id="evt-readable-route",
+        kind=EventKind.DOCUMENT,
+        summary=(
+            "读书/资源管理系统通过 /api 和 /api/books 提供接口，参考 https://example.test/docs。"
+        ),
+        source_refs=(SourceRef(type=SourceType.DOCUMENT, ref="README.md:1-2"),),
+    )
+
+    markdown = render_markdown(build_archive_bundle((event,)))
+
+    assert "读书/资源管理系统" in markdown
+    assert "/api 和" in markdown
+    assert "/api/books" in markdown
+    assert "https://example.test/docs" in markdown
+
+
+def test_render_markdown_calls_out_missing_test_evidence() -> None:
+    event = ObservableEvent(
+        id="evt-no-tests",
+        kind=EventKind.GIT_COMMIT,
+        summary="提交 a1b2c3d：实现接口。",
+        source_refs=(SourceRef(type=SourceType.GIT_COMMIT, ref="a1b2c3d"),),
+    )
+
+    markdown = render_markdown(build_archive_bundle((event,)))
+
+    assert "未发现测试日志" in markdown
+    assert "不能证明项目测试已运行或通过" in markdown
 
 
 def test_render_markdown_handles_missing_info_and_degraded_cases() -> None:
@@ -358,18 +441,7 @@ def test_realistic_task2_task3_chain_avoids_candidate_explosion(tmp_path: Path) 
         validator=ContractValidator(schema_dir=SCHEMA_DIR),
     )
 
-    assert 0 < len(bundle.candidates) <= MAX_CANDIDATES
-    assert all(
-        candidate.node_type != NodeType.ADJUST_CONSTRAINTS for candidate in bundle.candidates
-    )
-    event_kind_by_id = {event.id: event.kind for event in bundle.events}
-    assert all(
-        any(
-            event_kind_by_id[event_id] == EventKind.TRACE_RECORD
-            for event_id in candidate.basis_event_ids
-        )
-        for candidate in bundle.candidates
-    )
+    assert bundle.candidates == ()
 
 
 def test_loads_task2_style_batch_json_without_marker_when_events_look_valid(tmp_path: Path) -> None:

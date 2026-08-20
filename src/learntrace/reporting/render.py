@@ -45,7 +45,6 @@ _TRACE_EXCLUSION_TERMS = (
     "unknown-command",
     "工具 unknown",
 )
-_GENERIC_TOOL_TRACE_RE = re.compile(r"^OpenCode 工具 \S+ 已完成。")
 _MAX_RENDERED_TRACE_EVENTS = 20
 _HOME_PATH_RE = re.compile(
     r"(?i)(?<!\w)(?:~[^\\/\s]*|\$(?:HOME|USERPROFILE|HOMEPATH)|"
@@ -53,7 +52,9 @@ _HOME_PATH_RE = re.compile(
     r"%(?:HOME|USERPROFILE|HOMEPATH)%)(?:[\\/][^\s，。；、\"'`]+)+"
 )
 _ABSOLUTE_PATH_RE = re.compile(
-    r"([A-Za-z]:[\\/][^\s，。；、\"'`]+|[\\/][^\s，。；、\"'`]*[\\/][^\s，。；、\"'`]+)"
+    r"((?<![A-Za-z0-9])[A-Za-z]:[\\/][^\s，。；、\"'`]+|"
+    r"\\\\[^\\/\s]+[\\/][^\s，。；、\"'`]+|"
+    r"(?<![\w:/])/(?!api(?:/|\b)|v\d+(?:/|\b))[^\s，。；、\"'`]+)"
 )
 
 
@@ -131,7 +132,7 @@ def _relevant_trace_events(bundle: ArchiveBundle) -> tuple[list[ObservableEvent]
         searchable = _trace_search_text(event)
         if any(term.casefold() in searchable for term in _TRACE_EXCLUSION_TERMS):
             continue
-        if _GENERIC_TOOL_TRACE_RE.match(event.summary):
+        if searchable.startswith("opencode 工具") and "已完成" in searchable:
             continue
         relevant.append(event)
     visible = relevant[:_MAX_RENDERED_TRACE_EVENTS]
@@ -148,6 +149,11 @@ def _inference_mode_lines(bundle: ArchiveBundle) -> list[str]:
         return [
             "- 本次候选由本地确定性规则生成，未启用远程 LLM 推断。",
             "- 候选仍保持在 `candidate_inference` 层，不会自动写成 `observable_fact`。",
+        ]
+    if bundle.inference_mode == "llm_stub_fallback":
+        return [
+            "- 远程 LLM 未提供可用候选，本次改用本地确定性规则生成候选。",
+            "- LLM 告警与回退状态保留在机器档案中，候选仍不会自动写成事实。",
         ]
     return [
         f"- 本次候选由自定义推断器生成（模式：`{bundle.inference_mode}`）。",
@@ -243,12 +249,27 @@ def render_markdown(bundle: ArchiveBundle, *, source_dir: Path | None = None) ->
         lines.append("")
 
     lines.append("## 验证证据")
-    for event in bundle.events:
+    test_logs = [event for event in bundle.events if event.kind == EventKind.TEST_LOG]
+    if not test_logs:
+        lines.append("- 未发现测试日志；当前档案不能证明项目测试已运行或通过。")
+
+    basis_event_ids = {
+        event_id for candidate in bundle.candidates for event_id in candidate.basis_event_ids
+    }
+    evidence_events = [
+        event
+        for event in bundle.events
+        if event.kind == EventKind.TEST_LOG or event.id in basis_event_ids
+    ]
+    for event in evidence_events:
         refs = ", ".join(
             f"{ref.type.value}:{_render_safe_text(ref.ref)}" for ref in event.source_refs
         )
         summary = _render_safe_text(event.summary)
         lines.append(f"- {event.id} [{event.kind.value}]：{summary}（来源：{refs}）")
+    if not evidence_events:
+        lines.append("- 当前没有与候选直接关联的验证证据。")
+    lines.append("- 完整事实与来源索引保存在 `.learntrace/archive-records.json`。")
     lines.append("")
 
     lines.append("## 个人反思")

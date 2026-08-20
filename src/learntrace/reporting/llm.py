@@ -21,6 +21,7 @@ from learntrace.models import (
 )
 from learntrace.privacy import redact_sensitive_text
 from learntrace.reporting.pipeline import (
+    ArchiveWarning,
     CandidateDraft,
     CandidateInferencer,
     StubCandidateInferencer,
@@ -47,7 +48,10 @@ _UNCERTAINTY_PREFIXES = ("\u9ad8\uff1a", "\u4e2d\uff1a", "\u4f4e\uff1a")
 # instead of a second, weaker regex.
 _EMAIL_RE = re.compile(r"[\w.+-]+@[\w-]+(?:\.[\w-]+)+")
 _DISK_PATH_RE = re.compile(
-    r"([A-Za-z]:[\\/][^\s\uff0c\u3002\uff1b\u3001\"'`]+|[\\/][^\s\uff0c\u3002\uff1b\u3001\"'`]*[\\/][^\s\uff0c\u3002\uff1b\u3001\"'`]+)"
+    r"((?<![A-Za-z0-9])[A-Za-z]:[\\/][^\s\uff0c\u3002\uff1b\u3001\"'`]+|"
+    r"\\\\[^\\/\s]+[\\/][^\s\uff0c\u3002\uff1b\u3001\"'`]+|"
+    r"(?<![\w:/])/(?!api(?:/|\b)|v\d+(?:/|\b))"
+    r"[^\s\uff0c\u3002\uff1b\u3001\"'`]+)"
 )
 _WINDOWS_HOME_RE = re.compile(
     r"[Cc]:[\\/][Uu]sers[\\/][^\\/]+(?:[\\/][^\s\uff0c\u3002\uff1b\u3001\"'`]*)?"
@@ -101,14 +105,41 @@ class OpenAIChatCandidateInferencer:
     ) -> None:
         self._config = config
         self._validator = validator if validator is not None else ContractValidator()
+        self._inference_warnings: tuple[ArchiveWarning, ...] = ()
 
     def infer(self, events: tuple[ObservableEvent, ...]) -> tuple[CandidateDraft, ...]:
+        self._inference_warnings = ()
         if not events:
             return ()
         payload = self._build_payload(events)
         content = self._complete(payload)
         raw_candidates = _extract_llm_candidates(content)
-        return self._validated_drafts(raw_candidates, events)
+        drafts = self._validated_drafts(raw_candidates, events)
+        warnings: list[ArchiveWarning] = []
+        rejected_count = len(raw_candidates) - len(drafts)
+        if rejected_count:
+            warnings.append(
+                ArchiveWarning(
+                    code="invalid_llm_candidates_discarded",
+                    source="candidate_inference",
+                    message=(f"LLM 返回的候选中有 {rejected_count} 条因校验失败或重复未进入档案。"),
+                )
+            )
+        if not drafts:
+            warnings.append(
+                ArchiveWarning(
+                    code="llm_no_candidates",
+                    source="candidate_inference",
+                    message="LLM 未生成可用候选；归档流水线将尝试本地确定性回退。",
+                )
+            )
+        self._inference_warnings = tuple(warnings)
+        return drafts
+
+    def inference_warnings(self) -> tuple[ArchiveWarning, ...]:
+        """Return diagnostics from the most recent inference call."""
+
+        return self._inference_warnings
 
     @staticmethod
     def _redacted_event(event: ObservableEvent) -> dict[str, str | None]:
@@ -180,6 +211,9 @@ class OpenAIChatCandidateInferencer:
                 timeout=self._config.timeout_seconds,
             ) as response:
                 raw_response = response.read().decode("utf-8")
+        except UnicodeDecodeError as exc:
+            msg = "LLM response was not valid UTF-8"
+            raise LLMInferenceError(msg) from exc
         except (OSError, urllib.error.URLError) as exc:
             msg = f"LLM request failed: {exc}"
             raise LLMInferenceError(msg) from exc

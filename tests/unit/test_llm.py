@@ -140,6 +140,34 @@ def test_llm_inferencer_returns_schema_valid_candidate() -> None:
     assert "候选生成模式：`llm`" in render_markdown(bundle)
 
 
+def test_llm_empty_candidate_result_falls_back_to_stub() -> None:
+    inferencer = FakeLLMInferencer(json.dumps({"candidates": []}))
+
+    bundle = build_archive_bundle(
+        (
+            _event(
+                "evt-demo-trace",
+                EventKind.TRACE_RECORD,
+                "AI suggested regex validation for student identifiers.",
+            ),
+            _event(
+                "evt-demo-commit",
+                EventKind.GIT_COMMIT,
+                "Commit a1b2c3d: replace regex validation with a parser helper.",
+            ),
+        ),
+        inferencer=inferencer,
+    )
+
+    assert len(bundle.candidates) == 1
+    assert bundle.candidates[0].node_type.value == "revise_ai_suggestion"
+    assert bundle.inference_mode == "llm_stub_fallback"
+    assert [warning.code for warning in bundle.warnings] == [
+        "llm_no_candidates",
+        "llm_fallback_to_stub",
+    ]
+
+
 def test_llm_payload_omits_source_refs_and_private_fields() -> None:
     """The outbound LLM payload must never contain source_refs or paths."""
     content = json.dumps({"candidates": []}, ensure_ascii=False)
@@ -181,7 +209,7 @@ def test_llm_payload_sanitizes_private_markers_in_summary() -> None:
         kind=EventKind.TEST_LOG,
         summary=(
             "跑了 alice@example.com 的用例，C:/Users/alice/proj/src/x.py 失败；"
-            "api_key=sk-1234567890 的命令被跳过。"
+            "根路径 /secret 无法读取；api_key=sk-1234567890 的命令被跳过。"
         ),
         source_refs=(SourceRef(type=SourceType.FILE, ref="logs/a.log"),),
     )
@@ -196,8 +224,38 @@ def test_llm_payload_sanitizes_private_markers_in_summary() -> None:
     summary = cast(str, sent_fields["summary"])
     assert "alice@example.com" not in summary
     assert "C:/Users/alice" not in summary
+    assert "/secret" not in summary
     assert "sk-1234567890" not in summary
     assert "alice@example.com" not in json.dumps(payload, ensure_ascii=False)
+
+
+def test_llm_payload_preserves_routes_urls_and_natural_slashes() -> None:
+    content = json.dumps({"candidates": []}, ensure_ascii=False)
+    inferencer = FakeLLMInferencer(content)
+    event = ObservableEvent(
+        id="evt-route-1",
+        kind=EventKind.DOCUMENT,
+        summary=(
+            "读书/资源管理系统通过 /api 和 /api/books 提供接口，"
+            "文档位于 https://example.test/docs；根路径 /secret 不应发送。"
+        ),
+        source_refs=(SourceRef(type=SourceType.DOCUMENT, ref="README.md:1-2"),),
+    )
+
+    inferencer.infer((event,))
+
+    payload = inferencer.payloads[0]
+    messages = cast(list[dict[str, object]], payload["messages"])
+    sent_fields = json.loads(
+        cast(str, messages[1]["content"]).rsplit("ObservableEvent records:\n", 1)[1]
+    )[0]
+    summary = cast(str, sent_fields["summary"])
+
+    assert "读书/资源管理系统" in summary
+    assert "/api 和" in summary
+    assert "/api/books" in summary
+    assert "https://example.test/docs" in summary
+    assert "/secret" not in summary
 
 
 def test_llm_payload_sanitizes_bearer_header_and_bare_token() -> None:
@@ -304,6 +362,27 @@ def test_llm_inferencer_wraps_unparseable_json() -> None:
         )
 
 
+def test_archive_falls_back_when_llm_response_is_unparseable() -> None:
+    inferencer = FakeLLMInferencer('```json\n{"candidates": [}\n```')
+    events = (
+        _event(
+            "evt-demo-commit",
+            EventKind.GIT_COMMIT,
+            "Commit a1b2c3d: fix parser handling for quoted values.",
+        ),
+    )
+
+    bundle = build_archive_bundle(events, inferencer=inferencer)
+
+    assert len(bundle.candidates) == 1
+    assert bundle.candidates[0].node_type.value == "fix_failed_approach"
+    assert bundle.inference_mode == "llm_stub_fallback"
+    assert [warning.code for warning in bundle.warnings] == [
+        "llm_inference_failed",
+        "llm_fallback_to_stub",
+    ]
+
+
 def test_llm_inferencer_ai_candidate_requires_trace_record() -> None:
     """AI-type candidates (revise_ai_suggestion, follow_up) require at least
     one trace_record in basis_event_ids."""
@@ -377,3 +456,9 @@ def test_llm_inferencer_drops_candidates_with_unknown_basis_event() -> None:
     )
 
     assert bundle.candidates == ()
+    assert [warning.code for warning in bundle.warnings] == [
+        "invalid_llm_candidates_discarded",
+        "llm_no_candidates",
+        "llm_fallback_to_stub",
+    ]
+    assert bundle.inference_mode == "llm_stub_fallback"

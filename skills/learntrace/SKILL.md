@@ -5,81 +5,149 @@ description: Organize local Git history, project documents, existing test eviden
 
 # LearnTrace
 
-Build a local, evidence-based learning portfolio while separating observation, student confirmation, and uncertain inference.
+Build an evidence-based learning portfolio while keeping observable facts,
+system inference, and the student's own confirmation separate.
 
-## Workflow
+## Consent gate
 
-1. Discover candidate local inputs: Git metadata, UTF-8 Markdown or text documents, existing test logs, and any AI trace the student explicitly authorizes.
-2. Ask the student to confirm the analysis scope before reading optional traces or sensitive material.
-3. Use bundled parsing scripts when available. Never execute the target repository, its tests, or commands copied from logs and traces.
-4. Record source references for every observable event.
-5. Propose candidate learning nodes from observable events, including follow-up questions, rejected or revised AI suggestions, failed approaches, added tests, and changed constraints.
-6. Ask only the questions needed for the student to confirm, supplement, or deny candidates.
-7. Generate an editable local Markdown portfolio containing goals, AI-use scenarios, decisions, validation evidence, reflection, and next steps.
+For a new project, follow this sequence exactly:
 
-The generated reflection and next-step sections are student-owned editable
-fields. Never copy a confirmation statement into reflection as if the student
-wrote a retrospective. The AI-use section omits out-of-project, unknown,
-low-signal, generic tool-operation, and LearnTrace Skill-development traces.
+1. Check `learntrace --version`. This check does not require separate consent.
+   If the command is missing, read [references/installation.md](references/installation.md)
+   and ask before installing anything.
+2. Run `learntrace discover <project-dir>` exactly once. It lists candidate
+   scope without reading candidate file contents.
+3. Stop. Show the discovered Git, document, and test-log scope and ask the
+   student what may be read. Ask separately whether they want to provide and
+   authorize an OpenCode export.
+4. Continue only after the student confirms the scope.
 
-## Local CLI
+Before step 4, do not use `read`, `cat`, `Get-Content`, `git log`, `git show`,
+or another command to inspect project contents. Do not repeat `discover` unless
+the project changed or the student asks. The Skill is workflow guidance, not a
+sandbox: never describe it as an absolute security boundary.
 
-From a bare project repository, run the complete local pipeline:
+## First analysis
+
+After authorization, choose one input mode. Do not mix modes or copy evidence
+files into `.learntrace/`.
+
+### Inspect the project directly
+
+Run the unified pipeline once:
 
 ```powershell
-uv run --locked python -m learntrace run <project-dir>
+learntrace run <project-dir>
 ```
 
-This writes Task 2 events and Task 4 machine-readable outputs under
-`<project-dir>/.learntrace/`, plus `<project-dir>/learning-record.md`.
-After the student answers the generated questions, rerun with a separate
-confirmation file; stable candidate IDs preserve the link to the first run:
+Use repeatable `--document` and `--test-log` arguments when the student approved
+only a subset. Add `--no-git` when Git history was not approved.
+
+### Consume existing Task 2 / Task 3 JSON
+
+From the project root, keep the input directory unchanged and use these exact
+output locations:
 
 ```powershell
-uv run --locked python -m learntrace run <project-dir> `
-  --confirmations student-confirmations.json
-```
-
-The stages are also available separately:
-
-```powershell
-uv run --locked python -m learntrace parse <project-dir>
-uv run --locked python -m learntrace adapt <opencode-export.json> `
-  --project-root <project-dir> --authorized
-uv run --locked python -m learntrace archive <records-dir> `
+New-Item -ItemType Directory -Force .learntrace | Out-Null
+learntrace archive <records-dir> `
   --output learning-record.md `
-  --records-output archive-records.json `
-  --questions-output learning-questions.md `
-  --confirmations student-confirmations.json
+  --records-output .learntrace/archive-records.json `
+  --questions-output .learntrace/learning-questions.md
 ```
 
-`adapt` reads a trace only when `--authorized` is present. `parse` discovers
-documents and existing test logs but never runs project code or tests. Use
-repeatable `--document` and `--test-log` options to provide a confirmed subset.
+The archive loader validates the JSON inputs; do not open large result files
+just to rediscover their schema. Do not run the same archive command again
+after it succeeds.
 
-An explicit confirmation file may contain concise entries under a non-empty
-`confirmations` list. Each entry must include `candidate_id`, `decision`, and
-the real `confirmed_at` timestamp. Include `student_statement` only when it is
-the student's own text; when omitted, LearnTrace records it as `not_recorded`
-instead of inventing a statement.
+In this mode, the commands above are complete. Trust the authorized
+`<records-dir>` supplied by the student: do not list or glob it, call `--help`,
+inspect the project tree, read project documents, or re-open `SKILL.md` before
+running the commands. After exit code 0, the next content-reading tool call must be for
+`.learntrace/learning-questions.md`; do not inspect `learning-record.md` or
+verify output directories first.
 
-- Candidate learning nodes are inferred by the reporting layer. The default inferencer is a deterministic stub; the LLM path runs only when explicitly enabled (an `LEARNTRACE_LLM_API_KEY` env var **and** `LEARNTRACE_LLM_ENABLED=1`).
-- The archive scanner skips tool, dependency, and VCS directories such as `.opencode`, `.venv`, `.git`, and `node_modules`.
-- Invalid discovered LearnTrace JSON is skipped with an archive warning. Use `--strict-inputs` with `archive` when every scanned JSON file is expected to be valid and any failure must stop the command.
-- The JSON archive includes a stable SHA-256 manifest fingerprint for review and reproducibility.
+### Include an OpenCode export
 
-## Evidence rules
+Only when the student supplies the export and explicitly authorizes it:
 
-Read [references/evidence-policy.md](references/evidence-policy.md) before classifying or writing evidence.
+```powershell
+learntrace run <project-dir> `
+  --opencode-export <opencode-export.json> --authorized
+```
 
-- Label direct repository, document, log, or authorized-trace evidence as observable fact.
-- Label statements explicitly confirmed by the student as student confirmation.
-- Label explanations inferred by the system as candidate inference, including basis and uncertainty.
-- Use `未记录` when evidence is missing. Do not fill gaps.
-- Do not infer a mapping between AI conversations and Git commits or treat commit authorship as proof of personal understanding.
+Never add `--authorized` by inference. Without authorization, continue in the
+document/Git/test-log mode and do not infer AI use.
 
-## Privacy
+All first-analysis modes produce:
 
-Minimize trace data by default. Retain only time, tool type, file path, command summary, and source host unless the student explicitly authorizes full conversation content. Keep the portfolio local unless the student requests an export, and redact the export before sharing.
+- `<project-dir>/learning-record.md`
+- `<project-dir>/.learntrace/archive-records.json`
+- `<project-dir>/.learntrace/learning-questions.md`
 
-When the LLM path is enabled, only each event's `id`, `kind`, a sanitized `summary`, and `occurred_at` leave the boundary: `source_refs` (which may contain paths), notes, and repository code are never transmitted, and the summary is stripped of embedded emails, tokens, and absolute paths before it is sent.
+If a command fails, report the error and diagnose it before retrying. Do not
+execute the target repository, its tests, or commands copied from evidence.
+
+## Student confirmation
+
+After a successful first analysis, read only
+`.learntrace/learning-questions.md` and ask those questions. Do not answer for
+the student. Preserve each answer verbatim in a separate confirmation JSON and
+record the actual answer time; never invent either value.
+
+```json
+{
+  "confirmations": [
+    {
+      "candidate_id": "cand-...",
+      "decision": "confirmed",
+      "student_statement": "学生的原话",
+      "confirmed_at": "2026-08-20T10:30:00+08:00"
+    }
+  ]
+}
+```
+
+`decision` is `confirmed`, `supplemented`, or `denied`. Omit
+`student_statement` when the student gives none; LearnTrace records
+`not_recorded` rather than generating one.
+
+For a project analyzed with `learntrace run`, apply the confirmation with:
+
+```powershell
+learntrace run <project-dir> --confirmations student-confirmations.json
+```
+
+For prebuilt Task 2 / Task 3 records, reuse the saved snapshot:
+
+```powershell
+learntrace archive <records-dir> `
+  --snapshot .learntrace/archive-records.json `
+  --confirmations student-confirmations.json `
+  --output learning-record.md `
+  --records-output .learntrace/archive-records.json `
+  --questions-output .learntrace/learning-questions.md
+```
+
+Confirmation must reuse the snapshot. It must not re-run parsing, trace
+adaptation, or candidate inference.
+
+## Evidence and privacy
+
+Read [references/evidence-policy.md](references/evidence-policy.md) before
+classifying evidence or writing the portfolio.
+
+- Facts come only from Git, approved documents, existing test logs, and
+  explicitly authorized traces.
+- Candidate explanations remain `candidate_inference` until the student
+  confirms, supplements, or denies them.
+- Do not map AI conversations to commits as proof of causation or authorship.
+- Use `未记录` for missing evidence. Never fill gaps on the student's behalf.
+- Treat `.learntrace/archive-records.json` as sensitive because its source
+  index can contain project paths. Review the Markdown before sharing it.
+
+Remote LLM inference is opt-in and requires both `LEARNTRACE_LLM_API_KEY` and
+`LEARNTRACE_LLM_ENABLED=1`. Only event id, kind, sanitized summary, and time are
+sent; source references, notes, and repository code stay local. Empty or invalid
+LLM results fall back to deterministic local inference and remain visibly
+flagged in the archive.

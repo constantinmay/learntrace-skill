@@ -8,6 +8,8 @@ from learntrace import __version__
 from learntrace import cli as cli_module
 from learntrace.archive import build_parser
 from learntrace.cli import main
+from learntrace.models import MissingInfo, NodeType, ObservableEvent
+from learntrace.reporting import CandidateDraft, LLMInferenceError
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SCENARIO_DIR = (
@@ -41,6 +43,8 @@ def test_parser_accepts_project_dir_and_output() -> None:
             "learning-questions.md",
             "--confirmations",
             "student-confirmations.json",
+            "--snapshot",
+            "first-archive.json",
             "--strict-inputs",
         ]
     )
@@ -49,6 +53,7 @@ def test_parser_accepts_project_dir_and_output() -> None:
     assert str(args.records_output) == "archive-records.json"
     assert str(args.questions_output) == "learning-questions.md"
     assert args.confirmations == [Path("student-confirmations.json")]
+    assert args.snapshot == Path("first-archive.json")
     assert args.strict_inputs is True
 
 
@@ -95,6 +100,7 @@ def test_archive_subcommand_exposes_archive_help(capsys: CaptureFixture[str]) ->
     assert exc_info.value.code == 0
     help_text = capsys.readouterr().out
     assert "--confirmations" in help_text
+    assert "--snapshot" in help_text
     assert "--strict-inputs" in help_text
 
 
@@ -129,6 +135,38 @@ def test_main_reports_missing_records_without_traceback(
     assert "Traceback" not in captured.err
 
 
+def test_run_falls_back_after_llm_failure_without_traceback(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: CaptureFixture[str],
+) -> None:
+    class FailingInferencer:
+        inference_mode = "llm"
+
+        def infer(self, events: tuple[ObservableEvent, ...]) -> tuple[CandidateDraft, ...]:
+            raise LLMInferenceError("LLM response could not be parsed")
+
+    monkeypatch.setattr(
+        "learntrace.reporting.llm.default_candidate_inferencer",
+        lambda: FailingInferencer(),
+    )
+    (tmp_path / "task.md").write_text("# Goal\n\nBuild safely.\n", encoding="utf-8")
+
+    exit_code = main(["run", str(tmp_path), "--no-git"])
+
+    assert exit_code == 0
+    captured = capsys.readouterr()
+    assert "Traceback" not in captured.err
+    archive = json.loads(
+        (tmp_path / ".learntrace" / "archive-records.json").read_text(encoding="utf-8")
+    )
+    assert [warning["code"] for warning in archive["warnings"]] == [
+        "llm_inference_failed",
+        "llm_fallback_to_stub",
+    ]
+    assert archive["candidate_inference_mode"] == "llm_stub_fallback"
+
+
 def test_parse_command_discovers_documents_and_writes_events(tmp_path: Path) -> None:
     (tmp_path / "task.md").write_text("# Goal\n\nImplement the parser safely.\n", encoding="utf-8")
     output = tmp_path / "events.json"
@@ -139,6 +177,25 @@ def test_parse_command_discovers_documents_and_writes_events(tmp_path: Path) -> 
     payload = json.loads(output.read_text(encoding="utf-8"))
     assert payload["events"][0]["kind"] == "document"
     assert payload["analysis_scope"]["documents"] == ["task.md"]
+
+
+def test_discover_command_lists_scope_without_document_content(
+    tmp_path: Path,
+    capsys: CaptureFixture[str],
+) -> None:
+    secret_body = "CONTENT_MUST_NOT_BE_PRINTED"
+    (tmp_path / "task.md").write_text(secret_body, encoding="utf-8")
+    (tmp_path / "pytest-final.log").write_text("1 passed", encoding="utf-8")
+    (tmp_path / "app.py").write_text("print('not executed')", encoding="utf-8")
+
+    assert main(["discover", str(tmp_path)]) == 0
+
+    output = capsys.readouterr().out
+    payload = json.loads(output)
+    assert payload["documents"] == ["task.md"]
+    assert payload["test_logs"] == ["pytest-final.log"]
+    assert payload["inventory_counts"]["source_files"] == 1
+    assert secret_body not in output
 
 
 def test_adapt_command_requires_explicit_authorization(tmp_path: Path) -> None:
@@ -184,6 +241,102 @@ def test_run_command_builds_end_to_end_local_outputs(tmp_path: Path) -> None:
         (tmp_path / ".learntrace" / "task2-result.json").read_text(encoding="utf-8")
     )
     assert second == first
+
+
+def test_run_with_confirmations_reuses_first_analysis_snapshot(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Confirmation must not discard traces or invoke inference a second time."""
+
+    class CountingInferencer:
+        inference_mode = "test"
+
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def infer(self, events: tuple[ObservableEvent, ...]) -> tuple[CandidateDraft, ...]:
+            self.calls += 1
+            trace = next(event for event in events if event.kind.value == "trace_record")
+            return (
+                CandidateDraft(
+                    node_type=NodeType.FOLLOW_UP,
+                    statement="学生可能围绕一次授权轨迹进行了追问。",
+                    basis_event_ids=(trace.id,),
+                    uncertainty="中：是否形成新的理解仍需学生确认。",
+                    question_to_student=MissingInfo(note="请由学生确认。"),
+                ),
+            )
+
+    inferencer = CountingInferencer()
+    monkeypatch.setattr(
+        "learntrace.reporting.llm.default_candidate_inferencer",
+        lambda: inferencer,
+    )
+    (tmp_path / "task.md").write_text(
+        "# Goal\n\nImplement the parser safely.\n",
+        encoding="utf-8",
+    )
+    export = REPO_ROOT / "tests" / "fixtures" / "opencode" / "authorized-export.json"
+
+    assert (
+        main(
+            [
+                "run",
+                str(tmp_path),
+                "--no-git",
+                "--opencode-export",
+                str(export),
+                "--authorized",
+            ]
+        )
+        == 0
+    )
+    archive_path = tmp_path / ".learntrace" / "archive-records.json"
+    first_archive = json.loads(archive_path.read_text(encoding="utf-8"))
+    candidate_id = first_archive["candidates"][0]["id"]
+    first_trace = json.loads(
+        (tmp_path / ".learntrace" / "task3-result.json").read_text(encoding="utf-8")
+    )
+    confirmations_path = tmp_path / "student-confirmations.json"
+    confirmations_path.write_text(
+        json.dumps(
+            {
+                "confirmations": [
+                    {
+                        "candidate_id": candidate_id,
+                        "decision": "confirmed",
+                        "confirmed_at": "2026-08-20T10:30:00+08:00",
+                    }
+                ]
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    assert (
+        main(
+            [
+                "run",
+                str(tmp_path),
+                "--no-git",
+                "--confirmations",
+                str(confirmations_path),
+            ]
+        )
+        == 0
+    )
+
+    second_archive = json.loads(archive_path.read_text(encoding="utf-8"))
+    second_trace = json.loads(
+        (tmp_path / ".learntrace" / "task3-result.json").read_text(encoding="utf-8")
+    )
+    assert inferencer.calls == 1
+    assert second_trace == first_trace
+    assert second_archive["candidates"][0]["id"] == candidate_id
+    assert second_archive["candidates"][0]["status"] == "resolved"
+    assert second_archive["confirmations"][0]["candidate_id"] == candidate_id
 
 
 def test_cli_merges_shorthand_confirmation_file(tmp_path: Path) -> None:
