@@ -32,6 +32,13 @@ uv run --locked python -m learntrace run <project-dir>
 
 This writes Task 2 events and Task 4 machine-readable outputs under
 `<project-dir>/.learntrace/`, plus `<project-dir>/learning-record.md`.
+After the student answers the generated questions, rerun with a separate
+confirmation file; stable candidate IDs preserve the link to the first run:
+
+```powershell
+uv run --locked python -m learntrace run <project-dir> `
+  --confirmations student-confirmations.json
+```
 
 The stages are also available separately:
 

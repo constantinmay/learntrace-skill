@@ -13,7 +13,7 @@ from learntrace.models import (
     StudentConfirmation,
     TextOrMissing,
 )
-from learntrace.privacy import normalize_project_path
+from learntrace.privacy import normalize_project_path, redact_sensitive_text
 from learntrace.reporting.pipeline import ArchiveBundle, archive_manifest
 
 _NODE_LABELS: dict[NodeType, str] = {
@@ -47,12 +47,27 @@ _TRACE_EXCLUSION_TERMS = (
 )
 _GENERIC_TOOL_TRACE_RE = re.compile(r"^OpenCode 工具 \S+ 已完成。")
 _MAX_RENDERED_TRACE_EVENTS = 20
+_HOME_PATH_RE = re.compile(
+    r"(?i)(?<!\w)(?:~[^\\/\s]*|\$(?:HOME|USERPROFILE|HOMEPATH)|"
+    r"\$\{(?:HOME|USERPROFILE|HOMEPATH)\}|\$env:(?:HOME|USERPROFILE|HOMEPATH)|"
+    r"%(?:HOME|USERPROFILE|HOMEPATH)%)(?:[\\/][^\s，。；、\"'`]+)+"
+)
+_ABSOLUTE_PATH_RE = re.compile(
+    r"([A-Za-z]:[\\/][^\s，。；、\"'`]+|[\\/][^\s，。；、\"'`]*[\\/][^\s，。；、\"'`]+)"
+)
+
+
+def _render_safe_text(value: str) -> str:
+    """Remove secrets and host paths at the final shareable-Markdown boundary."""
+    text = redact_sensitive_text(value, limit=len(value) or 1)
+    text = _HOME_PATH_RE.sub("[private-path]", text)
+    return _ABSOLUTE_PATH_RE.sub("[absolute-path]", text)
 
 
 def _render_text(value: TextOrMissing) -> str:
     if isinstance(value, MissingInfo):
         return "未记录"
-    return value
+    return _render_safe_text(value)
 
 
 def _render_confirmation_line(confirmation: StudentConfirmation | None) -> str:
@@ -101,7 +116,7 @@ def _project_goal_lines(bundle: ArchiveBundle) -> list[str]:
             candidates.append(event)
     if not candidates:
         return ["- 未记录；请由学生根据课程任务或项目 README 补充。"]
-    return [f"- {event.summary[:240]}" for event in candidates[:3]]
+    return [f"- {_render_safe_text(event.summary[:240])}" for event in candidates[:3]]
 
 
 def _trace_search_text(event: ObservableEvent) -> str:
@@ -188,7 +203,9 @@ def render_markdown(bundle: ArchiveBundle, *, source_dir: Path | None = None) ->
     lines.append("## 解析告警与边界")
     if bundle.warnings:
         for warning in bundle.warnings:
-            lines.append(f"- {warning.code} [{warning.source}]：{warning.message}")
+            source = _render_safe_text(warning.source)
+            message = _render_safe_text(warning.message)
+            lines.append(f"- {warning.code} [{source}]：{message}")
     else:
         lines.append("- 未记录")
     lines.append("")
@@ -197,7 +214,7 @@ def render_markdown(bundle: ArchiveBundle, *, source_dir: Path | None = None) ->
     trace_events, omitted_trace_count = _relevant_trace_events(bundle)
     if trace_events:
         for event in trace_events:
-            lines.append(f"- {event.id}：{event.summary}")
+            lines.append(f"- {event.id}：{_render_safe_text(event.summary)}")
     else:
         lines.append("- 未见与本项目范围相关的授权轨迹，未据此推断 AI 使用。")
     if omitted_trace_count:
@@ -215,9 +232,9 @@ def render_markdown(bundle: ArchiveBundle, *, source_dir: Path | None = None) ->
             lines.append(f"### {_NODE_LABELS[node_type]}")
             for candidate in matching:
                 confirmation = confirmations_by_candidate.get(candidate.id)
-                lines.append(f"- 候选 {candidate.id}：{candidate.statement}")
+                lines.append(f"- 候选 {candidate.id}：{_render_safe_text(candidate.statement)}")
                 lines.append(f"- 依据事实：{', '.join(candidate.basis_event_ids)}")
-                lines.append(f"- 不确定性：{candidate.uncertainty}")
+                lines.append(f"- 不确定性：{_render_safe_text(candidate.uncertainty)}")
                 lines.append(f"- 提问：{_render_text(candidate.question_to_student)}")
                 lines.append(f"- 学生确认：{_render_confirmation_line(confirmation)}")
             lines.append("")
@@ -227,8 +244,11 @@ def render_markdown(bundle: ArchiveBundle, *, source_dir: Path | None = None) ->
 
     lines.append("## 验证证据")
     for event in bundle.events:
-        refs = ", ".join(f"{ref.type.value}:{ref.ref}" for ref in event.source_refs)
-        lines.append(f"- {event.id} [{event.kind.value}]：{event.summary}（来源：{refs}）")
+        refs = ", ".join(
+            f"{ref.type.value}:{_render_safe_text(ref.ref)}" for ref in event.source_refs
+        )
+        summary = _render_safe_text(event.summary)
+        lines.append(f"- {event.id} [{event.kind.value}]：{summary}（来源：{refs}）")
     lines.append("")
 
     lines.append("## 个人反思")

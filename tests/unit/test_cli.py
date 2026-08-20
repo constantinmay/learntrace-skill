@@ -5,6 +5,7 @@ import pytest
 from _pytest.capture import CaptureFixture
 
 from learntrace import __version__
+from learntrace import cli as cli_module
 from learntrace.archive import build_parser
 from learntrace.cli import main
 
@@ -85,6 +86,31 @@ def test_archive_subcommand_forwards_legacy_options(tmp_path: Path) -> None:
 
     assert exit_code == 0
     assert output_path.is_file()
+
+
+def test_archive_subcommand_exposes_archive_help(capsys: CaptureFixture[str]) -> None:
+    with pytest.raises(SystemExit) as exc_info:
+        main(["archive", "--help"])
+
+    assert exc_info.value.code == 0
+    help_text = capsys.readouterr().out
+    assert "--confirmations" in help_text
+    assert "--strict-inputs" in help_text
+
+
+def test_run_parser_accepts_confirmation_files() -> None:
+    args = cli_module.build_parser().parse_args(
+        [
+            "run",
+            "sample-project",
+            "--confirmations",
+            "first.json",
+            "--confirmations",
+            "second.json",
+        ]
+    )
+
+    assert args.confirmations == [Path("first.json"), Path("second.json")]
 
 
 def test_main_reports_missing_records_without_traceback(

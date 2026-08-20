@@ -6,7 +6,7 @@ LearnTrace 是一个面向 AI 辅助课程项目的学习档案 Skill。它从�
 
 ## 当前状态
 
-项目处于 M1 初始化阶段，当前目标是跑通一条可信学习节点的端到端闭环。详细范围参见 [项目陈述](docs/project-statement.md) 和 [团队工作计划](docs/team-workplan.md)。
+项目已进入端到端联调阶段：统一 CLI 可以从项目仓库生成 Task 2 证据、可选接入经授权的 Task 3 轨迹，并产出 Task 4 学习档案。详细范围参见 [项目陈述](docs/project-statement.md) 和 [团队工作计划](docs/team-workplan.md)。
 
 ## 开发环境
 
@@ -20,36 +20,43 @@ LearnTrace 是一个面向 AI 辅助课程项目的学习档案 Skill。它从�
 安装依赖并运行检查：
 
 ```powershell
-uv sync --dev
+uv sync --dev --locked
 uv run ruff check .
 uv run ruff format --check .
 uv run pyright
 uv run pytest
 ```
 
-## Task 4 local CLI
+## 本地 CLI
 
-Build a Markdown learning archive from local LearnTrace JSON records:
+从项目仓库运行完整本地流程：
 
 ```powershell
-python -m learntrace.archive <project-dir> `
-  --output learning-record.md `
-  --records-output archive-records.json `
-  --questions-output learning-questions.md `
+uv run --locked python -m learntrace run <project-dir>
+```
+
+首次运行会生成 `learning-record.md`，并在 `<project-dir>/.learntrace/`
+写入 Task 2、Task 3、机器可读档案和待确认问题。学生填写独立确认文件后，
+使用稳定的候选 ID 再运行一次：
+
+```powershell
+uv run --locked python -m learntrace run <project-dir> `
   --confirmations student-confirmations.json
 ```
 
-`--confirmations` is repeatable and accepts a non-empty `confirmations` list.
-Each concise entry needs `candidate_id`, `decision`, and an RFC 3339
-`confirmed_at`. `student_statement` must contain the student's own words; omit
-it when no statement was provided, and LearnTrace records explicit
-`not_recorded` missing information instead of generating a statement.
+`--confirmations` 可重复传入；文件需包含非空 `confirmations` 列表。每条简写
+记录需要 `candidate_id`、`decision` 和 RFC 3339 格式的 `confirmed_at`。
+`student_statement` 只能填写学生原话；未提供原话时应省略，LearnTrace 会记录
+显式的 `not_recorded`，不会替学生生成陈述。
 
-The CLI uses the deterministic stub inferencer by default. It skips common noise
-directories such as `.venv`, `.git`, and `node_modules`; pass `--strict-inputs`
-when every JSON file in the input tree is expected to be a LearnTrace artifact.
-The machine-readable archive contains an audit manifest with a stable SHA-256
-fingerprint, and the CLI prints the same fingerprint plus record counts.
+`parse`、`adapt` 和 `archive` 也可以分别运行。读取 OpenCode 导出时必须对
+`adapt` 或 `run` 同时传入 `--authorized`；LearnTrace 不会执行目标项目代码、
+测试或日志中的命令。
+
+CLI 默认使用确定性候选推断器。归档扫描会跳过 `.opencode`、`.venv`、`.git`
+和 `node_modules` 等噪音目录；只有确认输入树中的每个 JSON 都应是 LearnTrace
+产物时，才对 `archive` 使用 `--strict-inputs`。机器可读档案包含带稳定
+SHA-256 指纹的审计清单，CLI 同时输出该指纹与记录数量。
 
 ## 目录结构
 

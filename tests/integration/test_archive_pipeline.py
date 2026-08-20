@@ -21,6 +21,7 @@ from learntrace.models import (
     StudentConfirmation,
 )
 from learntrace.reporting import (
+    ArchiveWarning,
     CandidateDraft,
     build_archive_bundle,
     bundle_to_dict,
@@ -104,6 +105,36 @@ def test_render_markdown_does_not_expose_source_directory(tmp_path: Path) -> Non
     assert str(tmp_path.resolve()) not in markdown
     assert "- 证据目录：." in markdown
     assert "~/.ssh" not in render_markdown(bundle, source_dir=Path("~/.ssh"))
+
+
+def test_render_markdown_redacts_paths_and_secrets_from_record_body(tmp_path: Path) -> None:
+    private_root = str(tmp_path.resolve())
+    secret = "sk-abcdefgh12345678"
+    event = ObservableEvent(
+        id="evt-body-privacy",
+        kind=EventKind.DOCUMENT,
+        summary=f"项目目标记录在 {private_root}\\notes.md，token={secret}",
+        source_refs=(SourceRef(type=SourceType.DOCUMENT, ref=f"{private_root}\\notes.md:1-2"),),
+    )
+    bundle = build_archive_bundle(
+        (event,),
+        warnings=(
+            ArchiveWarning(
+                code="private-warning",
+                source=f"{private_root}\\input.json",
+                message="用户目录 ~/.ssh/id_rsa 无法读取",
+            ),
+        ),
+    )
+
+    markdown = render_markdown(bundle, source_dir=tmp_path.resolve())
+
+    assert private_root not in markdown
+    assert "~/.ssh/id_rsa" not in markdown
+    assert secret not in markdown
+    assert "[REDACTED]" in markdown
+    assert "[absolute-path]" in markdown
+    assert "[private-path]" in markdown
 
 
 def test_render_markdown_handles_missing_info_and_degraded_cases() -> None:

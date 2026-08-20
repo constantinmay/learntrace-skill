@@ -4,19 +4,24 @@
 
 ## 当前可运行流程
 
-当前仓库实现的是一次性本地归档流程，不是 `init → reflect → report`
-状态机。可复现入口为：
+当前仓库实现的是统一的一次性本地流水线，不是 `init → reflect → report`
+状态机。裸项目仓库的可复现入口为：
 
 ```powershell
 uv sync --locked
-uv run --locked python -m learntrace.archive <records-dir> `
-  --output learning-record.md `
-  --records-output archive-records.json `
-  --questions-output learning-questions.md
+uv run --locked python -m learntrace run <project-dir>
 ```
 
-输入目录包含 Task 2 解析结果、完整 LearnTrace 记录或授权后的 Task 3
-适配结果。CLI 只读取本地 JSON，不执行被分析项目、测试或日志命令。
+该命令调用 `parse → 可选 adapt → archive`，但只读取 Git、文档、已有测试
+日志和显式授权的 OpenCode 导出，不执行被分析项目、测试或日志命令。
+`parse`、`adapt`、`archive` 也可分别运行。
+
+首次运行生成待确认问题。学生填写确认文件后，可再次运行：
+
+```powershell
+uv run --locked python -m learntrace run <project-dir> `
+  --confirmations student-confirmations.json
+```
 
 默认使用确定性候选推断器。只有同时设置
 `LEARNTRACE_LLM_ENABLED=1` 和 `LEARNTRACE_LLM_API_KEY` 时才启用远程
@@ -27,6 +32,8 @@ LLM 候选推断；出站字段和隐私边界以 `skills/learntrace/SKILL.md` �
 - `learning-record.md`：可编辑学习档案。
 - `archive-records.json`：带稳定指纹和来源索引的机器可读档案。
 - `learning-questions.md`：尚待学生确认的问题。
+- `.learntrace/task2-result.json`：Task 2 静态证据。
+- `.learntrace/task3-result.json`：Task 3 授权轨迹或未授权状态。
 
 ## 维护原则
 

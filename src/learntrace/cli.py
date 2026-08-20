@@ -50,6 +50,13 @@ def build_parser() -> argparse.ArgumentParser:
     _add_parse_options(run_parser)
     run_parser.add_argument("--opencode-export", type=Path)
     run_parser.add_argument("--authorized", action="store_true")
+    run_parser.add_argument(
+        "--confirmations",
+        action="append",
+        type=Path,
+        default=[],
+        help="Explicit student-confirmation JSON file (repeatable).",
+    )
     run_parser.add_argument("-o", "--output", type=Path)
     return parser
 
@@ -123,6 +130,7 @@ def _run_command(args: argparse.Namespace, parser: argparse.ArgumentParser) -> i
             output_path=output,
             records_output_path=work_dir / "archive-records.json",
             questions_output_path=work_dir / "learning-questions.md",
+            confirmation_paths=tuple(args.confirmations),
         )
         print(f"Wrote parse result: {parse_output} (events={events}, warnings={warnings})")
         print(f"Wrote learning record: {archive_result.output_path}")
@@ -133,6 +141,10 @@ def _run_command(args: argparse.Namespace, parser: argparse.ArgumentParser) -> i
 
 def main(argv: Sequence[str] | None = None) -> int:
     values = list(sys.argv[1:] if argv is None else argv)
+    # Delegate before the wrapper parser consumes ``--help`` or archive-only
+    # options, so the unified entry point exposes the complete archive CLI.
+    if values and values[0] == "archive":
+        return archive_main(values[1:])
     # Preserve the original flat archive invocation for existing users.
     if values and values[0] not in _COMMANDS and values[0] not in {"-h", "--help", "--version"}:
         return archive_main(values)
