@@ -707,6 +707,21 @@ def test_empty_events_business_json_is_not_misread_as_learntrace(tmp_path: Path)
     assert [event.id for event in loaded.events] == ["evt-s09-1"]
 
 
+def test_loader_accepts_confirmation_only_container(tmp_path: Path) -> None:
+    confirmation = _load_json(
+        SCENARIOS_DIR / "01-revise-ai-suggestion-confirmed" / "student-confirmation.json"
+    )
+    (tmp_path / "confirmations.json").write_text(
+        json.dumps({"events": [], "confirmations": [confirmation]}, ensure_ascii=False),
+        encoding="utf-8",
+    )
+
+    loaded = load_project_artifacts(tmp_path, validator=ContractValidator(schema_dir=SCHEMA_DIR))
+
+    assert loaded.events == ()
+    assert [item.to_dict() for item in loaded.confirmations] == [confirmation]
+
+
 def test_foreign_json_with_unknown_evidence_level_is_skipped(tmp_path: Path) -> None:
     """A foreign JSON that happens to carry an ``evidence_level`` key with a
     non-LearnTrace value must be skipped by the default scan, not swallowed as a

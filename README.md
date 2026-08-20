@@ -35,8 +35,15 @@ Build a Markdown learning archive from local LearnTrace JSON records:
 python -m learntrace.archive <project-dir> `
   --output learning-record.md `
   --records-output archive-records.json `
-  --questions-output learning-questions.md
+  --questions-output learning-questions.md `
+  --confirmations student-confirmations.json
 ```
+
+`--confirmations` is repeatable and accepts a non-empty `confirmations` list.
+Each concise entry needs `candidate_id`, `decision`, and an RFC 3339
+`confirmed_at`. `student_statement` must contain the student's own words; omit
+it when no statement was provided, and LearnTrace records explicit
+`not_recorded` missing information instead of generating a statement.
 
 The CLI uses the deterministic stub inferencer by default. It skips common noise
 directories such as `.venv`, `.git`, and `node_modules`; pass `--strict-inputs`

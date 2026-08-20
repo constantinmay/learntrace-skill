@@ -35,12 +35,21 @@ uv run --locked python -m learntrace parse <project-dir>
 uv run --locked python -m learntrace adapt <opencode-export.json> `
   --project-root <project-dir> --authorized
 uv run --locked python -m learntrace archive <records-dir> `
-  --output learning-record.md
+  --output learning-record.md `
+  --records-output archive-records.json `
+  --questions-output learning-questions.md `
+  --confirmations student-confirmations.json
 ```
 
 `adapt` reads a trace only when `--authorized` is present. `parse` discovers
 documents and existing test logs but never runs project code or tests. Use
 repeatable `--document` and `--test-log` options to provide a confirmed subset.
+
+An explicit confirmation file may contain concise entries under a non-empty
+`confirmations` list. Each entry must include `candidate_id`, `decision`, and
+the real `confirmed_at` timestamp. Include `student_statement` only when it is
+the student's own text; when omitted, LearnTrace records it as `not_recorded`
+instead of inventing a statement.
 
 - Candidate learning nodes are inferred by the reporting layer. The default inferencer is a deterministic stub; the LLM path runs only when explicitly enabled (an `LEARNTRACE_LLM_API_KEY` env var **and** `LEARNTRACE_LLM_ENABLED=1`).
 - The archive scanner skips tool, dependency, and VCS directories such as `.opencode`, `.venv`, `.git`, and `node_modules`.

@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import tempfile
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, cast
@@ -14,6 +16,7 @@ import jsonschema
 
 from learntrace import __version__
 from learntrace.models import (
+    SCHEMA_VERSION,
     ConfirmationDecision,
     ContractValidator,
     EventKind,
@@ -114,6 +117,13 @@ def build_parser() -> argparse.ArgumentParser:
         help="Optional path for unresolved student confirmation questions.",
     )
     parser.add_argument(
+        "--confirmations",
+        action="append",
+        type=Path,
+        default=[],
+        help="Explicit student-confirmation JSON file (repeatable).",
+    )
+    parser.add_argument(
         "--strict-inputs",
         action="store_true",
         help="Fail on unrelated JSON files instead of skipping them.",
@@ -185,21 +195,37 @@ def _looks_like_observable_event_object(data: JsonObject) -> bool:
     )
 
 
+def _looks_like_confirmation_object(data: JsonObject) -> bool:
+    return (
+        data.get("evidence_level") == StudentConfirmation.EVIDENCE_LEVEL
+        and isinstance(data.get("id"), str)
+        and isinstance(data.get("candidate_id"), str)
+        and isinstance(data.get("decision"), str)
+        and "student_statement" in data
+    )
+
+
 def _looks_like_learntrace_container(data: JsonObject) -> bool:
     # The events list must be non-empty and every element a well-shaped
     # observable event. An empty "events" is not proof of LearnTrace data — a
     # plain business JSON like {"events": []} must not be treated as a
     # LearnTrace container (see "default scan misreading ordinary JSON").
     events = data.get("events")
-    if not _is_object_list(events):
-        return False
-    event_objects = cast(list[JsonObject], events)
-    if not event_objects:
-        return False
-    if not all(_looks_like_observable_event_object(item) for item in event_objects):
-        return False
-
+    event_objects = cast(list[JsonObject], events) if _is_object_list(events) else []
     confirmations = data.get("confirmations")
+    confirmation_objects = (
+        cast(list[JsonObject], confirmations) if _is_object_list(confirmations) else []
+    )
+    has_valid_events = bool(event_objects) and all(
+        _looks_like_observable_event_object(item) for item in event_objects
+    )
+    has_valid_confirmations = bool(confirmation_objects) and all(
+        _looks_like_confirmation_object(item) for item in confirmation_objects
+    )
+    if not has_valid_events and not has_valid_confirmations:
+        return False
+    if events is not None and not _is_object_list(events):
+        return False
     if confirmations is not None and not _is_object_list(confirmations):
         return False
 
@@ -326,6 +352,76 @@ def _parse_confirmation(raw: JsonObject, path: Path) -> StudentConfirmation:
         student_statement=_parse_text_or_missing(student_statement_raw, path, "student_statement"),
         confirmed_at=_optional_string(raw, "confirmed_at", path),
     )
+
+
+def _confirmation_id(data: JsonObject) -> str:
+    content = json.dumps(data, ensure_ascii=False, sort_keys=True)
+    return f"conf-{hashlib.sha256(content.encode('utf-8')).hexdigest()[:16]}"
+
+
+def _parse_explicit_confirmation(
+    raw: JsonObject,
+    path: Path,
+    validator: ContractValidator,
+) -> StudentConfirmation:
+    if raw.get("evidence_level") == StudentConfirmation.EVIDENCE_LEVEL:
+        if raw.get("confirmed_at") is None:
+            msg = f"{path}: explicit confirmation requires confirmed_at"
+            raise ValueError(msg)
+        _validate_record(validator, "student_confirmation", raw, path)
+        return _parse_confirmation(raw, path)
+
+    allowed = {"candidate_id", "confirmed_at", "decision", "id", "student_statement"}
+    unexpected = sorted(set(raw) - allowed)
+    if unexpected:
+        msg = f"{path}: unexpected confirmation fields: {', '.join(unexpected)}"
+        raise ValueError(msg)
+    candidate_id = _require_string(raw, "candidate_id", path)
+    decision = _require_string(raw, "decision", path)
+    confirmed_at = _require_string(raw, "confirmed_at", path)
+    statement_raw = raw.get("student_statement", {"status": "not_recorded"})
+    normalized: JsonObject = {
+        "schema_version": SCHEMA_VERSION,
+        "evidence_level": StudentConfirmation.EVIDENCE_LEVEL,
+        "candidate_id": candidate_id,
+        "decision": decision,
+        "student_statement": statement_raw,
+        "confirmed_at": confirmed_at,
+    }
+    record_id = raw.get("id")
+    if record_id is not None and not isinstance(record_id, str):
+        msg = f"{path}: expected optional string field 'id'"
+        raise ValueError(msg)
+    normalized["id"] = record_id if record_id is not None else _confirmation_id(normalized)
+    _validate_record(validator, "student_confirmation", normalized, path)
+    return _parse_confirmation(normalized, path)
+
+
+def load_confirmation_file(
+    path: Path,
+    *,
+    validator: ContractValidator | None = None,
+) -> tuple[StudentConfirmation, ...]:
+    """Load an explicitly supplied full or shorthand confirmation file."""
+    resolved = path.expanduser().resolve()
+    if not resolved.is_file():
+        msg = f"{resolved} is not a file"
+        raise FileNotFoundError(msg)
+    raw = _read_json_object(resolved, strict_inputs=True)
+    if raw is None:  # pragma: no cover - strict object loading cannot return None
+        raise ValueError(f"{resolved}: expected a JSON object")
+    if raw.get("evidence_level") == StudentConfirmation.EVIDENCE_LEVEL:
+        entries = [raw]
+    else:
+        entries = [
+            _require_object(item, f"confirmations[{index}]", resolved)
+            for index, item in enumerate(_require_list(raw, "confirmations", resolved), start=1)
+        ]
+        if not entries:
+            msg = f"{resolved}: confirmations must not be empty"
+            raise ValueError(msg)
+    contract = validator if validator is not None else ContractValidator()
+    return tuple(_parse_explicit_confirmation(entry, resolved, contract) for entry in entries)
 
 
 def _parse_warning(raw: object, path: Path) -> ArchiveWarning:
@@ -517,7 +613,7 @@ def load_project_artifacts(
                 raise ValueError(msg)
         warnings.extend(loaded_warnings)
 
-    if not events:
+    if not events and not confirmations:
         msg = (
             f"no observable_event records found under {root}; "
             "expected LearnTrace record JSON or a Task2 parse-result JSON with an events list"
@@ -551,6 +647,7 @@ def write_learning_record_result(
     validator: ContractValidator | None = None,
     inferencer: CandidateInferencer | None = None,
     strict_inputs: bool = False,
+    confirmation_paths: Iterable[Path] = (),
 ) -> LearningRecordWriteResult:
     contract_validator = validator if validator is not None else ContractValidator()
     loaded = load_project_artifacts(
@@ -558,9 +655,20 @@ def write_learning_record_result(
         validator=contract_validator,
         strict_inputs=strict_inputs,
     )
+    if not loaded.events:
+        msg = (
+            f"no observable_event records found under {project_dir.resolve()}; "
+            "expected LearnTrace record JSON or a Task2 parse-result JSON with an events list"
+        )
+        raise ValueError(msg)
+    explicit_confirmations = tuple(
+        confirmation
+        for path in confirmation_paths
+        for confirmation in load_confirmation_file(path, validator=contract_validator)
+    )
     bundle = build_archive_bundle(
         loaded.events,
-        confirmations=loaded.confirmations,
+        confirmations=(*loaded.confirmations, *explicit_confirmations),
         warnings=loaded.warnings,
         validator=contract_validator,
         inferencer=inferencer,
@@ -599,6 +707,7 @@ def write_learning_record(
     validator: ContractValidator | None = None,
     inferencer: CandidateInferencer | None = None,
     strict_inputs: bool = False,
+    confirmation_paths: Iterable[Path] = (),
 ) -> Path:
     result = write_learning_record_result(
         project_dir,
@@ -608,6 +717,7 @@ def write_learning_record(
         validator=validator,
         inferencer=inferencer,
         strict_inputs=strict_inputs,
+        confirmation_paths=confirmation_paths,
     )
     return result.output_path
 
@@ -649,6 +759,7 @@ def main(argv: list[str] | tuple[str, ...] | None = None) -> int:
             records_output_path=args.records_output,
             questions_output_path=args.questions_output,
             strict_inputs=args.strict_inputs,
+            confirmation_paths=tuple(args.confirmations),
         )
     except (FileNotFoundError, ValueError) as exc:
         parser.exit(1, f"{parser.prog}: error: {exc}\n")

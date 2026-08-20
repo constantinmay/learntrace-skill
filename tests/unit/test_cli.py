@@ -1,6 +1,7 @@
 import json
 from pathlib import Path
 
+import pytest
 from _pytest.capture import CaptureFixture
 
 from learntrace import __version__
@@ -37,6 +38,8 @@ def test_parser_accepts_project_dir_and_output() -> None:
             "archive-records.json",
             "--questions-output",
             "learning-questions.md",
+            "--confirmations",
+            "student-confirmations.json",
             "--strict-inputs",
         ]
     )
@@ -44,6 +47,7 @@ def test_parser_accepts_project_dir_and_output() -> None:
     assert str(args.output) == "learning-record.md"
     assert str(args.records_output) == "archive-records.json"
     assert str(args.questions_output) == "learning-questions.md"
+    assert args.confirmations == [Path("student-confirmations.json")]
     assert args.strict_inputs is True
 
 
@@ -154,3 +158,76 @@ def test_run_command_builds_end_to_end_local_outputs(tmp_path: Path) -> None:
         (tmp_path / ".learntrace" / "task2-result.json").read_text(encoding="utf-8")
     )
     assert second == first
+
+
+def test_cli_merges_shorthand_confirmation_file(tmp_path: Path) -> None:
+    confirmations_path = tmp_path / "confirmations.json"
+    confirmations_path.write_text(
+        json.dumps(
+            {
+                "confirmations": [
+                    {
+                        "candidate_id": "cand-s09-adjust_constraints-5678a64e29b362f5",
+                        "decision": "confirmed",
+                        "confirmed_at": "2026-08-20T10:30:00+08:00",
+                    }
+                ]
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    records_output = tmp_path / "archive.json"
+
+    exit_code = main(
+        [
+            str(SCENARIO_DIR.parent / "09-sparse-evidence-high-uncertainty"),
+            "--confirmations",
+            str(confirmations_path),
+            "--records-output",
+            str(records_output),
+            "--output",
+            str(tmp_path / "record.md"),
+        ]
+    )
+
+    assert exit_code == 0
+    archive = json.loads(records_output.read_text(encoding="utf-8"))
+    confirmation = archive["confirmations"][0]
+    assert confirmation["candidate_id"] == "cand-s09-adjust_constraints-5678a64e29b362f5"
+    assert confirmation["student_statement"] == {"status": "not_recorded"}
+    assert confirmation["confirmed_at"] == "2026-08-20T10:30:00+08:00"
+
+
+def test_cli_rejects_confirmation_without_real_timestamp(
+    tmp_path: Path,
+    capsys: CaptureFixture[str],
+) -> None:
+    confirmations_path = tmp_path / "confirmations.json"
+    confirmations_path.write_text(
+        json.dumps(
+            {
+                "confirmations": [
+                    {
+                        "candidate_id": "cand-s09-adjust_constraints-5678a64e29b362f5",
+                        "decision": "confirmed",
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(SystemExit) as exc_info:
+        main(
+            [
+                str(SCENARIO_DIR),
+                "--confirmations",
+                str(confirmations_path),
+                "--output",
+                str(tmp_path / "record.md"),
+            ]
+        )
+
+    assert exc_info.value.code == 1
+    assert "confirmed_at" in capsys.readouterr().err
