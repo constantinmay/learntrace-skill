@@ -17,6 +17,11 @@ Build a local, evidence-based learning portfolio while separating observation, s
 6. Ask only the questions needed for the student to confirm, supplement, or deny candidates.
 7. Generate an editable local Markdown portfolio containing goals, AI-use scenarios, decisions, validation evidence, reflection, and next steps.
 
+The generated reflection and next-step sections are student-owned editable
+fields. Never copy a confirmation statement into reflection as if the student
+wrote a retrospective. The AI-use section omits out-of-project, unknown,
+low-signal, generic tool-operation, and LearnTrace Skill-development traces.
+
 ## Local CLI
 
 From a bare project repository, run the complete local pipeline:

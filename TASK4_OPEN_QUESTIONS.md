@@ -1,9 +1,20 @@
 # Task 4 Open Questions
 
-- No open questions for R2 as of 2026-07-24.
-- True-LLM smoke test was verified from environment variables only in an
-  escalated process. `LEARNTRACE_LLM_API_KEY` was present without printing its
-  value, `LEARNTRACE_LLM_BASE_URL` pointed at `https://api.llm.ustc.edu.cn/v1`,
-  and `LEARNTRACE_LLM_MODEL` was `glm-5.2`. The demo produced 4
-  schema-validated candidates from the `git_commit`, `trace_record`, `document`,
-  and `test_log` bundle.
+更新时间：2026-08-20
+
+## 当前遗留问题
+
+- 项目目标目前从 README、任务或要求类文档事件中保守提取；没有明确
+  证据时显示“未记录”。后续可考虑增加独立的结构化目标输入。
+- 个人反思和后续学习保留为学生本人填写区域；当前一次性 archive CLI
+  不提供交互式编辑器。
+- AI 轨迹范围过滤依赖安全路径占位符、低信号命令表、候选依据关系和
+  Skill 自身路径标记；新增适配器或工具类型时需要同步扩充规则。
+- AI 使用章节最多展示 20 条相关轨迹，其余数量会在档案中明确标注。
+
+## 已验证能力
+
+- 默认确定性推断和显式启用的 OpenAI-compatible LLM 推断均可生成通过
+  schema 校验的候选。
+- LLM 路径只在明确启用并配置 API key 时运行。
+- 机器可读档案保留事实、候选、确认、告警、来源索引与稳定内容指纹。

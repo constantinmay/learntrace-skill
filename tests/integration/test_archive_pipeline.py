@@ -77,6 +77,7 @@ def test_render_markdown_contains_required_sections(scenario_dir: Path) -> None:
 
     for heading in (
         "## 项目概览",
+        "## 项目目标",
         "## 审计摘要",
         "## 证据分层",
         "## AI 使用",
@@ -126,7 +127,7 @@ def test_render_markdown_handles_missing_info_and_degraded_cases() -> None:
     bundle_08 = build_archive_bundle(events_08, confirmations=confirmations_08, validator=validator)
     markdown_08 = render_markdown(bundle_08, source_dir=scenario_08)
     assert "当前证据未形成可提问的学习节点候选。" in markdown_08
-    assert "未见授权轨迹，未据此推断 AI 使用。" in markdown_08
+    assert "未见与本项目范围相关的授权轨迹" in markdown_08
 
     events_09, confirmations_09 = load_project_records(
         scenario_09,
@@ -138,6 +139,83 @@ def test_render_markdown_handles_missing_info_and_degraded_cases() -> None:
         "待补充 cand-s09-adjust_constraints-5678a64e29b362f5：调整缺失输入的处理方式是出于什么考虑？"  # noqa: E501
         in markdown_09
     )
+
+
+def test_render_markdown_extracts_documented_goal_without_inventing_one() -> None:
+    goal_event = ObservableEvent(
+        id="evt-goal",
+        kind=EventKind.DOCUMENT,
+        summary="README 记录项目目标：实现一个本地课程学习档案生成器。",
+        source_refs=(SourceRef(type=SourceType.DOCUMENT, ref="README.md:1-4"),),
+    )
+    commit_event = ObservableEvent(
+        id="evt-commit",
+        kind=EventKind.GIT_COMMIT,
+        summary="提交 a1b2c3d：初始化项目。",
+        source_refs=(SourceRef(type=SourceType.GIT_COMMIT, ref="a1b2c3d"),),
+    )
+
+    with_goal = render_markdown(build_archive_bundle((goal_event,)))
+    without_goal = render_markdown(build_archive_bundle((commit_event,)))
+
+    assert "## 项目目标" in with_goal
+    assert "实现一个本地课程学习档案生成器" in with_goal
+    assert "请由学生根据课程任务或项目 README 补充" in without_goal
+
+
+def test_ai_use_section_filters_irrelevant_trace_events() -> None:
+    traces = (
+        ObservableEvent(
+            id="evt-meaningful",
+            kind=EventKind.TRACE_RECORD,
+            summary="学生追问为何要为解析器补充边界测试。",
+            source_refs=(SourceRef(type=SourceType.TRACE_RECORD, ref="trace://session/1"),),
+        ),
+        ObservableEvent(
+            id="evt-outside",
+            kind=EventKind.TRACE_RECORD,
+            summary="OpenCode 工具 write 已完成。路径：[outside-project]。",
+            source_refs=(SourceRef(type=SourceType.TRACE_RECORD, ref="trace://session/2"),),
+        ),
+        ObservableEvent(
+            id="evt-kill",
+            kind=EventKind.TRACE_RECORD,
+            summary="OpenCode 工具 bash 已完成。命令类型：kill。",
+            source_refs=(SourceRef(type=SourceType.TRACE_RECORD, ref="trace://session/3"),),
+        ),
+        ObservableEvent(
+            id="evt-self",
+            kind=EventKind.TRACE_RECORD,
+            summary="OpenCode 工具 edit 已完成。路径：skills/learntrace/SKILL.md。",
+            source_refs=(SourceRef(type=SourceType.TRACE_RECORD, ref="trace://session/4"),),
+        ),
+        ObservableEvent(
+            id="evt-generic",
+            kind=EventKind.TRACE_RECORD,
+            summary="OpenCode 工具 write 已完成。路径：src/app.py。",
+            source_refs=(SourceRef(type=SourceType.TRACE_RECORD, ref="trace://session/5"),),
+        ),
+    )
+
+    markdown = render_markdown(build_archive_bundle(traces))
+    ai_section = markdown.split("## AI 使用\n", 1)[1].split("\n## 关键决策", 1)[0]
+
+    assert "evt-meaningful" in ai_section
+    for hidden_id in ("evt-outside", "evt-kill", "evt-self", "evt-generic"):
+        assert hidden_id not in ai_section
+    assert "已过滤或省略 4 条" in ai_section
+
+
+def test_reflection_is_an_editable_student_field_not_confirmation_echo() -> None:
+    scenario = SCENARIOS_DIR / "01-revise-ai-suggestion-confirmed"
+    events, confirmations = load_project_records(scenario)
+    bundle = build_archive_bundle(events, confirmations=confirmations)
+
+    markdown = render_markdown(bundle)
+    reflection = markdown.split("## 个人反思\n", 1)[1].split("\n## 后续学习", 1)[0]
+
+    assert "系统不会用确认陈述代写反思" in reflection
+    assert "默认推断会把含千分位的列解析成字符串" not in reflection
 
 
 def test_cli_writes_learning_record(tmp_path: Path) -> None:

@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 from learntrace.models import (
     EventKind,
     MissingInfo,
     NodeType,
+    ObservableEvent,
     StudentConfirmation,
     TextOrMissing,
 )
@@ -21,6 +23,30 @@ _NODE_LABELS: dict[NodeType, str] = {
     NodeType.ADD_TESTS: "补充测试",
     NodeType.ADJUST_CONSTRAINTS: "调整约束",
 }
+_GOAL_SOURCE_MARKERS = ("readme", "assignment", "requirement", "task", "任务", "要求")
+_GOAL_SUMMARY_MARKERS = ("目标", "任务", "要求", "goal", "objective", "requirement")
+_TRACE_EXCLUSION_TERMS = (
+    "[absolute-path]",
+    "[outside-project]",
+    "[unsafe-path]",
+    "learntrace-skill",
+    "skills/learntrace",
+    "命令类型：git add",
+    "命令类型：git log",
+    "命令类型：git status",
+    "命令类型：kill",
+    "命令类型：ls",
+    "命令类型：node",
+    "命令类型：pgrep",
+    "命令类型：pkill",
+    "命令类型：rm",
+    "命令类型：ss",
+    "工具 todowrite",
+    "unknown-command",
+    "工具 unknown",
+)
+_GENERIC_TOOL_TRACE_RE = re.compile(r"^OpenCode 工具 \S+ 已完成。")
+_MAX_RENDERED_TRACE_EVENTS = 20
 
 
 def _render_text(value: TextOrMissing) -> str:
@@ -62,6 +88,41 @@ def _source_dir_label(source_dir: Path | None) -> str:
     return value
 
 
+def _project_goal_lines(bundle: ArchiveBundle) -> list[str]:
+    candidates: list[ObservableEvent] = []
+    for event in bundle.events:
+        if event.kind != EventKind.DOCUMENT:
+            continue
+        refs = " ".join(ref.ref.casefold() for ref in event.source_refs)
+        summary = event.summary.casefold()
+        if any(marker in refs for marker in _GOAL_SOURCE_MARKERS) or any(
+            marker in summary for marker in _GOAL_SUMMARY_MARKERS
+        ):
+            candidates.append(event)
+    if not candidates:
+        return ["- 未记录；请由学生根据课程任务或项目 README 补充。"]
+    return [f"- {event.summary[:240]}" for event in candidates[:3]]
+
+
+def _trace_search_text(event: ObservableEvent) -> str:
+    refs = " ".join(f"{source.ref} {source.note or ''}" for source in event.source_refs)
+    return f"{event.summary} {refs}".casefold()
+
+
+def _relevant_trace_events(bundle: ArchiveBundle) -> tuple[list[ObservableEvent], int]:
+    trace_events = [event for event in bundle.events if event.kind == EventKind.TRACE_RECORD]
+    relevant: list[ObservableEvent] = []
+    for event in trace_events:
+        searchable = _trace_search_text(event)
+        if any(term.casefold() in searchable for term in _TRACE_EXCLUSION_TERMS):
+            continue
+        if _GENERIC_TOOL_TRACE_RE.match(event.summary):
+            continue
+        relevant.append(event)
+    visible = relevant[:_MAX_RENDERED_TRACE_EVENTS]
+    return visible, len(trace_events) - len(visible)
+
+
 def _inference_mode_lines(bundle: ArchiveBundle) -> list[str]:
     if bundle.inference_mode == "llm":
         return [
@@ -97,6 +158,10 @@ def render_markdown(bundle: ArchiveBundle, *, source_dir: Path | None = None) ->
         ]
     )
 
+    lines.append("## 项目目标")
+    lines.extend(_project_goal_lines(bundle))
+    lines.append("")
+
     lines.extend(
         [
             "## 审计摘要",
@@ -129,12 +194,14 @@ def render_markdown(bundle: ArchiveBundle, *, source_dir: Path | None = None) ->
     lines.append("")
 
     lines.append("## AI 使用")
-    trace_events = [event for event in bundle.events if event.kind == EventKind.TRACE_RECORD]
+    trace_events, omitted_trace_count = _relevant_trace_events(bundle)
     if trace_events:
         for event in trace_events:
             lines.append(f"- {event.id}：{event.summary}")
     else:
-        lines.append("- 未见授权轨迹，未据此推断 AI 使用。")
+        lines.append("- 未见与本项目范围相关的授权轨迹，未据此推断 AI 使用。")
+    if omitted_trace_count:
+        lines.append(f"- 已过滤或省略 {omitted_trace_count} 条越界、低信号或超出展示上限的轨迹。")
     lines.append("")
 
     lines.append("## 关键决策")
@@ -165,13 +232,8 @@ def render_markdown(bundle: ArchiveBundle, *, source_dir: Path | None = None) ->
     lines.append("")
 
     lines.append("## 个人反思")
-    reflection_lines = [
-        f"- {_NODE_LABELS[candidate.node_type]}：{_render_text(confirmation.student_statement)}"
-        for candidate in bundle.candidates
-        if (confirmation := confirmations_by_candidate.get(candidate.id)) is not None
-        and not isinstance(confirmation.student_statement, MissingInfo)
-    ]
-    lines.extend(reflection_lines or ["- 未记录"])
+    lines.append("- 未记录；本节必须由学生本人填写，系统不会用确认陈述代写反思。")
+    lines.append("<!-- 可填写：我学到了什么、为何改变方案、哪些判断仍需验证。 -->")
     lines.append("")
 
     lines.append("## 后续学习")
@@ -186,7 +248,7 @@ def render_markdown(bundle: ArchiveBundle, *, source_dir: Path | None = None) ->
             next_steps.append(
                 f"- 待补充 {candidate.id} 的学生说明：{_render_text(candidate.question_to_student)}"
             )
-    lines.extend(next_steps or ["- 未记录"])
+    lines.extend(next_steps or ["- 未记录；请由学生本人填写下一步学习或验证计划。"])
     lines.append("")
 
     lines.extend(
