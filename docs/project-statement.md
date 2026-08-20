@@ -44,8 +44,9 @@ Git 只按语义模块展示成员在版本历史中提交和维护过的内容�
 ## Skill 与脚本边界
 
 - MVP 完整交付为可安装 Skill 与随附 Python 解析脚本，以 OpenCode 为首个验证宿主，并为 Claude Code 预留第二适配器。
-- Python 只负责脚本解析：仓库、Git、测试日志、文档和轨迹的读取与结构化输出。
-- 宿主 Agent 负责理解、整理学习节点和与学生的对话追问。
+- Python 负责脚本解析：仓库、Git、测试日志、文档和轨迹的读取与结构化输出。
+- Python 的 reporting 层正式负责候选学习节点的推断：默认使用确定性 stub inferencer，可显式开启 OpenAI 兼容 LLM inferencer（需同时提供 API key 与 `LEARNTRACE_LLM_ENABLED=1`）。两路输出都遵循同样的证据分层与反幻觉约束，LLM 候选也须经 schema 校验后才进入档案。
+- 宿主 Agent 负责发起与学生的对话追问，并呈现 reporting 层生成的候选与档案。
 - 后续可在同一脚本层外增加独立 Agent，但它不属于 MVP。
 
 ## 轨迹与隐私
@@ -53,6 +54,8 @@ Git 只按语义模块展示成员在版本历史中提交和维护过的内容�
 OpenCode 和 Claude Code 的轨迹适配器各自转换为统一的 `trace.json`。默认只保留最小协作证据：时间、工具类型、文件路径、命令摘要和来源宿主。完整聊天内容仅在学生显式授权时读取或引用。
 
 学习档案默认保存在学生本地；学生可手动导出脱敏分享版给教师或用于答辩。MVP 不做在线上传、教师后台或自动提交。
+
+LLM 候选推断为显式选择：仅在用户同时提供 API key、设置 `LEARNTRACE_LLM_ENABLED=1` 时启用，否则使用本地确定性 stub。LLM 出站载荷只发送每条事件的 `id`、`kind`、脱敏后的 `summary` 和 `occurred_at`；`source_refs`（可能含文件路径）、备注和仓库代码一律不发送。`summary` 在出站边界会清除其中的邮箱、token 和绝对路径，使实际传输内容与隐私披露一致。
 
 ## 样本与评测
 
@@ -70,7 +73,6 @@ OpenCode 和 Claude Code 的轨迹适配器各自转换为统一的 `trace.json`
 
 ## 当前待后置决定
 
-- 具体模型与调用方式。
 - Python 依赖的最小集合及 CLI 命令名称。
 - 样本数量、人工标注格式和评测阈值。
 - 独立 Agent 和模拟答辩的实现时机。

@@ -1,6 +1,6 @@
 {
   "schema_version": "v0",
-  "id": "cand-s04",
+  "id": "cand-s04-fix_failed_approach-4c121b5d",
   "evidence_level": "candidate_inference",
   "node_type": "fix_failed_approach",
   "statement": "学生可能放弃了逐字符读取的初始方案，改为整行解析。",

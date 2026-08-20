@@ -1,6 +1,6 @@
 {
   "schema_version": "v0",
-  "id": "cand-s01",
+  "id": "cand-s01-revise_ai_suggestion-19c47d5b",
   "evidence_level": "candidate_inference",
   "node_type": "revise_ai_suggestion",
   "statement": "学生可能判断 AI 建议的默认类型推断不适合含千分位的数据，改为显式 dtype 方案。",

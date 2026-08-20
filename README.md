@@ -27,6 +27,23 @@ uv run pyright
 uv run pytest
 ```
 
+## Task 4 local CLI
+
+Build a Markdown learning archive from local LearnTrace JSON records:
+
+```powershell
+python -m learntrace.archive <project-dir> `
+  --output learning-record.md `
+  --records-output archive-records.json `
+  --questions-output learning-questions.md
+```
+
+The CLI uses the deterministic stub inferencer by default. It skips common noise
+directories such as `.venv`, `.git`, and `node_modules`; pass `--strict-inputs`
+when every JSON file in the input tree is expected to be a LearnTrace artifact.
+The machine-readable archive contains an audit manifest with a stable SHA-256
+fingerprint, and the CLI prints the same fingerprint plus record counts.
+
 ## 目录结构
 
 ```text

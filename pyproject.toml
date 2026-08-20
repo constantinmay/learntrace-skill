@@ -16,6 +16,15 @@ learntrace = "learntrace.cli:main"
 requires = ["uv_build>=0.11.0,<0.12.0"]
 build-backend = "uv_build"
 
+[project.optional-dependencies]
+dev = [
+    "pre-commit>=4.0,<5",
+    "pyright>=1.1,<2",
+    "pytest>=8.0,<10",
+    "pytest-cov>=6.0,<8",
+    "ruff>=0.12,<1",
+]
+
 [dependency-groups]
 dev = [
     "pre-commit>=4.0,<5",
@@ -40,3 +49,5 @@ select = ["E", "F", "I", "UP", "B", "SIM"]
 include = ["src", "tests"]
 pythonVersion = "3.11"
 typeCheckingMode = "strict"
+venvPath = "."
+venv = ".venv"

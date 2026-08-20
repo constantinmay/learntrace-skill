@@ -1,6 +1,6 @@
 {
   "schema_version": "v0",
-  "id": "cand-s03",
+  "id": "cand-s03-fix_failed_approach-1723c7cc",
   "evidence_level": "candidate_inference",
   "node_type": "fix_failed_approach",
   "statement": "学生可能在除零测试失败后为 divide 增加了零值保护。",

@@ -17,6 +17,22 @@ Build a local, evidence-based learning portfolio while separating observation, s
 6. Ask only the questions needed for the student to confirm, supplement, or deny candidates.
 7. Generate an editable local Markdown portfolio containing goals, AI-use scenarios, decisions, validation evidence, reflection, and next steps.
 
+## Local CLI
+
+Use the local Python pipeline for Task 4 archives:
+
+```powershell
+python -m learntrace.archive <project-dir> `
+  --output learning-record.md `
+  --records-output archive-records.json `
+  --questions-output learning-questions.md
+```
+
+- Candidate learning nodes are inferred by the reporting layer. The default inferencer is a deterministic stub; the LLM path runs only when explicitly enabled (an `LEARNTRACE_LLM_API_KEY` env var **and** `LEARNTRACE_LLM_ENABLED=1`).
+- The CLI skips common dependency and VCS directories such as `.venv`, `.git`, and `node_modules`.
+- Add `--strict-inputs` when the input directory should contain only LearnTrace JSON records.
+- The JSON archive includes a stable SHA-256 manifest fingerprint for review and reproducibility.
+
 ## Evidence rules
 
 Read [references/evidence-policy.md](references/evidence-policy.md) before classifying or writing evidence.
@@ -30,3 +46,5 @@ Read [references/evidence-policy.md](references/evidence-policy.md) before class
 ## Privacy
 
 Minimize trace data by default. Retain only time, tool type, file path, command summary, and source host unless the student explicitly authorizes full conversation content. Keep the portfolio local unless the student requests an export, and redact the export before sharing.
+
+When the LLM path is enabled, only each event's `id`, `kind`, a sanitized `summary`, and `occurred_at` leave the boundary: `source_refs` (which may contain paths), notes, and repository code are never transmitted, and the summary is stripped of embedded emails, tokens, and absolute paths before it is sent.

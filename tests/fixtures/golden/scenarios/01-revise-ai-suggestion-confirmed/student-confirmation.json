@@ -2,7 +2,7 @@
   "schema_version": "v0",
   "id": "conf-s01",
   "evidence_level": "student_confirmation",
-  "candidate_id": "cand-s01",
+  "candidate_id": "cand-s01-revise_ai_suggestion-19c47d5b",
   "decision": "confirmed",
   "student_statement": "是的，AI 建议的默认推断会把含千分位的列解析成字符串，我改成了显式 dtype。",
   "confirmed_at": "2026-04-12T19:30:00+08:00"
