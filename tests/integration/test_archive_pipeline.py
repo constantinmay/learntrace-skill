@@ -135,7 +135,7 @@ def test_render_markdown_handles_missing_info_and_degraded_cases() -> None:
     bundle_09 = build_archive_bundle(events_09, confirmations=confirmations_09, validator=validator)
     markdown_09 = render_markdown(bundle_09, source_dir=scenario_09)
     assert (
-        "待补充 cand-s09-adjust_constraints-79510e31：增加 --ignore-missing 是出于什么考虑？"  # noqa: E501
+        "待补充 cand-s09-adjust_constraints-5678a64e29b362f5：调整缺失输入的处理方式是出于什么考虑？"  # noqa: E501
         in markdown_09
     )
 
@@ -150,7 +150,7 @@ def test_cli_writes_learning_record(tmp_path: Path) -> None:
 
     assert output_path.exists()
     markdown = output_path.read_text(encoding="utf-8")
-    assert "学生可能判断 AI 建议的默认类型推断不适合含千分位的数据" in markdown
+    assert "学生可能没有直接采用 AI 的数据解析建议" in markdown
 
 
 def test_loads_task2_style_batch_json(tmp_path: Path) -> None:
@@ -311,12 +311,14 @@ def test_cli_writes_machine_readable_archive_and_questions(tmp_path: Path) -> No
     pending_questions = cast(list[dict[str, Any]], records["pending_questions"])
     assert records["archive_version"] == "v0"
     assert record_counts["pending_questions"] == 1
-    assert pending_questions[0]["candidate_id"] == "cand-s09-adjust_constraints-79510e31"
+    assert pending_questions[0]["candidate_id"] == "cand-s09-adjust_constraints-5678a64e29b362f5"
     quality_checks = cast(dict[str, bool], records["quality_checks"])
     risk_flags = cast(dict[str, bool], records["risk_flags"])
     assert quality_checks["schema_valid"] is True
     assert risk_flags["has_pending_questions"] is True
-    assert "cand-s09-adjust_constraints-79510e31" in questions_output.read_text(encoding="utf-8")
+    assert "cand-s09-adjust_constraints-5678a64e29b362f5" in questions_output.read_text(
+        encoding="utf-8"
+    )
 
 
 def test_machine_readable_archive_includes_stable_manifest(tmp_path: Path) -> None:
@@ -374,10 +376,10 @@ def test_machine_readable_archive_includes_provenance_indexes(tmp_path: Path) ->
         if cast(dict[str, str], entry["source_ref"])["ref"] == "f6a7b8c"
     )
     assert git_source["event_ids"] == ["evt-s05-1"]
-    assert git_source["candidate_ids"] == ["cand-s05-add_tests-e24f35c1"]
+    assert git_source["candidate_ids"] == ["cand-s05-add_tests-30682dc7fed30c52"]
     assert candidate_links == [
         {
-            "candidate_id": "cand-s05-add_tests-e24f35c1",
+            "candidate_id": "cand-s05-add_tests-30682dc7fed30c52",
             "node_type": "add_tests",
             "basis_event_ids": ["evt-s05-1", "evt-s05-2"],
             "confirmation_id": "conf-s05",

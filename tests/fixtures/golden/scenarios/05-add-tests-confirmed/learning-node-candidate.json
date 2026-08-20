@@ -1,14 +1,14 @@
 {
   "schema_version": "v0",
-  "id": "cand-s05-add_tests-e24f35c1",
+  "id": "cand-s05-add_tests-30682dc7fed30c52",
   "evidence_level": "candidate_inference",
   "node_type": "add_tests",
-  "statement": "学生可能在实现解析功能后主动补充了边界用例测试。",
+  "statement": "学生可能主动补充了边界或缺失输入测试。",
   "basis_event_ids": [
     "evt-s05-1",
     "evt-s05-2"
   ],
   "uncertainty": "低：提交内容即为新测试文件且全部通过，意图明确。",
-  "question_to_student": "这些边界用例是你自己识别并补充的吗？",
+  "question_to_student": "这些边界或缺失输入用例是你主动识别并补充的吗？",
   "status": "resolved"
 }

@@ -21,6 +21,7 @@ from learntrace.reporting.pipeline import (
     TemporalPlausibility,
     _temporally_plausible,
     archive_manifest,
+    stable_candidate_id,
 )
 
 
@@ -96,6 +97,57 @@ def test_stable_candidate_ids_disambiguate_same_basis_by_content() -> None:
 
     assert len(set(ids_by_statement.values())) == 2
     assert ids_by_statement == reversed_ids_by_statement
+
+
+class CandidateSetInferencer:
+    def __init__(self, include_extra: bool) -> None:
+        self._include_extra = include_extra
+
+    def infer(self, events: tuple[ObservableEvent, ...]) -> tuple[CandidateDraft, ...]:
+        commit = events[0]
+        original = CandidateDraft(
+            node_type=NodeType.FIX_FAILED_APPROACH,
+            statement="学生可能修复了输入解析问题。",
+            basis_event_ids=(commit.id,),
+            uncertainty="高：只有提交记录。",
+            question_to_student="这次修改是否用于修复解析问题？",
+        )
+        extra = CandidateDraft(
+            node_type=NodeType.FIX_FAILED_APPROACH,
+            statement="学生可能同时整理了错误处理分支。",
+            basis_event_ids=(commit.id,),
+            uncertainty="高：只有提交记录。",
+            question_to_student="是否同时整理了错误处理？",
+        )
+        return (original, extra) if self._include_extra else (original,)
+
+
+def test_candidate_id_does_not_change_when_unrelated_candidate_is_added() -> None:
+    events = (_event("evt-set-1", EventKind.GIT_COMMIT, "提交 a1b2c3d：重写解析逻辑。"),)
+
+    single = build_archive_bundle(events, inferencer=CandidateSetInferencer(False))
+    expanded = build_archive_bundle(events, inferencer=CandidateSetInferencer(True))
+
+    assert single.candidates[0].id == expanded.candidates[0].id
+
+
+def test_candidate_id_is_independent_of_basis_event_order() -> None:
+    first = CandidateDraft(
+        node_type=NodeType.REVISE_AI_SUGGESTION,
+        statement="学生可能调整了建议。",
+        basis_event_ids=("evt-z-commit", "evt-a-trace"),
+        uncertainty="高：需要确认。",
+        question_to_student="是否调整了建议？",
+    )
+    reversed_basis = CandidateDraft(
+        node_type=first.node_type,
+        statement=first.statement,
+        basis_event_ids=tuple(reversed(first.basis_event_ids)),
+        uncertainty=first.uncertainty,
+        question_to_student=first.question_to_student,
+    )
+
+    assert stable_candidate_id(first) == stable_candidate_id(reversed_basis)
 
 
 class IdenticalCandidateInferencer:
@@ -392,6 +444,96 @@ def test_stub_links_minimal_trace_to_nearest_following_commit() -> None:
     assert candidate.node_type == NodeType.FOLLOW_UP
     assert candidate.basis_event_ids == ("evt-trace-edit", "evt-commit-ui")
     assert candidate.uncertainty.startswith("高：")
+    assert "主题关联" in candidate.uncertainty
+
+
+def test_low_signal_trace_batch_does_not_create_follow_up_flood() -> None:
+    traces = tuple(
+        _event(
+            f"evt-noise-{index}",
+            EventKind.TRACE_RECORD,
+            "OpenCode 工具 bash 已完成。命令类型：git log。",
+            occurred_at=f"2026-08-10T09:{index:02d}:00Z",
+        )
+        for index in range(12)
+    )
+    relevant = _event(
+        "evt-relevant",
+        EventKind.TRACE_RECORD,
+        "OpenCode 工具 edit 已完成。路径：frontend/src/App.tsx。",
+        occurred_at="2026-08-10T09:12:30Z",
+    )
+    commits = tuple(
+        _event(
+            f"evt-ui-commit-{index}",
+            EventKind.GIT_COMMIT,
+            f"提交 a1b2c{index:x}：完成前端页面模块 {index}。",
+            occurred_at=f"2026-08-10T09:{13 + index:02d}:00Z",
+        )
+        for index in range(12)
+    )
+
+    bundle = build_archive_bundle(
+        (*traces, relevant, *commits), inferencer=StubCandidateInferencer()
+    )
+
+    assert len(bundle.candidates) == 1
+    assert bundle.candidates[0].basis_event_ids[0] == "evt-relevant"
+
+
+def test_stub_rejects_low_signal_and_topically_unrelated_nearby_traces() -> None:
+    events = (
+        _event(
+            "evt-trace-ls",
+            EventKind.TRACE_RECORD,
+            "OpenCode 工具 bash 已完成。命令类型：ls。",
+            occurred_at="2026-08-10T09:40:00Z",
+        ),
+        _event(
+            "evt-trace-backend",
+            EventKind.TRACE_RECORD,
+            "OpenCode 工具 write 已完成。路径：backend/api.py。",
+            occurred_at="2026-08-10T09:44:00Z",
+        ),
+        _event(
+            "evt-commit-ui",
+            EventKind.GIT_COMMIT,
+            "提交 a1b2c3d：完成前端列表页面。",
+            occurred_at="2026-08-10T09:45:00Z",
+        ),
+    )
+
+    bundle = build_archive_bundle(events, inferencer=StubCandidateInferencer())
+
+    assert bundle.candidates == ()
+
+
+@pytest.mark.parametrize(
+    ("trace_summary", "commit_summary"),
+    [
+        (
+            "AI 提议使用模式匹配检查用户编号格式。",
+            "提交 a1b2c3d：替换为逐字符数字检查并增加长度限制。",
+        ),
+        (
+            "AI suggested automatic column inference when loading tabular data.",
+            "Commit a1b2c3d: replace inference with declared column types.",
+        ),
+    ],
+)
+def test_revision_heuristic_accepts_synonymous_wording(
+    trace_summary: str,
+    commit_summary: str,
+) -> None:
+    events = (
+        _event("evt-trace", EventKind.TRACE_RECORD, trace_summary),
+        _event("evt-commit", EventKind.GIT_COMMIT, commit_summary),
+    )
+
+    bundle = build_archive_bundle(events, inferencer=StubCandidateInferencer())
+
+    assert len(bundle.candidates) == 1
+    assert bundle.candidates[0].node_type == NodeType.REVISE_AI_SUGGESTION
 
 
 class ManyCandidateInferencer:

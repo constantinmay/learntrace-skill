@@ -207,13 +207,13 @@ class OpenAIChatCandidateInferencer:
         event_by_id = {event.id: event for event in events}
         drafts: list[CandidateDraft] = []
         used_ids: set[str] = set()
-        for index, raw in enumerate(raw_candidates, start=1):
+        for raw in raw_candidates:
             draft = _candidate_draft_from_llm(raw, event_ids, event_by_id)
             if draft is None:
                 continue
             candidate_id = stable_candidate_id(draft)
             if candidate_id in used_ids:
-                candidate_id = f"{candidate_id}-{index}"
+                continue
             used_ids.add(candidate_id)
             candidate = LearningNodeCandidate(
                 id=candidate_id,

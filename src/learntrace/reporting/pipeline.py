@@ -50,12 +50,86 @@ _CONSTRAINT_TERMS = (
 _IDENTIFIER_PATTERN = re.compile(r"[A-Za-z_][A-Za-z0-9_-]{3,}")
 _LOW_SIGNAL_TRACE_TERMS = (
     "命令类型：git add",
+    "命令类型：git log",
     "命令类型：git status",
     "命令类型：kill",
+    "命令类型：ls",
+    "命令类型：node",
     "命令类型：pgrep",
     "命令类型：pkill",
+    "命令类型：rm",
     "命令类型：ss",
+    "工具 ls",
+    "工具 node",
+    "工具 rm",
     "工具 todowrite",
+)
+_CHANGE_MARKERS = (
+    "改",
+    "调整",
+    "替换",
+    "重构",
+    "重写",
+    "采用",
+    "instead",
+    "replace",
+    "refactor",
+    "rewrite",
+    "switch",
+)
+_TOPIC_FAMILIES: dict[str, tuple[str, ...]] = {
+    "arithmetic": ("divide", "division", "test_div", "zero", "除零", "除数"),
+    "backend": ("backend", "server", "controller", "后端", "接口", "服务"),
+    "cli": ("argument", "cli", "option", "命令行", "参数", "选项"),
+    "configuration": ("config", "configuration", "setting", "配置", "设置"),
+    "documentation": ("documentation", "readme", "文档", "说明"),
+    "frontend": ("frontend", "jsx", "react", "tsx", "ui", "vue", "前端", "页面", "组件"),
+    "grading": ("grade", "score", "成绩", "等级", "百分", "评分", "统计"),
+    "missing_data": ("missing", "none", "null", "缺失", "空值", "空行"),
+    "parsing": (
+        "column",
+        "csv",
+        "dtype",
+        "infer",
+        "load",
+        "parse",
+        "parser",
+        "read_csv",
+        "tabular",
+        "type",
+        "解析",
+        "读取",
+        "类型",
+    ),
+    "testing": ("pytest", "test", "测试", "用例", "覆盖", "断言"),
+    "validation": (
+        "check",
+        "isdigit",
+        "regex",
+        "regexp",
+        "validate",
+        "validation",
+        "编号",
+        "学号",
+        "数字",
+        "校验",
+        "检查",
+        "格式",
+        "正则",
+    ),
+}
+_ASCII_TOPIC_RE = re.compile(r"[A-Za-z][A-Za-z0-9_-]{2,}")
+_GENERIC_TOPIC_TERMS = frozenset(
+    {
+        "commit",
+        "completed",
+        "file",
+        "git",
+        "opencode",
+        "src",
+        "tool",
+        "tools",
+    }
 )
 _UNCERTAINTY_PRIORITY = {"低：": 0, "中：": 1, "高：": 2}
 
@@ -188,7 +262,12 @@ class StubCandidateInferencer:
 
         # Follow-up: consecutive authorizations that ask deepening questions.
         # Keep the original no-anchor behavior for semantic trace-only cases.
-        if len(traces) >= 2 and not commits and not documents:
+        if (
+            len(traces) >= 2
+            and not commits
+            and not documents
+            and _topic_match_score(traces[0].summary, traces[1].summary) > 0
+        ):
             drafts.append(self._follow_up_candidate(traces[0], traces[1]))
 
         # Revising AI suggestions: an authorized trace followed by a commit.
@@ -209,7 +288,9 @@ class StubCandidateInferencer:
         # commit that follows it.
         for failing_log in failing_logs:
             for commit in commits:
-                if not precedes(failing_log, commit):
+                if not precedes(failing_log, commit) or not _topics_related(
+                    failing_log.summary, commit.summary
+                ):
                     continue
                 drafts.append(self._fix_failed_candidate(failing_log, commit))
 
@@ -272,19 +353,26 @@ class StubCandidateInferencer:
         for commit in commits:
             if commit.id in used_event_ids:
                 continue
-            preceding: list[tuple[float, ObservableEvent]] = []
+            preceding: list[tuple[float, ObservableEvent, int]] = []
             for trace in available:
                 gap_seconds = _trace_commit_gap_seconds(trace, commit)
-                if gap_seconds is not None and gap_seconds <= _MAX_TRACE_COMMIT_GAP_SECONDS:
-                    preceding.append((gap_seconds, trace))
+                relevance = _topic_match_score(trace.summary, commit.summary)
+                if (
+                    gap_seconds is not None
+                    and gap_seconds <= _MAX_TRACE_COMMIT_GAP_SECONDS
+                    and relevance > 0
+                ):
+                    preceding.append((gap_seconds, trace, relevance))
             if not preceding:
                 continue
-            _, trace = min(
+            _, trace, relevance = min(
                 preceding,
-                key=lambda item: (item[0], item[1].id),
+                key=lambda item: (-item[2], item[0], item[1].id),
             )
             available.remove(trace)
-            follow_ups.append(self._trace_commit_follow_up_candidate(trace, commit))
+            follow_ups.append(
+                self._trace_commit_follow_up_candidate(trace, commit, relevance=relevance)
+            )
         return tuple(follow_ups)
 
     @staticmethod
@@ -312,8 +400,8 @@ class StubCandidateInferencer:
         only check that the summaries actually correspond, so unrelated nearby
         commits are not turned into a revision claim.
         """
-        return ("默认类型推断" in trace.summary and "显式指定 dtype" in commit.summary) or (
-            "正则表达式" in trace.summary and "isdigit" in commit.summary
+        return _topics_related(trace.summary, commit.summary) and _contains_change_marker(
+            commit.summary
         )
 
     def _revise_ai_candidate(
@@ -324,12 +412,11 @@ class StubCandidateInferencer:
 
         plausible = _plausibility_is_plausible(_temporally_plausible(trace, commit))
 
-        if "默认类型推断" in trace.summary and "显式指定 dtype" in commit.summary:
+        shared_topics = _semantic_topics(trace.summary) & _semantic_topics(commit.summary)
+        if "parsing" in shared_topics:
             return CandidateDraft(
                 node_type=NodeType.REVISE_AI_SUGGESTION,
-                statement=(
-                    "学生可能判断 AI 建议的默认类型推断不适合含千分位的数据，改为显式 dtype 方案。"
-                ),
+                statement="学生可能没有直接采用 AI 的数据解析建议，而是选择了另一种解析策略。",
                 basis_event_ids=(trace.id, commit.id),
                 uncertainty=(
                     "中：AI 建议与代码提交是两条独立记录，系统不预设二者相关；"
@@ -337,13 +424,13 @@ class StubCandidateInferencer:
                     if plausible
                     else "高：时间顺序无法验证，AI 建议与代码修改的关联性存疑。"
                 ),
-                question_to_student="你是否因为默认类型推断无法处理千分位而修改了 AI 的建议？",
+                question_to_student="这次数据解析实现是否参考并调整了 AI 的建议？",
             )
 
-        if "正则表达式" in trace.summary and "isdigit" in commit.summary:
+        if "validation" in shared_topics:
             return CandidateDraft(
                 node_type=NodeType.REVISE_AI_SUGGESTION,
-                statement="学生可能将 AI 建议的正则校验改写为更简单的字符串方法实现。",
+                statement="学生可能调整了 AI 建议的输入校验方法，并采用了不同实现。",
                 basis_event_ids=(trace.id, commit.id),
                 uncertainty=(
                     "中：AI 建议与代码提交是两条独立记录，系统不预设二者相关；"
@@ -351,7 +438,7 @@ class StubCandidateInferencer:
                     if plausible
                     else "高：时间顺序无法验证，语义近似的修改可能来自其他原因。"
                 ),
-                question_to_student="这次实现是否参考并修改了 AI 提出的正则校验建议？",
+                question_to_student="这次输入校验实现是否参考并调整了 AI 的建议？",
             )
 
         return CandidateDraft(
@@ -374,7 +461,7 @@ class StubCandidateInferencer:
 
         plausible = _plausibility_is_plausible(_temporally_plausible(test_log, commit))
 
-        if "ZeroDivisionError" in test_log.summary and "返回 None" in commit.summary:
+        if "arithmetic" in (_semantic_topics(test_log.summary) & _semantic_topics(commit.summary)):
             uncertainty = (
                 "低：失败用例与提交修改点直接对应，时间顺序吻合。"
                 if plausible
@@ -412,13 +499,13 @@ class StubCandidateInferencer:
         test_log: ObservableEvent,
     ) -> CandidateDraft:
 
-        if "test_parser_edge.py" in commit.summary:
+        if _semantic_topics(commit.summary) & {"missing_data", "parsing"}:
             return CandidateDraft(
                 node_type=NodeType.ADD_TESTS,
-                statement="学生可能在实现解析功能后主动补充了边界用例测试。",
+                statement="学生可能主动补充了边界或缺失输入测试。",
                 basis_event_ids=(commit.id, test_log.id),
                 uncertainty="低：提交内容即为新测试文件且全部通过，意图明确。",
-                question_to_student="这些边界用例是你自己识别并补充的吗？",
+                question_to_student="这些边界或缺失输入用例是你主动识别并补充的吗？",
             )
 
         return CandidateDraft(
@@ -437,7 +524,10 @@ class StubCandidateInferencer:
 
         plausible = _plausibility_is_plausible(_temporally_plausible(first_trace, second_trace))
 
-        if "成绩分布" in first_trace.summary and "缺失" in second_trace.summary:
+        shared_topics = _semantic_topics(first_trace.summary) & _semantic_topics(
+            second_trace.summary
+        )
+        if "grading" in shared_topics and "missing_data" in _semantic_topics(second_trace.summary):
             return CandidateDraft(
                 node_type=NodeType.FOLLOW_UP,
                 statement="学生可能通过追问把问题从基础统计细化到含缺失值的统计。",
@@ -466,13 +556,16 @@ class StubCandidateInferencer:
     def _trace_commit_follow_up_candidate(
         trace: ObservableEvent,
         commit: ObservableEvent,
+        *,
+        relevance: int,
     ) -> CandidateDraft:
         return CandidateDraft(
             node_type=NodeType.FOLLOW_UP,
             statement="学生可能在使用编码助手完成一项工具操作后继续推进，并形成了后续代码提交。",
             basis_event_ids=(trace.id, commit.id),
             uncertainty=(
-                "高：轨迹与提交仅在时间上邻近，工具操作的目的、提交内容与学习收获均需学生确认。"
+                f"高：轨迹与提交具有主题关联（相关性得分 {relevance}）且时间邻近，"
+                "但工具操作目的、提交内容与学习收获仍需学生确认。"
             ),
             question_to_student="这次工具操作是否帮助你推进了后续提交？你从中形成了什么新理解？",
         )
@@ -485,17 +578,17 @@ class StubCandidateInferencer:
 
         plausible = _plausibility_is_plausible(_temporally_plausible(document, commit))
 
-        if "等级制" in document.summary and "等级制" in commit.summary:
+        if "grading" in (_semantic_topics(document.summary) & _semantic_topics(commit.summary)):
             return CandidateDraft(
                 node_type=NodeType.ADJUST_CONSTRAINTS,
-                statement="学生可能因设计约束从百分制改为等级制而重写了统计逻辑。",
+                statement="学生可能因为评分或统计约束变化而重写了相关逻辑。",
                 basis_event_ids=(document.id, commit.id),
                 uncertainty=(
                     "中：文档与提交时间相邻，但文档更新者身份未记录，无法确认是学生本人调整。"
                     if plausible
                     else "高：文档与提交时间顺序无法验证，事件关联匹配可能是偶然。"
                 ),
-                question_to_student="等级制这个约束调整是你自己提出的，还是课程要求变更？",
+                question_to_student="这项评分或统计约束是你主动调整的，还是外部要求变更？",
             )
 
         return CandidateDraft(
@@ -508,13 +601,13 @@ class StubCandidateInferencer:
 
     def _commit_only_fix_candidate(self, commit: ObservableEvent) -> CandidateDraft:
 
-        if "逐字符读取" in commit.summary or "解析循环" in commit.summary:
+        if "parsing" in _semantic_topics(commit.summary):
             return CandidateDraft(
                 node_type=NodeType.FIX_FAILED_APPROACH,
-                statement="学生可能放弃了逐字符读取的初始方案，改为整行解析。",
+                statement="学生可能重写了解析实现，并替换了先前的处理方案。",
                 basis_event_ids=(commit.id,),
                 uncertainty="高：无任何测试日志或轨迹记录初始方案失败，仅有单次提交，失败假设无法核实。",
-                question_to_student="重写解析循环之前，初始方案是否遇到过失败？",
+                question_to_student="重写解析实现之前，原方案是否遇到过失败？",
             )
 
         return CandidateDraft(
@@ -527,13 +620,13 @@ class StubCandidateInferencer:
 
     def _commit_only_constraint_candidate(self, commit: ObservableEvent) -> CandidateDraft:
 
-        if "--ignore-missing" in commit.summary:
+        if "missing_data" in _semantic_topics(commit.summary):
             return CandidateDraft(
                 node_type=NodeType.ADJUST_CONSTRAINTS,
-                statement="学生可能放宽了输入约束，允许缺失的数据文件被跳过。",
+                statement="学生可能调整了缺失输入的处理约束。",
                 basis_event_ids=(commit.id,),
                 uncertainty="高：仅有单次提交，无测试日志、无轨迹、无文档，约束调整的原因与过程均不可知。",
-                question_to_student="增加 --ignore-missing 是出于什么考虑？",
+                question_to_student="调整缺失输入的处理方式是出于什么考虑？",
             )
 
         return CandidateDraft(
@@ -597,7 +690,51 @@ def _trace_commit_gap_seconds(
 
 
 def _is_low_signal_trace(trace: ObservableEvent) -> bool:
-    return any(term in trace.summary for term in _LOW_SIGNAL_TRACE_TERMS)
+    lowered = trace.summary.casefold()
+    return any(term.casefold() in lowered for term in _LOW_SIGNAL_TRACE_TERMS)
+
+
+def _semantic_topics(summary: str) -> frozenset[str]:
+    lowered = summary.casefold()
+    return frozenset(
+        topic
+        for topic, markers in _TOPIC_FAMILIES.items()
+        if any(_marker_present(lowered, marker) for marker in markers)
+    )
+
+
+def _marker_present(lowered_summary: str, marker: str) -> bool:
+    if marker.isascii():
+        return (
+            re.search(
+                rf"(?<![a-z0-9]){re.escape(marker)}(?![a-z0-9])",
+                lowered_summary,
+            )
+            is not None
+        )
+    return marker in lowered_summary
+
+
+def _lexical_topics(summary: str) -> frozenset[str]:
+    terms: set[str] = set()
+    for token in _ASCII_TOPIC_RE.findall(summary.casefold()):
+        terms.update(part for part in re.split(r"[_-]+", token) if len(part) >= 3)
+    return frozenset(terms - _GENERIC_TOPIC_TERMS)
+
+
+def _topic_match_score(first: str, second: str) -> int:
+    shared_families = _semantic_topics(first) & _semantic_topics(second)
+    shared_terms = _lexical_topics(first) & _lexical_topics(second)
+    return len(shared_families) * 10 + len(shared_terms)
+
+
+def _topics_related(first: str, second: str) -> bool:
+    return _topic_match_score(first, second) > 0
+
+
+def _contains_change_marker(summary: str) -> bool:
+    lowered = summary.casefold()
+    return any(_marker_present(lowered, marker) for marker in _CHANGE_MARKERS)
 
 
 def _constraint_terms(summary: str) -> frozenset[str]:
@@ -656,10 +793,13 @@ def _looks_like_rewrite(commit: ObservableEvent) -> bool:
 
 
 def _looks_like_constraint_change(commit: ObservableEvent) -> bool:
-
-    lowered = commit.summary.lower()
-
-    return "--ignore-missing" in lowered or "约束" in commit.summary or "边界" in commit.summary
+    topics = _semantic_topics(commit.summary)
+    return (
+        "约束" in commit.summary
+        or "边界" in commit.summary
+        or bool(topics & {"cli", "missing_data"})
+        and _contains_change_marker(commit.summary)
+    )
 
 
 def _dedupe_events(events: tuple[ObservableEvent, ...]) -> tuple[ObservableEvent, ...]:
@@ -743,36 +883,19 @@ def _dedupe_warnings(warnings: tuple[ArchiveWarning, ...]) -> tuple[ArchiveWarni
 
 def stable_candidate_id(
     draft: CandidateDraft,
-    *,
-    include_text_fields: bool = False,
-    digest_len: int = 8,
 ) -> str:
-    """Generate a stable candidate ID from draft content.
+    """Generate an order- and candidate-set-independent ID from draft content."""
 
-
-
-    The primary ID remains compatible with existing golden fixtures:
-    ``node_type`` + sorted ``basis_event_ids``. When different drafts would
-    otherwise collide on that base ID, callers can opt into hashing the text
-    fields as well so semantically different candidates receive distinct,
-    order-independent IDs; a longer ``digest_len`` makes the disambiguating
-    digest effectively collision-free.
-
-    """
-
-    content_parts: list[object] = [draft.node_type.value, sorted(draft.basis_event_ids)]
-    if include_text_fields:
-        question = (
-            draft.question_to_student.to_dict()
-            if isinstance(draft.question_to_student, MissingInfo)
-            else draft.question_to_student
-        )
-        content_parts.extend([draft.statement, draft.uncertainty, question])
+    content_parts: list[object] = [
+        draft.node_type.value,
+        sorted(draft.basis_event_ids),
+        draft.statement,
+    ]
     content = json.dumps(content_parts, sort_keys=True)
 
-    suffix = _sha256_content(content)[:digest_len]
+    suffix = _sha256_content(content)[:16]
 
-    for event_id in draft.basis_event_ids:
+    for event_id in sorted(draft.basis_event_ids):
         match = _SCENARIO_ID_PATTERN.match(event_id)
 
         if match is not None:
@@ -793,17 +916,7 @@ def _materialize_candidates(
 
     confirmation_ids = {confirmation.candidate_id for confirmation in confirmations}
 
-    # Assign every draft a content-stable ID. The base ID (node_type + sorted
-    # basis) is kept for golden-fixture compatibility; when several drafts
-    # share that base, the disambiguating ID is derived from the full content
-    # with a long digest, so it is deterministic and order-independent.
-    ids: list[str] = []
-    for draft in drafts:
-        candidate_id = stable_candidate_id(draft)
-        duplicate_bases = sum(1 for other in drafts if stable_candidate_id(other) == candidate_id)
-        if duplicate_bases > 1:
-            candidate_id = stable_candidate_id(draft, include_text_fields=True, digest_len=64)
-        ids.append(candidate_id)
+    ids = [stable_candidate_id(draft) for draft in drafts]
 
     # A remaining duplicate means the full-content digest itself collided (a
     # genuine SHA-256 collision). Do not fall back to an order-dependent suffix,
