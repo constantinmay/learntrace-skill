@@ -190,6 +190,15 @@ dependencies = [
     { name = "rfc3339-validator" },
 ]
 
+[package.optional-dependencies]
+dev = [
+    { name = "pre-commit" },
+    { name = "pyright" },
+    { name = "pytest" },
+    { name = "pytest-cov" },
+    { name = "ruff" },
+]
+
 [package.dev-dependencies]
 dev = [
     { name = "pre-commit" },
@@ -202,8 +211,14 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "jsonschema", specifier = ">=4.23,<5" },
+    { name = "pre-commit", marker = "extra == 'dev'", specifier = ">=4.0,<5" },
+    { name = "pyright", marker = "extra == 'dev'", specifier = ">=1.1,<2" },
+    { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0,<10" },
+    { name = "pytest-cov", marker = "extra == 'dev'", specifier = ">=6.0,<8" },
     { name = "rfc3339-validator", specifier = ">=0.1.4,<1" },
+    { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.12,<1" },
 ]
+provides-extras = ["dev"]
 
 [package.metadata.requires-dev]
 dev = [
