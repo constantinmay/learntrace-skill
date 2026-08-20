@@ -11,6 +11,7 @@ from learntrace.models import (
     StudentConfirmation,
     TextOrMissing,
 )
+from learntrace.privacy import normalize_project_path
 from learntrace.reporting.pipeline import ArchiveBundle, archive_manifest
 
 _NODE_LABELS: dict[NodeType, str] = {
@@ -49,6 +50,18 @@ def _pending_question_count(bundle: ArchiveBundle) -> int:
     return sum(candidate.status.value == "proposed" for candidate in bundle.candidates)
 
 
+def _source_dir_label(source_dir: Path | None) -> str:
+    """Render a portable evidence-root label without exposing a host path."""
+    if source_dir is None:
+        return "未记录"
+    if source_dir.is_absolute():
+        return "."
+    value = normalize_project_path(str(source_dir), None)
+    if value.startswith("[") and value.endswith("]"):
+        return "未记录"
+    return value
+
+
 def _inference_mode_lines(bundle: ArchiveBundle) -> list[str]:
     if bundle.inference_mode == "llm":
         return [
@@ -76,7 +89,7 @@ def render_markdown(bundle: ArchiveBundle, *, source_dir: Path | None = None) ->
     lines.extend(
         [
             "## 项目概览",
-            f"- 证据目录：{source_dir if source_dir is not None else '未记录'}",
+            f"- 证据目录：{_source_dir_label(source_dir)}",
             f"- 可观察事实：{len(bundle.events)} 条",
             f"- 学习节点候选：{len(bundle.candidates)} 条",
             f"- 学生确认：{len(bundle.confirmations)} 条",

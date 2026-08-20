@@ -52,6 +52,8 @@ _DISK_PATH_RE = re.compile(
 _WINDOWS_HOME_RE = re.compile(
     r"[Cc]:[\\/][Uu]sers[\\/][^\\/]+(?:[\\/][^\s\uff0c\u3002\uff1b\u3001\"'`]*)?"
 )
+_FENCED_CODE_RE = re.compile(r"(?:`{3,}|~{3,})[\s\S]*?(?:(?:`{3,}|~{3,})|$)")
+_INLINE_CODE_RE = re.compile(r"`[^`\r\n]+`")
 
 
 def _sanitize_summary(summary: str) -> str:
@@ -64,7 +66,9 @@ def _sanitize_summary(summary: str) -> str:
     Secret scrubbing reuses `learntrace.privacy.redact_sensitive_text`; a large
     ``limit`` is passed so a long summary's semantics are not truncated here.
     """
-    text = redact_sensitive_text(summary, limit=len(summary) or 1)
+    text = _FENCED_CODE_RE.sub("[REDACTED]", summary)
+    text = _INLINE_CODE_RE.sub("[REDACTED]", text)
+    text = redact_sensitive_text(text, limit=len(text) or 1)
     text = _EMAIL_RE.sub("<email>", text)
     text = _WINDOWS_HOME_RE.sub("<user-path>", text)
     text = _DISK_PATH_RE.sub("<path>", text)

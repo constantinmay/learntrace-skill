@@ -89,6 +89,22 @@ def test_render_markdown_contains_required_sections(scenario_dir: Path) -> None:
         assert heading in markdown
 
 
+def test_render_markdown_does_not_expose_source_directory(tmp_path: Path) -> None:
+    event = ObservableEvent(
+        id="evt-source-dir-privacy",
+        kind=EventKind.DOCUMENT,
+        summary="记录了实现目标。",
+        source_refs=(SourceRef(type=SourceType.DOCUMENT, ref="task.md:1-2"),),
+    )
+    bundle = build_archive_bundle((event,))
+
+    markdown = render_markdown(bundle, source_dir=tmp_path.resolve())
+
+    assert str(tmp_path.resolve()) not in markdown
+    assert "- 证据目录：." in markdown
+    assert "~/.ssh" not in render_markdown(bundle, source_dir=Path("~/.ssh"))
+
+
 def test_render_markdown_handles_missing_info_and_degraded_cases() -> None:
     validator = ContractValidator(schema_dir=SCHEMA_DIR)
     scenario_04 = SCENARIOS_DIR / "04-fix-failed-approach-missing-evidence"

@@ -231,6 +231,36 @@ def test_llm_payload_sanitizes_bearer_header_and_bare_token() -> None:
     assert "ghp_ABC1234567890" not in json.dumps(payload, ensure_ascii=False)
 
 
+def test_llm_payload_redacts_all_documented_secret_shapes_and_code() -> None:
+    content = json.dumps({"candidates": []}, ensure_ascii=False)
+    inferencer = FakeLLMInferencer(content)
+    event = ObservableEvent(
+        id="evt-outbound-contract-1",
+        kind=EventKind.DOCUMENT,
+        summary=(
+            "tokens: sk-abcdefgh12345678 AKIAABCDEFGHIJKLMNOP "
+            "ASIAQRSTUVWXYZABCDEF xoxb-12345678-abcdefgh; "
+            "inline `private_call(secret)` and fenced:\n"
+            "```python\nprint('repository code')\n```"
+        ),
+        source_refs=(SourceRef(type=SourceType.DOCUMENT, ref="notes.md:1-4"),),
+    )
+
+    inferencer.infer((event,))
+
+    serialized = json.dumps(inferencer.payloads[0], ensure_ascii=False)
+    for forbidden in (
+        "sk-abcdefgh12345678",
+        "AKIAABCDEFGHIJKLMNOP",
+        "ASIAQRSTUVWXYZABCDEF",
+        "xoxb-12345678-abcdefgh",
+        "private_call(secret)",
+        "repository code",
+    ):
+        assert forbidden not in serialized
+    assert serialized.count("[REDACTED]") >= 6
+
+
 def test_llm_inferencer_accepts_fenced_json() -> None:
     payload = {
         "candidates": [
