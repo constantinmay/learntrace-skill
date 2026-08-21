@@ -5,12 +5,29 @@
 使用者先在 OpenCode 中导出指定会话：
 
 ```shell
-opencode export <sessionID> > opencode-session.json
+opencode export <sessionID> --sanitize > opencode-session.json
 ```
+
+`--sanitize` 会先由 OpenCode 脱敏聊天和文件内容，适合隐私优先的归档；它也可能
+去掉工具输入中的项目内路径，使轨迹只保留工具类型、状态和时间。如果确实需要
+项目内相对路径作为证据，可以在本地使用普通导出，但应把原始导出视为敏感临时
+文件，不要提交或分享；LearnTrace 仍只会输出白名单摘要。
 
 调用方必须把这个 JSON 文件的路径传给 `adapt_opencode_export`，并通过
 `authorized=True` 明确表示已经获得读取授权。适配器不会搜索 OpenCode 的本地数据库，
 也不会自动寻找其他会话。`authorized=False` 时，它会在检查文件是否存在之前直接返回。
+
+跨多个会话时，可以调用 `adapt_opencode_exports`，并在 `authorized_paths` 中逐个
+列出获准读取的路径；授权匹配发生在打开文件之前。CLI 对应命令为：
+
+```powershell
+learntrace adapt <session-1.json> <session-2.json> `
+  --authorize-export <session-1.json> `
+  --authorize-export <session-2.json>
+```
+
+各会话事件会合并、排序并按稳定事件 ID 去重，`source_refs` 中仍保留原 session。
+任一会话的授权不会扩展到其他导出文件。
 
 ## 四种结果状态
 

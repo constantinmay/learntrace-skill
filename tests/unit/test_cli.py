@@ -223,6 +223,52 @@ def test_adapt_command_parses_authorized_fixture(tmp_path: Path) -> None:
     assert payload["events"]
 
 
+def test_adapt_multiple_exports_requires_per_path_authorization(
+    tmp_path: Path,
+    capsys: CaptureFixture[str],
+) -> None:
+    output = tmp_path / "trace.json"
+    export = REPO_ROOT / "tests" / "fixtures" / "opencode" / "authorized-export.json"
+
+    with pytest.raises(SystemExit) as exc_info:
+        main(
+            [
+                "adapt",
+                str(export),
+                str(export),
+                "--authorized",
+                "-o",
+                str(output),
+            ]
+        )
+
+    assert exc_info.value.code == 1
+    assert "--authorize-export" in capsys.readouterr().err
+
+
+def test_adapt_multiple_exports_accepts_repeated_exact_authorization(tmp_path: Path) -> None:
+    output = tmp_path / "trace.json"
+    export = REPO_ROOT / "tests" / "fixtures" / "opencode" / "authorized-export.json"
+
+    exit_code = main(
+        [
+            "adapt",
+            str(export),
+            str(export),
+            "--authorize-export",
+            str(export),
+            "-o",
+            str(output),
+        ]
+    )
+
+    assert exit_code == 0
+    payload = json.loads(output.read_text(encoding="utf-8"))
+    assert payload["status"] == "parsed"
+    assert payload["events"]
+    assert any(warning["code"] == "duplicate_export_event" for warning in payload["warnings"])
+
+
 def test_run_command_builds_end_to_end_local_outputs(tmp_path: Path) -> None:
     (tmp_path / "task.md").write_text("# Goal\n\nImplement the parser safely.\n", encoding="utf-8")
 

@@ -9,7 +9,7 @@ from collections.abc import Sequence
 from pathlib import Path
 
 from learntrace import __version__
-from learntrace.adapters import adapt_opencode_export, write_trace_result
+from learntrace.adapters import adapt_opencode_exports, write_trace_result
 from learntrace.archive import main as archive_main
 from learntrace.archive import write_learning_record_result
 from learntrace.parsers import discover_static_materials, parse_static_materials, write_parse_result
@@ -46,9 +46,20 @@ def build_parser() -> argparse.ArgumentParser:
     discover_parser.add_argument("project_dir", type=Path)
 
     adapt_parser = subparsers.add_parser("adapt", help="Adapt an OpenCode JSON export.")
-    adapt_parser.add_argument("export_path", type=Path)
+    adapt_parser.add_argument("export_path", nargs="+", type=Path)
     adapt_parser.add_argument("--project-root", type=Path)
-    adapt_parser.add_argument("--authorized", action="store_true")
+    adapt_parser.add_argument(
+        "--authorized",
+        action="store_true",
+        help="Authorize the single supplied export (legacy single-session form).",
+    )
+    adapt_parser.add_argument(
+        "--authorize-export",
+        action="append",
+        type=Path,
+        default=[],
+        help="Authorize one exact export path (repeat for multiple sessions).",
+    )
     adapt_parser.add_argument("-o", "--output", type=Path)
 
     archive_parser = subparsers.add_parser("archive", help="Build Task 4 archive outputs.")
@@ -56,8 +67,19 @@ def build_parser() -> argparse.ArgumentParser:
 
     run_parser = subparsers.add_parser("run", help="Run the local parse-to-archive pipeline.")
     _add_parse_options(run_parser)
-    run_parser.add_argument("--opencode-export", type=Path)
-    run_parser.add_argument("--authorized", action="store_true")
+    run_parser.add_argument("--opencode-export", action="append", type=Path, default=[])
+    run_parser.add_argument(
+        "--authorized",
+        action="store_true",
+        help="Authorize the single supplied export (legacy single-session form).",
+    )
+    run_parser.add_argument(
+        "--authorize-opencode-export",
+        action="append",
+        type=Path,
+        default=[],
+        help="Authorize one exact OpenCode export path (repeat per session).",
+    )
     run_parser.add_argument(
         "--confirmations",
         action="append",
@@ -96,8 +118,6 @@ def _parse_project(
 
 def _run_command(args: argparse.Namespace, parser: argparse.ArgumentParser) -> int:
     try:
-        if args.command == "archive":
-            return archive_main(args.args)
         if args.command == "discover":
             discovered = discover_static_materials(args.project_dir.resolve())
             inventory = discovered.inventory
@@ -125,9 +145,15 @@ def _run_command(args: argparse.Namespace, parser: argparse.ArgumentParser) -> i
             print(f"Wrote parse result: {output} (events={events}, warnings={warnings})")
             return 0
         if args.command == "adapt":
-            result = adapt_opencode_export(
-                args.export_path,
-                authorized=args.authorized,
+            export_paths = tuple(args.export_path)
+            if args.authorized and len(export_paths) != 1:
+                raise ValueError(
+                    "--authorized is only valid with one export; use --authorize-export per path"
+                )
+            authorized_paths = export_paths if args.authorized else tuple(args.authorize_export)
+            result = adapt_opencode_exports(
+                export_paths,
+                authorized_paths=authorized_paths,
                 project_root=args.project_root,
             )
             output = (
@@ -161,9 +187,18 @@ def _run_command(args: argparse.Namespace, parser: argparse.ArgumentParser) -> i
             return 0
 
         events, warnings = _parse_project(args, parse_output, excluded_documents=(output,))
-        trace_result = adapt_opencode_export(
-            args.opencode_export,
-            authorized=args.authorized,
+        export_paths = tuple(args.opencode_export)
+        if args.authorized and len(export_paths) > 1:
+            raise ValueError(
+                "--authorized is only valid with one export; "
+                "use --authorize-opencode-export per path"
+            )
+        authorized_paths = (
+            export_paths if args.authorized else tuple(args.authorize_opencode_export)
+        )
+        trace_result = adapt_opencode_exports(
+            export_paths,
+            authorized_paths=authorized_paths,
             project_root=root,
         )
         work_dir.mkdir(parents=True, exist_ok=True)
@@ -176,6 +211,12 @@ def _run_command(args: argparse.Namespace, parser: argparse.ArgumentParser) -> i
             confirmation_paths=tuple(args.confirmations),
         )
         print(f"Wrote parse result: {parse_output} (events={events}, warnings={warnings})")
+        print(
+            "Wrote trace result: "
+            f"{work_dir / 'task3-result.json'} "
+            f"(status={trace_result.status}, events={len(trace_result.events)}, "
+            f"warnings={len(trace_result.warnings)})"
+        )
         print(f"Wrote learning record: {archive_result.output_path}")
         return 0
     except (FileNotFoundError, LLMInferenceError, OSError, ValueError) as exc:

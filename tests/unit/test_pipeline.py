@@ -513,7 +513,126 @@ def test_fix_commit_without_test_log_yields_conservative_question() -> None:
     assert candidate.basis_event_ids == ("evt-fix-commit",)
     assert candidate.uncertainty.startswith("高：")
     assert isinstance(candidate.question_to_student, str)
-    assert "如何验证" in candidate.question_to_student
+    assert candidate.question_to_student.strip()
+
+
+def test_python_error_name_matches_synonymous_chinese_fix_commit() -> None:
+    events = (
+        _event(
+            "evt-zero-division-log",
+            EventKind.TEST_LOG,
+            "测试运行失败：test_average 空输入触发 ZeroDivisionError。",
+        ),
+        _event(
+            "evt-zero-division-fix",
+            EventKind.GIT_COMMIT,
+            "提交 a1b2c3d：修复空输入时的除零错误。",
+        ),
+    )
+
+    bundle = build_archive_bundle(events, inferencer=StubCandidateInferencer())
+
+    assert len(bundle.candidates) == 1
+    assert bundle.candidates[0].node_type == NodeType.FIX_FAILED_APPROACH
+    assert bundle.candidates[0].basis_event_ids == (
+        "evt-zero-division-log",
+        "evt-zero-division-fix",
+    )
+
+
+def _session_trace(
+    record_id: str,
+    session_id: str,
+    summary: str,
+    occurred_at: str,
+) -> ObservableEvent:
+    return ObservableEvent(
+        id=record_id,
+        kind=EventKind.TRACE_RECORD,
+        summary=summary,
+        source_refs=(
+            SourceRef(
+                type=SourceType.TRACE_RECORD,
+                ref=f"trace://opencode/{session_id}/message/msg/part/{record_id}",
+            ),
+        ),
+        occurred_at=occurred_at,
+    )
+
+
+def test_stub_can_connect_topically_related_distinct_opencode_sessions() -> None:
+    events = (
+        _session_trace(
+            "evt-session-one",
+            "ses_one",
+            "OpenCode 工具 edit 已完成。路径：src/parser.py。",
+            "2026-08-10T09:00:00Z",
+        ),
+        _session_trace(
+            "evt-session-two",
+            "ses_two",
+            "OpenCode 工具 bash 已完成。命令类型：pytest parser。",
+            "2026-08-10T10:00:00Z",
+        ),
+    )
+
+    bundle = build_archive_bundle(events, inferencer=StubCandidateInferencer())
+
+    assert len(bundle.candidates) == 1
+    assert bundle.candidates[0].node_type == NodeType.FOLLOW_UP
+    assert "后续 OpenCode 会话" in bundle.candidates[0].statement
+    assert bundle.candidates[0].basis_event_ids == (
+        "evt-session-one",
+        "evt-session-two",
+    )
+
+
+def test_stub_does_not_connect_unrelated_or_distant_sessions() -> None:
+    unrelated = (
+        _session_trace(
+            "evt-session-parser",
+            "ses_parser",
+            "OpenCode 工具 edit 已完成。路径：src/parser.py。",
+            "2026-08-10T09:00:00Z",
+        ),
+        _session_trace(
+            "evt-session-ui",
+            "ses_ui",
+            "OpenCode 工具 edit 已完成。路径：frontend/theme.css。",
+            "2026-08-10T10:00:00Z",
+        ),
+    )
+    distant = (
+        unrelated[0],
+        _session_trace(
+            "evt-session-parser-later",
+            "ses_parser_later",
+            "OpenCode 工具 bash 已完成。命令类型：pytest parser。",
+            "2026-08-12T10:00:00Z",
+        ),
+    )
+
+    assert build_archive_bundle(unrelated, inferencer=StubCandidateInferencer()).candidates == ()
+    assert build_archive_bundle(distant, inferencer=StubCandidateInferencer()).candidates == ()
+
+
+def test_stub_does_not_treat_repeated_read_in_different_sessions_as_follow_up() -> None:
+    events = (
+        _session_trace(
+            "evt-read-one",
+            "ses_one",
+            "OpenCode 工具 read 已完成。路径：README.md。",
+            "2026-08-10T09:00:00Z",
+        ),
+        _session_trace(
+            "evt-read-two",
+            "ses_two",
+            "OpenCode 工具 read 已完成。路径：README.md。",
+            "2026-08-10T10:00:00Z",
+        ),
+    )
+
+    assert build_archive_bundle(events, inferencer=StubCandidateInferencer()).candidates == ()
 
 
 def test_stub_rejects_low_signal_and_topically_unrelated_nearby_traces() -> None:

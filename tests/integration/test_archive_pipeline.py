@@ -249,10 +249,22 @@ def test_render_markdown_handles_missing_info_and_degraded_cases() -> None:
     )
     bundle_09 = build_archive_bundle(events_09, confirmations=confirmations_09, validator=validator)
     markdown_09 = render_markdown(bundle_09, source_dir=scenario_09)
-    assert (
-        "待补充 cand-s09-adjust_constraints-5678a64e29b362f5：调整缺失输入的处理方式是出于什么考虑？"  # noqa: E501
-        in markdown_09
-    )
+    assert "调整缺失输入的处理方式是出于什么考虑？" in markdown_09
+
+
+def test_human_summary_omits_machine_ids_but_audit_keeps_provenance() -> None:
+    scenario = SCENARIOS_DIR / "09-sparse-evidence-high-uncertainty"
+    events, confirmations = load_project_records(scenario)
+    bundle = build_archive_bundle(events, confirmations=confirmations)
+
+    markdown = render_markdown(bundle, source_dir=scenario)
+    human_summary, audit_appendix = markdown.split("<details>", maxsplit=1)
+
+    assert "cand-" not in human_summary
+    assert "evt-" not in human_summary
+    assert "trace://" not in human_summary
+    assert "cand-s09-adjust_constraints-5678a64e29b362f5" in audit_appendix
+    assert "evt-s09-1" in audit_appendix
 
 
 def test_render_markdown_extracts_documented_goal_without_inventing_one() -> None:
@@ -275,6 +287,43 @@ def test_render_markdown_extracts_documented_goal_without_inventing_one() -> Non
     assert "## 项目目标" in with_goal
     assert "实现一个本地课程学习档案生成器" in with_goal
     assert "请由学生根据课程任务或项目 README 补充" in without_goal
+
+
+def test_project_goal_filters_fenced_code_hidden_behind_document_prefix() -> None:
+    code_event = ObservableEvent(
+        id="evt-goal-code",
+        kind=EventKind.DOCUMENT,
+        summary="文档章节‘目录结构’记录：``` backend/ Go 后端 frontend/ React 前端 ```",
+        source_refs=(SourceRef(type=SourceType.DOCUMENT, ref="README.md:20-26"),),
+    )
+    goal_event = ObservableEvent(
+        id="evt-goal-title",
+        kind=EventKind.DOCUMENT,
+        summary="文档章节‘项目目标’记录：实现一个前后端分离的资源管理系统。",
+        source_refs=(SourceRef(type=SourceType.DOCUMENT, ref="README.md:1-4"),),
+    )
+    feature_event = ObservableEvent(
+        id="evt-goal-features",
+        kind=EventKind.DOCUMENT,
+        summary="文档章节‘功能特性’记录：支持资源增删改查和分类管理。",
+        source_refs=(SourceRef(type=SourceType.DOCUMENT, ref="README.md:8-12"),),
+    )
+    startup_event = ObservableEvent(
+        id="evt-goal-startup",
+        kind=EventKind.DOCUMENT,
+        summary="文档章节‘启动后端’记录：执行 go run . 并监听 8080 端口。",
+        source_refs=(SourceRef(type=SourceType.DOCUMENT, ref="README.md:30-34"),),
+    )
+
+    markdown = render_markdown(
+        build_archive_bundle((code_event, goal_event, feature_event, startup_event))
+    )
+    goal_section = markdown.split("## 项目目标\n", 1)[1].split("\n## 项目进展", 1)[0]
+
+    assert "前后端分离的资源管理系统" in goal_section
+    assert "资源增删改查和分类管理" in goal_section
+    assert "backend/" not in goal_section
+    assert "go run" not in goal_section
 
 
 def test_ai_use_section_filters_irrelevant_trace_events() -> None:
@@ -317,7 +366,48 @@ def test_ai_use_section_filters_irrelevant_trace_events() -> None:
     assert "evt-meaningful" in ai_section
     for hidden_id in ("evt-outside", "evt-kill", "evt-self", "evt-generic"):
         assert hidden_id not in ai_section
+    assert "授权轨迹仅包含通用工具操作" not in ai_section
     assert "已过滤或省略 4 条" in ai_section
+
+
+def test_generic_traces_are_summarized_without_claiming_no_trace_exists() -> None:
+    trace = ObservableEvent(
+        id="evt-generic-only",
+        kind=EventKind.TRACE_RECORD,
+        summary="OpenCode 工具 read 已完成。",
+        source_refs=(SourceRef(type=SourceType.TRACE_RECORD, ref="trace://session/1"),),
+    )
+
+    markdown = render_markdown(build_archive_bundle((trace,)))
+
+    assert "read：共 1 次，完成 1 次，错误 0 次，未完成 0 次" in markdown
+    assert "授权轨迹仅包含通用工具操作" in markdown
+    assert "未见与本项目范围相关的授权轨迹" not in markdown
+    assert "待确认问题：3 条" in markdown
+
+
+def test_ai_collaboration_does_not_count_incomplete_tool_as_completed() -> None:
+    trace = ObservableEvent(
+        id="evt-incomplete-tool",
+        kind=EventKind.TRACE_RECORD,
+        summary="OpenCode 工具 task 在消息错误结束时未完成。",
+        source_refs=(SourceRef(type=SourceType.TRACE_RECORD, ref="trace://session/1"),),
+    )
+
+    markdown = render_markdown(build_archive_bundle((trace,)))
+
+    assert "task：共 1 次，完成 0 次，错误 0 次，未完成 1 次" in markdown
+
+
+def test_human_learning_label_reflects_denied_confirmation() -> None:
+    scenario = SCENARIOS_DIR / "02-revise-ai-suggestion-denied"
+    events, confirmations = load_project_records(scenario)
+
+    markdown = render_markdown(build_archive_bundle(events, confirmations=confirmations))
+    human_summary = markdown.split("<details>", maxsplit=1)[0]
+
+    assert "系统线索（学生已否认）" in human_summary
+    assert "学习线索（待学生确认）" not in human_summary
 
 
 def test_reflection_is_an_editable_student_field_not_confirmation_echo() -> None:

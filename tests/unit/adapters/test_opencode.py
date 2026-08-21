@@ -13,6 +13,7 @@ from learntrace.adapters import (
     TraceInputStatus,
     UnsupportedOpenCodeFormatError,
     adapt_opencode_export,
+    adapt_opencode_exports,
     write_trace_result,
 )
 from learntrace.models import ContractValidator, EventKind, SourceType
@@ -532,3 +533,84 @@ def test_duplicate_tool_identity_keeps_first_record_and_warns(tmp_path: Path) ->
     assert len(result.events) == 1
     assert "read" in result.events[0].summary
     assert [warning.code for warning in result.warnings] == ["duplicate_tool_part"]
+
+
+def test_multiple_authorized_sessions_are_merged_with_session_provenance(
+    tmp_path: Path,
+) -> None:
+    first_data = _export(
+        _message(
+            _tool_part(
+                part_id="prt_first",
+                message_id="msg_first",
+                session_id="ses_first",
+            ),
+            message_id="msg_first",
+            session_id="ses_first",
+        )
+    )
+    first_data["info"]["id"] = "ses_first"
+    second_data = _export(
+        _message(
+            _tool_part(
+                part_id="prt_second",
+                message_id="msg_second",
+                session_id="ses_second",
+            ),
+            message_id="msg_second",
+            session_id="ses_second",
+        )
+    )
+    second_data["info"]["id"] = "ses_second"
+    first = _write_export(tmp_path / "first.json", first_data)
+    second = _write_export(tmp_path / "second.json", second_data)
+
+    result = adapt_opencode_exports(
+        (first, second),
+        authorized_paths=(first, second),
+        project_root=tmp_path,
+    )
+
+    assert result.status is TraceInputStatus.PARSED
+    assert len(result.events) == 2
+    refs = {event.source_refs[0].ref for event in result.events}
+    assert any("/ses_first/" in ref for ref in refs)
+    assert any("/ses_second/" in ref for ref in refs)
+
+
+def test_multiple_sessions_require_authorization_for_each_path(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    allowed = _write_export(tmp_path / "allowed.json", _export(_message(_tool_part())))
+    denied = tmp_path / "denied-must-not-be-read.json"
+    original_read_bytes = Path.read_bytes
+
+    def guarded_read_bytes(path: Path) -> bytes:
+        if path == denied:
+            raise AssertionError("an unauthorized export must not be read")
+        return original_read_bytes(path)
+
+    monkeypatch.setattr(Path, "read_bytes", guarded_read_bytes)
+
+    result = adapt_opencode_exports(
+        (allowed, denied),
+        authorized_paths=(allowed,),
+    )
+
+    assert result.status is TraceInputStatus.PARSED
+    assert len(result.events) == 1
+    assert [warning.code for warning in result.warnings] == ["export_not_authorized"]
+    assert str(denied) not in result.warnings[0].message
+
+
+def test_repeated_identical_export_is_deduplicated(tmp_path: Path) -> None:
+    export_path = _write_export(tmp_path / "export.json", _export(_message(_tool_part())))
+
+    result = adapt_opencode_exports(
+        (export_path, export_path),
+        authorized_paths=(export_path,),
+    )
+
+    assert len(result.events) == 1
+    assert [warning.code for warning in result.warnings] == ["duplicate_export_event"]

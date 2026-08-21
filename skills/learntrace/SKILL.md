@@ -79,6 +79,20 @@ learntrace run <project-dir> `
 Never add `--authorized` by inference. Without authorization, continue in the
 document/Git/test-log mode and do not infer AI use.
 
+For more than one session, repeat both the input and its exact-path
+authorization. Do not use the single-session `--authorized` shortcut:
+
+```powershell
+learntrace run <project-dir> `
+  --opencode-export <session-1.json> `
+  --opencode-export <session-2.json> `
+  --authorize-opencode-export <session-1.json> `
+  --authorize-opencode-export <session-2.json>
+```
+
+Ask for consent for every export path. An authorized session does not imply
+authorization for another session.
+
 All first-analysis modes produce:
 
 - `<project-dir>/learning-record.md`
@@ -150,4 +164,6 @@ Remote LLM inference is opt-in and requires both `LEARNTRACE_LLM_API_KEY` and
 `LEARNTRACE_LLM_ENABLED=1`. Only event id, kind, sanitized summary, and time are
 sent; source references, notes, and repository code stay local. Empty or invalid
 LLM results fall back to deterministic local inference and remain visibly
-flagged in the archive.
+flagged in the archive. `LEARNTRACE_LLM_MAX_TOKENS` optionally controls the
+response budget (default `8000`, range `256`–`65536`); a length-limited or
+reasoning-only response is reported before fallback.

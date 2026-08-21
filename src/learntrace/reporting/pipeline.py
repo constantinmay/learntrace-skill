@@ -31,6 +31,8 @@ ARCHIVE_VERSION = "v0"
 HASH_ALGORITHM = "sha256"
 MAX_CANDIDATES = 10
 _MAX_TRACE_COMMIT_GAP_SECONDS = 30 * 60
+_MAX_CROSS_SESSION_GAP_SECONDS = 24 * 60 * 60
+_OPENCODE_SESSION_RE = re.compile(r"^trace://opencode/(?P<session>[^/]+)/")
 
 _CONSTRAINT_TERMS = (
     "等级制",
@@ -100,6 +102,7 @@ _TRACE_LEARNING_SIGNAL_TERMS = (
     "fix",
     "question",
     "test",
+    "pytest",
 )
 _TOPIC_FAMILIES: dict[str, tuple[str, ...]] = {
     "arithmetic": ("divide", "division", "test_div", "zero", "除零", "除数"),
@@ -291,8 +294,19 @@ class StubCandidateInferencer:
             and not commits
             and not documents
             and _topic_match_score(traces[0].summary, traces[1].summary) > 0
+            and (
+                not _opencode_session_ids(traces[0])
+                or not _opencode_session_ids(traces[1])
+                or _opencode_session_ids(traces[0]) == _opencode_session_ids(traces[1])
+            )
         ):
             drafts.append(self._follow_up_candidate(traces[0], traces[1]))
+
+        # A project may span several exported OpenCode sessions. Keep session
+        # provenance in source refs and only connect two sessions when their
+        # timestamps fall within a conservative window and they share a
+        # semantic project topic. Generic repeated tool names are insufficient.
+        drafts.extend(self._cross_session_follow_ups(traces))
 
         # Revising AI suggestions: an authorized trace followed by a commit.
         # Bind only to the matching summary pair, and only when the trace
@@ -355,6 +369,57 @@ class StubCandidateInferencer:
                 drafts.append(self._commit_only_constraint_candidate(commit))
 
         return tuple(drafts)
+
+    def _cross_session_follow_ups(
+        self,
+        traces: tuple[ObservableEvent, ...],
+    ) -> tuple[CandidateDraft, ...]:
+        follow_ups: list[CandidateDraft] = []
+        used_later_ids: set[str] = set()
+        for later in traces:
+            if later.id in used_later_ids:
+                continue
+            later_sessions = _opencode_session_ids(later)
+            if not later_sessions:
+                continue
+            matches: list[tuple[int, float, ObservableEvent]] = []
+            for earlier in traces:
+                earlier_sessions = _opencode_session_ids(earlier)
+                if not earlier_sessions or earlier_sessions == later_sessions:
+                    continue
+                if not (_has_trace_learning_signal(earlier) or _has_trace_learning_signal(later)):
+                    continue
+                gap = _trace_commit_gap_seconds(earlier, later)
+                shared_topics = _semantic_topics(earlier.summary) & _semantic_topics(later.summary)
+                if gap is not None and gap <= _MAX_CROSS_SESSION_GAP_SECONDS and shared_topics:
+                    matches.append((len(shared_topics), gap, earlier))
+            if not matches:
+                continue
+            _, _, earlier = min(
+                matches,
+                key=lambda item: (-item[0], item[1], item[2].id),
+            )
+            used_later_ids.add(later.id)
+            follow_ups.append(self._cross_session_follow_up_candidate(earlier, later))
+        return tuple(follow_ups)
+
+    @staticmethod
+    def _cross_session_follow_up_candidate(
+        earlier: ObservableEvent,
+        later: ObservableEvent,
+    ) -> CandidateDraft:
+        return CandidateDraft(
+            node_type=NodeType.FOLLOW_UP,
+            statement="学生可能在后续 OpenCode 会话中围绕同一主题继续推进工作。",
+            basis_event_ids=(earlier.id, later.id),
+            uncertainty=(
+                "中：两次会话在时间窗内共享项目主题，且至少一条轨迹具有测试、"
+                "失败、修复或决策信号；是否构成连续学习过程仍需学生确认。"
+            ),
+            question_to_student=(
+                "后一个会话是否延续了前一个会话中的问题？你具体推进或验证了什么？"
+            ),
+        )
 
     def _trace_commit_follow_ups(
         self,
@@ -725,6 +790,15 @@ def _trace_commit_gap_seconds(
     return (commit_time - trace_time).total_seconds()
 
 
+def _opencode_session_ids(event: ObservableEvent) -> frozenset[str]:
+    sessions: set[str] = set()
+    for source_ref in event.source_refs:
+        match = _OPENCODE_SESSION_RE.match(source_ref.ref)
+        if match is not None:
+            sessions.add(match.group("session"))
+    return frozenset(sessions)
+
+
 def _is_low_signal_trace(trace: ObservableEvent) -> bool:
     lowered = trace.summary.casefold()
     return any(term.casefold() in lowered for term in _LOW_SIGNAL_TRACE_TERMS)
@@ -744,10 +818,15 @@ def _has_trace_learning_signal(trace: ObservableEvent) -> bool:
 
 def _semantic_topics(summary: str) -> frozenset[str]:
     lowered = summary.casefold()
+    lexical_terms = _lexical_topics(summary)
     return frozenset(
         topic
         for topic, markers in _TOPIC_FAMILIES.items()
-        if any(_marker_present(lowered, marker) for marker in markers)
+        if any(
+            _marker_present(lowered, marker)
+            or (marker.isascii() and marker.casefold() in lexical_terms)
+            for marker in markers
+        )
     )
 
 
@@ -765,8 +844,12 @@ def _marker_present(lowered_summary: str, marker: str) -> bool:
 
 def _lexical_topics(summary: str) -> frozenset[str]:
     terms: set[str] = set()
-    for token in _ASCII_TOPIC_RE.findall(summary.casefold()):
-        terms.update(part for part in re.split(r"[_-]+", token) if len(part) >= 3)
+    for token in _ASCII_TOPIC_RE.findall(summary):
+        # Preserve word boundaries in Python/JavaScript-style error and symbol
+        # names before case-folding: ``ZeroDivisionError`` becomes
+        # ``zero``, ``division``, ``error`` instead of one opaque token.
+        expanded = re.sub(r"(?<=[a-z0-9])(?=[A-Z])", "_", token)
+        terms.update(part.casefold() for part in re.split(r"[_-]+", expanded) if len(part) >= 3)
     return frozenset(terms - _GENERIC_TOPIC_TERMS)
 
 
@@ -1162,11 +1245,16 @@ def build_archive_bundle(
         if configured_inference_mode != "llm" or not isinstance(exc, LLMInferenceError):
             raise
         inferred_drafts = ()
+        failure_code = str(getattr(exc, "code", "llm_inference_failed"))
+        failure_detail = str(exc).strip()
         inference_failure_warnings = (
             ArchiveWarning(
-                code="llm_inference_failed",
+                code=failure_code,
                 source="candidate_inference",
-                message="LLM 候选推断失败；已改用本地确定性规则。",
+                message=(
+                    "LLM 候选推断失败；已改用本地确定性规则。"
+                    + (f" 原因：{failure_detail}" if failure_detail else "")
+                ),
             ),
         )
 
@@ -1283,6 +1371,60 @@ def _missing_info_count(bundle: ArchiveBundle) -> int:
     return candidate_missing + confirmation_missing
 
 
+def fallback_reflection_questions(bundle: ArchiveBundle) -> tuple[dict[str, object], ...]:
+    """Return evidence-gap questions when inference produced no candidates.
+
+    These questions are deliberately *not* materialized as learning-node
+    candidates: they ask the student to supply missing facts without claiming
+    that a learning moment already occurred.
+    """
+
+    if bundle.candidates:
+        return ()
+
+    questions: list[dict[str, object]] = []
+    if not any(event.kind == EventKind.TEST_LOG for event in bundle.events):
+        questions.append(
+            {
+                "question_id": "gap-test-evidence",
+                "question_type": "evidence_gap",
+                "candidate_id": None,
+                "node_type": None,
+                "question_to_student": (
+                    "当前材料中没有发现测试运行记录。你是否运行过测试，结果如何？"
+                ),
+                "basis_event_ids": [],
+                "uncertainty": "高：系统只能确认测试证据未记录，不能判断测试是否实际运行。",
+            }
+        )
+    if not any(event.kind == EventKind.DOCUMENT for event in bundle.events):
+        questions.append(
+            {
+                "question_id": "gap-project-goal",
+                "question_type": "evidence_gap",
+                "candidate_id": None,
+                "node_type": None,
+                "question_to_student": "当前材料没有明确记录项目目标，请补充本次任务目标。",
+                "basis_event_ids": [],
+                "uncertainty": "高：缺少可引用的任务书、README 或要求类文档。",
+            }
+        )
+    questions.append(
+        {
+            "question_id": "gap-learning-reflection",
+            "question_type": "reflection",
+            "candidate_id": None,
+            "node_type": None,
+            "question_to_student": (
+                "当前证据未形成明确的学习节点。你认为本次最重要的调整是什么，又是如何验证它的？"
+            ),
+            "basis_event_ids": [],
+            "uncertainty": "高：该问题用于收集学生原话，不代表系统已经推断出学习结论。",
+        }
+    )
+    return tuple(questions)
+
+
 def _source_index(bundle: ArchiveBundle) -> list[dict[str, object]]:
 
     candidate_ids_by_event = {
@@ -1391,7 +1533,7 @@ def bundle_to_dict(
 
     validate_bundle(bundle, validator=validator)
 
-    pending_questions = [
+    pending_questions: list[dict[str, object]] = [
         {
             "candidate_id": candidate.id,
             "node_type": candidate.node_type.value,
@@ -1402,6 +1544,7 @@ def bundle_to_dict(
         for candidate in bundle.candidates
         if candidate.status == CandidateStatus.PROPOSED
     ]
+    pending_questions.extend(fallback_reflection_questions(bundle))
 
     missing_info_count = _missing_info_count(bundle)
 

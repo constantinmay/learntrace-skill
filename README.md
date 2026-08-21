@@ -88,6 +88,19 @@ learntrace run <project-dir> `
   --opencode-export <opencode-export.json> --authorized
 ```
 
+项目跨越多个 OpenCode 会话时，每个导出文件都必须分别提供并授权：
+
+```powershell
+learntrace run <project-dir> `
+  --opencode-export <session-1.json> `
+  --opencode-export <session-2.json> `
+  --authorize-opencode-export <session-1.json> `
+  --authorize-opencode-export <session-2.json>
+```
+
+多会话结果会合并并按事件去重，来源仍保留各自的 session 标识。未逐个授权
+的导出不会被读取。旧的 `--authorized` 仅用于单个导出文件。
+
 学生填写独立确认文件后，第二次运行直接使用首次保存的事实和候选快照，
 不会重新解析轨迹或调用 LLM：
 
@@ -103,6 +116,8 @@ learntrace run <project-dir> `
 
 `.learntrace/archive-records.json` 包含用于审计的来源索引，应视为本地敏感产物；
 对外分享前应检查已脱敏的 `learning-record.md`，不要直接上传机器归档。
+OpenCode 原始导出还可能包含完整聊天和工具内容，也不得提交；隐私优先时可先用
+`opencode export <sessionID> --sanitize` 生成脱敏导出，但其项目路径证据会相应减少。
 
 `parse`、`adapt` 和 `archive` 也可以分别运行。读取 OpenCode 导出时必须对
 `adapt` 或 `run` 同时传入 `--authorized`；LearnTrace 不会执行目标项目代码、
@@ -128,6 +143,10 @@ CLI 默认使用确定性候选推断器。归档扫描会跳过 `.opencode`、`
 SHA-256 指纹的审计清单，CLI 同时输出该指纹与记录数量。
 远程 LLM 没有返回可用候选或响应无法解析时，归档会保留告警并回退到本地
 确定性推断，不会静默生成一份没有说明的空候选档案。
+推理模型需要更多输出预算时，可通过 `LEARNTRACE_LLM_MAX_TOKENS` 调整候选
+推断请求的输出上限（默认 `8000`，允许 `256` 到 `65536`）。如果响应因长度
+终止或只返回推理内容，机器档案会记录具体原因并使用本地回退；即使没有形成
+候选，待确认问题文件也会提供基于证据缺口的学生复盘问题，而不会编造候选。
 
 ## 目录结构
 
