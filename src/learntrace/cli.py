@@ -9,13 +9,28 @@ from collections.abc import Sequence
 from pathlib import Path
 
 from learntrace import __version__
-from learntrace.adapters import adapt_opencode_exports, write_trace_result
+from learntrace.adapters import (
+    TraceAdapterResult,
+    TraceInputStatus,
+    TraceParseIssue,
+    adapt_claude_code_exports,
+    adapt_codex_exports,
+    adapt_opencode_exports,
+    write_trace_result,
+)
 from learntrace.archive import main as archive_main
 from learntrace.archive import write_learning_record_result
+from learntrace.models import ObservableEvent
 from learntrace.parsers import discover_static_materials, parse_static_materials, write_parse_result
 from learntrace.reporting import LLMInferenceError
 
 _COMMANDS = frozenset({"adapt", "archive", "discover", "parse", "run"})
+_MAX_TOTAL_TRACE_EVENTS = 10_000
+_TRACE_EXPORT_ADAPTERS = {
+    "opencode": adapt_opencode_exports,
+    "claude-code": adapt_claude_code_exports,
+    "codex": adapt_codex_exports,
+}
 
 
 def _add_parse_options(parser: argparse.ArgumentParser) -> None:
@@ -45,8 +60,17 @@ def build_parser() -> argparse.ArgumentParser:
     )
     discover_parser.add_argument("project_dir", type=Path)
 
-    adapt_parser = subparsers.add_parser("adapt", help="Adapt an OpenCode JSON export.")
+    adapt_parser = subparsers.add_parser(
+        "adapt",
+        help="Adapt an authorized agent trace export (OpenCode, Claude Code, or Codex).",
+    )
     adapt_parser.add_argument("export_path", nargs="+", type=Path)
+    adapt_parser.add_argument(
+        "--source",
+        choices=tuple(_TRACE_EXPORT_ADAPTERS),
+        default="opencode",
+        help="Which agent host the exports come from (default: opencode).",
+    )
     adapt_parser.add_argument("--project-root", type=Path)
     adapt_parser.add_argument(
         "--authorized",
@@ -79,6 +103,34 @@ def build_parser() -> argparse.ArgumentParser:
         type=Path,
         default=[],
         help="Authorize one exact OpenCode export path (repeat per session).",
+    )
+    run_parser.add_argument(
+        "--claude-code-export",
+        action="append",
+        type=Path,
+        default=[],
+        help="Claude Code session JSONL file (repeat per session).",
+    )
+    run_parser.add_argument(
+        "--authorize-claude-code-export",
+        action="append",
+        type=Path,
+        default=[],
+        help="Authorize one exact Claude Code session path (repeat per session).",
+    )
+    run_parser.add_argument(
+        "--codex-export",
+        action="append",
+        type=Path,
+        default=[],
+        help="Codex session JSONL file (repeat per session).",
+    )
+    run_parser.add_argument(
+        "--authorize-codex-export",
+        action="append",
+        type=Path,
+        default=[],
+        help="Authorize one exact Codex session path (repeat per session).",
     )
     run_parser.add_argument(
         "--confirmations",
@@ -119,6 +171,64 @@ def _parse_project(
     return len(result.events), len(result.warnings)
 
 
+def _trace_event_sort_key(event: ObservableEvent) -> tuple[bool, str, str]:
+    return (
+        event.occurred_at is None,
+        event.occurred_at or "",
+        event.source_refs[0].ref,
+    )
+
+
+def _merge_trace_results(results: tuple[TraceAdapterResult, ...]) -> TraceAdapterResult:
+    """Merge per-host adapter results into one Task 3 batch.
+
+    Events are deduplicated by stable ID; conflicting duplicates fail loudly.
+    The merged status keeps the most informative outcome across hosts.
+    """
+
+    events_by_id: dict[str, ObservableEvent] = {}
+    warnings: list[TraceParseIssue] = []
+    statuses: list[TraceInputStatus] = []
+    for result in results:
+        statuses.append(result.status)
+        warnings.extend(result.warnings)
+        for event in result.events:
+            existing = events_by_id.get(event.id)
+            if existing is None:
+                events_by_id[event.id] = event
+            elif existing.to_dict() != event.to_dict():
+                raise ValueError("多个轨迹来源包含 ID 相同但内容冲突的工具记录。")
+
+    events = sorted(events_by_id.values(), key=_trace_event_sort_key)
+    skipped = len(events) - _MAX_TOTAL_TRACE_EVENTS
+    if skipped > 0:
+        events = events[:_MAX_TOTAL_TRACE_EVENTS]
+        warnings.append(
+            TraceParseIssue(
+                code="total_event_cap_reached",
+                location="trace_merge",
+                message=(
+                    f"合并后轨迹事件超过 {_MAX_TOTAL_TRACE_EVENTS} 条上限，"
+                    f"已保留最早的 {len(events)} 条。"
+                ),
+            )
+        )
+    warnings.sort(key=lambda issue: (issue.location, issue.code, issue.message))
+    if TraceInputStatus.PARSED in statuses and events:
+        status = TraceInputStatus.PARSED
+    elif TraceInputStatus.AUTHORIZED_NOT_FOUND in statuses:
+        status = TraceInputStatus.AUTHORIZED_NOT_FOUND
+    elif TraceInputStatus.NOT_AUTHORIZED in statuses:
+        status = TraceInputStatus.NOT_AUTHORIZED
+    else:
+        status = TraceInputStatus.NOT_PROVIDED
+    return TraceAdapterResult(
+        status=status,
+        events=tuple(events),
+        warnings=tuple(warnings),
+    )
+
+
 def _run_command(args: argparse.Namespace, parser: argparse.ArgumentParser) -> int:
     try:
         if args.command == "discover":
@@ -154,7 +264,7 @@ def _run_command(args: argparse.Namespace, parser: argparse.ArgumentParser) -> i
                     "--authorized is only valid with one export; use --authorize-export per path"
                 )
             authorized_paths = export_paths if args.authorized else tuple(args.authorize_export)
-            result = adapt_opencode_exports(
+            result = _TRACE_EXPORT_ADAPTERS[args.source](
                 export_paths,
                 authorized_paths=authorized_paths,
                 project_root=args.project_root,
@@ -219,13 +329,32 @@ def _run_command(args: argparse.Namespace, parser: argparse.ArgumentParser) -> i
                 "--authorized is only valid with one export; "
                 "use --authorize-opencode-export per path"
             )
+        if args.authorized and (args.claude_code_export or args.codex_export):
+            raise ValueError(
+                "--authorized only covers the OpenCode export; use "
+                "--authorize-claude-code-export or --authorize-codex-export per path"
+            )
         authorized_paths = (
             export_paths if args.authorized else tuple(args.authorize_opencode_export)
         )
-        trace_result = adapt_opencode_exports(
-            export_paths,
-            authorized_paths=authorized_paths,
-            project_root=root,
+        trace_result = _merge_trace_results(
+            (
+                adapt_opencode_exports(
+                    export_paths,
+                    authorized_paths=authorized_paths,
+                    project_root=root,
+                ),
+                adapt_claude_code_exports(
+                    tuple(args.claude_code_export),
+                    authorized_paths=tuple(args.authorize_claude_code_export),
+                    project_root=root,
+                ),
+                adapt_codex_exports(
+                    tuple(args.codex_export),
+                    authorized_paths=tuple(args.authorize_codex_export),
+                    project_root=root,
+                ),
+            )
         )
         work_dir.mkdir(parents=True, exist_ok=True)
         write_trace_result(trace_result, work_dir / "task3-result.json")
