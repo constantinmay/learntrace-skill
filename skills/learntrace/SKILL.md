@@ -19,7 +19,7 @@ For a new project, follow this sequence exactly:
    scope without reading candidate file contents.
 3. Stop. Show the discovered Git, document, and test-log scope and ask the
    student what may be read. Ask separately whether they want to provide and
-   authorize an OpenCode export.
+   authorize an AI coding trace export (OpenCode, Claude Code, or Codex).
 4. Continue only after the student confirms the scope.
 
 Before step 4, do not use `read`, `cat`, `Get-Content`, `git log`, `git show`,
@@ -67,17 +67,32 @@ running the commands. After exit code 0, the next content-reading tool call must
 `.learntrace/learning-questions.md`; do not inspect `learning-record.md` or
 verify output directories first.
 
-### Include an OpenCode export
+### Include an AI coding trace export
 
-Only when the student supplies the export and explicitly authorizes it:
+Three trace hosts are supported. Only when the student supplies the session
+file and explicitly authorizes it:
 
 ```powershell
 learntrace run <project-dir> `
   --opencode-export <opencode-export.json> --authorized
 ```
 
-Never add `--authorized` by inference. Without authorization, continue in the
-document/Git/test-log mode and do not infer AI use.
+For Claude Code or Codex, the student first copies a session JSONL file out of
+`~/.claude/projects/` or `~/.codex/sessions/` (LearnTrace never scans those
+directories), then:
+
+```powershell
+learntrace run <project-dir> `
+  --claude-code-export <session.jsonl> `
+  --authorize-claude-code-export <session.jsonl>
+
+learntrace run <project-dir> `
+  --codex-export <rollout-session.jsonl> `
+  --authorize-codex-export <rollout-session.jsonl>
+```
+
+Never add an authorization flag by inference. Without authorization, continue
+in the document/Git/test-log mode and do not infer AI use.
 
 For more than one session, repeat both the input and its exact-path
 authorization. Do not use the single-session `--authorized` shortcut:
@@ -91,7 +106,10 @@ learntrace run <project-dir> `
 ```
 
 Ask for consent for every export path. An authorized session does not imply
-authorization for another session.
+authorization for another session, even within the same host. Different hosts
+can be combined in one `run`; each export still needs its own per-path
+authorization flag, and the legacy `--authorized` shortcut only covers a
+single OpenCode export.
 
 All first-analysis modes produce:
 

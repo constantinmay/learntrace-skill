@@ -101,6 +101,23 @@ learntrace run <project-dir> `
 多会话结果会合并并按事件去重，来源仍保留各自的 session 标识。未逐个授权
 的导出不会被读取。旧的 `--authorized` 仅用于单个导出文件。
 
+除 OpenCode 外，也支持经授权的 Claude Code 和 Codex 会话文件。使用者先从
+`~/.claude/projects/` 或 `~/.codex/sessions/` 复制会话 JSONL（LearnTrace 不会扫描
+这些目录），再逐个授权：
+
+```powershell
+learntrace run <project-dir> `
+  --claude-code-export <session.jsonl> `
+  --authorize-claude-code-export <session.jsonl> `
+  --codex-export <rollout-session.jsonl> `
+  --authorize-codex-export <rollout-session.jsonl>
+```
+
+三个宿主可以在同一次 `run` 中组合，事件合并进同一份机器档案并按稳定 ID 去重。
+JSONL 会话采用逐行流式解析：单文件上限 256 MiB、单行 16 MiB、单会话事件 2000 条、
+合并总量 10000 条，超出部分按时间保留最早事件并记录截断警告。详见
+[Claude Code 适配器](docs/claude-code-adapter.md)和[Codex 适配器](docs/codex-adapter.md)。
+
 学生填写独立确认文件后，第二次运行直接使用首次保存的事实和候选快照，
 不会重新解析轨迹或调用 LLM：
 
