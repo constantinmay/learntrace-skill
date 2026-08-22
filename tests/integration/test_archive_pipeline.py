@@ -172,7 +172,7 @@ def test_render_markdown_redacts_paths_and_secrets_from_record_body(tmp_path: Pa
             ArchiveWarning(
                 code="private-warning",
                 source=f"{private_root}\\input.json",
-                message="用户目录 ~/.ssh/id_rsa 和 /secret 无法读取",
+                message=f"用户目录 ~/.ssh/id_rsa 和 /secret 无法读取，token={secret}",
             ),
         ),
     )
@@ -186,6 +186,24 @@ def test_render_markdown_redacts_paths_and_secrets_from_record_body(tmp_path: Pa
     assert "[REDACTED]" in markdown
     assert "[absolute-path]" in markdown
     assert "[private-path]" in markdown
+
+
+@pytest.mark.parametrize(
+    "source_ref",
+    [r"C:\Users\learner\project\notes.md:1-2", "/home/learner/project/notes.md:1-2"],
+)
+def test_nested_absolute_document_is_not_misclassified_as_root_goal(source_ref: str) -> None:
+    event = ObservableEvent(
+        id="evt-nested-goal",
+        kind=EventKind.DOCUMENT,
+        summary="项目目标记录在嵌套的私人笔记中。",
+        source_refs=(SourceRef(type=SourceType.DOCUMENT, ref=source_ref),),
+    )
+
+    markdown = render_markdown(build_archive_bundle((event,)))
+
+    assert "项目目标记录在嵌套的私人笔记中" not in markdown
+    assert "请由学生根据课程任务或项目 README 补充" in markdown
 
 
 def test_render_markdown_preserves_routes_urls_and_natural_slashes() -> None:

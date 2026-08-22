@@ -77,6 +77,7 @@ _ABSOLUTE_PATH_RE = re.compile(
     r"\\\\[^\\/\s]+[\\/][^\s，。；、\"'`]+|"
     r"(?<![\w:/])/(?!api(?:/|\b)|v\d+(?:/|\b))[^\s，。；、\"'`]+)"
 )
+_SOURCE_LINE_SUFFIX_RE = re.compile(r":\d+(?:-\d+)?$")
 
 
 def _render_safe_text(value: str) -> str:
@@ -90,6 +91,11 @@ def _render_text(value: TextOrMissing) -> str:
     if isinstance(value, MissingInfo):
         return "未记录"
     return _render_safe_text(value)
+
+
+def _source_ref_path(ref: str) -> str:
+    """Remove a trailing line range without splitting a Windows drive prefix."""
+    return _SOURCE_LINE_SUFFIX_RE.sub("", ref).replace("\\", "/")
 
 
 def _render_confirmation_line(confirmation: StudentConfirmation | None) -> str:
@@ -133,9 +139,7 @@ def _project_goal_lines(bundle: ArchiveBundle) -> list[str]:
     for event in bundle.events:
         if event.kind != EventKind.DOCUMENT:
             continue
-        source_paths = [
-            ref.ref.split(":", maxsplit=1)[0].replace("\\", "/") for ref in event.source_refs
-        ]
+        source_paths = [_source_ref_path(ref.ref) for ref in event.source_refs]
         root_sources = [path for path in source_paths if "/" not in path.strip("/")]
         refs = " ".join(path.casefold() for path in root_sources)
         summary = event.summary.casefold()
@@ -159,9 +163,9 @@ def _project_goal_lines(bundle: ArchiveBundle) -> list[str]:
     seen_documents: set[str] = set()
     for event in sorted(candidates, key=lambda item: (source_line(item), item.id)):
         root_sources = sorted(
-            ref.ref.split(":", maxsplit=1)[0].replace("\\", "/")
+            _source_ref_path(ref.ref)
             for ref in event.source_refs
-            if "/" not in ref.ref.split(":", maxsplit=1)[0].replace("\\", "/").strip("/")
+            if "/" not in _source_ref_path(ref.ref).strip("/")
         )
         document_key = root_sources[0].casefold() if root_sources else event.id
         is_first_section = document_key not in seen_documents

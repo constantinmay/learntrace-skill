@@ -14,7 +14,8 @@ from learntrace.models import (
     SourceType,
     StudentConfirmation,
 )
-from learntrace.reporting import CandidateDraft, build_archive_bundle
+from learntrace.reporting import CandidateDraft, apply_confirmations, build_archive_bundle
+from learntrace.reporting.llm import LLMInferenceError
 from learntrace.reporting.pipeline import (
     MAX_CANDIDATES,
     StubCandidateInferencer,
@@ -173,6 +174,55 @@ def test_identical_candidates_are_deduplicated_without_order_suffixes() -> None:
     assert [warning.code for warning in bundle.warnings] == ["duplicate_candidates_removed"]
 
 
+class SameQuestionDifferentBasisInferencer:
+    def __init__(self, *, reverse: bool = False) -> None:
+        self._reverse = reverse
+
+    def infer(self, events: tuple[ObservableEvent, ...]) -> tuple[CandidateDraft, ...]:
+        drafts = tuple(
+            CandidateDraft(
+                node_type=NodeType.FIX_FAILED_APPROACH,
+                statement="同一问题可能经过了两次修复尝试。",
+                basis_event_ids=(event.id,),
+                uncertainty="中：两条提交都与同一问题有关。",
+                question_to_student="这两次修改是否属于同一次修复过程？",
+            )
+            for event in events
+        )
+        return tuple(reversed(drafts)) if self._reverse else drafts
+
+
+def test_duplicate_candidate_drafts_merge_basis_deterministically() -> None:
+    events = (
+        _event("evt-merge-b", EventKind.GIT_COMMIT, "提交 b：第二次修改。"),
+        _event("evt-merge-a", EventKind.GIT_COMMIT, "提交 a：第一次修改。"),
+    )
+
+    first = build_archive_bundle(events, inferencer=SameQuestionDifferentBasisInferencer())
+    reversed_result = build_archive_bundle(
+        events,
+        inferencer=SameQuestionDifferentBasisInferencer(reverse=True),
+    )
+
+    assert len(first.candidates) == 1
+    assert first.candidates[0].basis_event_ids == ("evt-merge-a", "evt-merge-b")
+    assert first.candidates[0].id == reversed_result.candidates[0].id
+    assert [warning.code for warning in first.warnings] == ["duplicate_candidates_removed"]
+
+
+def test_custom_inferencer_cannot_trigger_llm_fallback_by_string_marker() -> None:
+    class ImpostorInferencer:
+        inference_mode = "llm"
+
+        def infer(self, events: tuple[ObservableEvent, ...]) -> tuple[CandidateDraft, ...]:
+            raise LLMInferenceError("custom failure")
+
+    event = _event("evt-custom", EventKind.GIT_COMMIT, "提交 a：修改实现。")
+
+    with pytest.raises(LLMInferenceError, match="custom failure"):
+        build_archive_bundle((event,), inferencer=ImpostorInferencer())
+
+
 def test_english_commit_overview_is_recognized() -> None:
     events = (
         _event(
@@ -240,6 +290,35 @@ def test_duplicate_identical_confirmations_are_deduplicated() -> None:
 
     assert len(bundle.confirmations) == 1
     assert bundle.candidates[0].status.value == "resolved"
+
+
+def test_denied_confirmation_resolves_question_without_confirming_candidate() -> None:
+    commit = _commit("evt-denied", "2026-05-01T10:00:00+08:00")
+    inferencer = SingleCommitInferencer()
+    initial = build_archive_bundle((commit,), inferencer=inferencer)
+    confirmation = _confirmation(
+        "conf-denied",
+        initial.candidates[0].id,
+        ConfirmationDecision.DENIED,
+    )
+
+    updated = apply_confirmations(initial, (confirmation,))
+
+    assert updated.candidates[0].status.value == "resolved"
+    assert updated.confirmations[0].decision is ConfirmationDecision.DENIED
+
+
+def test_apply_confirmations_rejects_unknown_candidate_id() -> None:
+    commit = _commit("evt-known", "2026-05-01T10:00:00+08:00")
+    initial = build_archive_bundle((commit,), inferencer=SingleCommitInferencer())
+    confirmation = _confirmation(
+        "conf-unknown",
+        "cand-no-longer-present",
+        ConfirmationDecision.CONFIRMED,
+    )
+
+    with pytest.raises(ValueError, match="confirmation targets missing candidate"):
+        apply_confirmations(initial, (confirmation,))
 
 
 def _evt(

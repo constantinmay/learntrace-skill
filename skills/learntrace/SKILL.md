@@ -144,7 +144,11 @@ learntrace archive <records-dir> `
 ```
 
 Confirmation must reuse the snapshot. It must not re-run parsing, trace
-adaptation, or candidate inference.
+adaptation, or candidate inference. Do not combine `--confirmations` with
+document, test-log, Git-scope, or OpenCode-export options; the CLI rejects
+those combinations. A candidate status of `resolved` means the user answered
+the question; the separate decision remains `confirmed`, `supplemented`, or
+`denied`.
 
 ## Evidence and privacy
 
@@ -159,6 +163,9 @@ classifying evidence or writing the portfolio.
 - Use `未记录` for missing evidence. Never fill gaps on the student's behalf.
 - Treat `.learntrace/archive-records.json` as sensitive because its source
   index can contain project paths. Review the Markdown before sharing it.
+- Markdown path redaction is intentionally conservative. Known API routes such
+  as `/api` and `/v1` are preserved, while ambiguous root-relative strings such
+  as `/health` or `/docs/x` may be redacted as absolute paths.
 
 Remote LLM inference is opt-in and requires both `LEARNTRACE_LLM_API_KEY` and
 `LEARNTRACE_LLM_ENABLED=1`. Only event id, kind, sanitized summary, and time are

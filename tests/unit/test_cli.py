@@ -10,6 +10,7 @@ from learntrace.archive import build_parser
 from learntrace.cli import main
 from learntrace.models import MissingInfo, NodeType, ObservableEvent
 from learntrace.reporting import CandidateDraft, LLMInferenceError
+from learntrace.reporting.llm import LLMConfig, OpenAIChatCandidateInferencer
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SCENARIO_DIR = (
@@ -140,15 +141,16 @@ def test_run_falls_back_after_llm_failure_without_traceback(
     monkeypatch: pytest.MonkeyPatch,
     capsys: CaptureFixture[str],
 ) -> None:
-    class FailingInferencer:
-        inference_mode = "llm"
+    inferencer = OpenAIChatCandidateInferencer(LLMConfig(api_key="test-key"))
 
-        def infer(self, events: tuple[ObservableEvent, ...]) -> tuple[CandidateDraft, ...]:
-            raise LLMInferenceError("LLM response could not be parsed")
+    def fail_inference(events: tuple[ObservableEvent, ...]) -> tuple[CandidateDraft, ...]:
+        raise LLMInferenceError("LLM response could not be parsed")
+
+    monkeypatch.setattr(inferencer, "infer", fail_inference)
 
     monkeypatch.setattr(
         "learntrace.reporting.llm.default_candidate_inferencer",
-        lambda: FailingInferencer(),
+        lambda: inferencer,
     )
     (tmp_path / "task.md").write_text("# Goal\n\nBuild safely.\n", encoding="utf-8")
 
@@ -289,6 +291,41 @@ def test_run_command_builds_end_to_end_local_outputs(tmp_path: Path) -> None:
     assert second == first
 
 
+@pytest.mark.parametrize(
+    "conflicting_args",
+    [
+        ["--document", "task.md"],
+        ["--test-log", "pytest.log"],
+        ["--no-git"],
+        ["--max-commits", "50"],
+        ["--find-copies-harder"],
+        ["--opencode-export", "session.json"],
+        ["--authorized"],
+        ["--authorize-opencode-export", "session.json"],
+    ],
+)
+def test_run_confirmation_stage_rejects_evidence_options(
+    tmp_path: Path,
+    capsys: CaptureFixture[str],
+    conflicting_args: list[str],
+) -> None:
+    with pytest.raises(SystemExit) as exc_info:
+        main(
+            [
+                "run",
+                str(tmp_path),
+                "--confirmations",
+                "confirmations.json",
+                *conflicting_args,
+            ]
+        )
+
+    assert exc_info.value.code == 1
+    error = capsys.readouterr().err
+    assert "reuses the existing analysis snapshot" in error
+    assert "cannot be combined with evidence collection options" in error
+
+
 def test_run_with_confirmations_reuses_first_analysis_snapshot(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -366,7 +403,6 @@ def test_run_with_confirmations_reuses_first_analysis_snapshot(
             [
                 "run",
                 str(tmp_path),
-                "--no-git",
                 "--confirmations",
                 str(confirmations_path),
             ]
@@ -383,6 +419,46 @@ def test_run_with_confirmations_reuses_first_analysis_snapshot(
     assert second_archive["candidates"][0]["id"] == candidate_id
     assert second_archive["candidates"][0]["status"] == "resolved"
     assert second_archive["confirmations"][0]["candidate_id"] == candidate_id
+
+
+def test_run_multiple_exports_keeps_unauthorized_session_unread(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    (tmp_path / "task.md").write_text("# Goal\n\nInspect safely.\n", encoding="utf-8")
+    allowed = REPO_ROOT / "tests" / "fixtures" / "opencode" / "authorized-export.json"
+    denied = tmp_path / "private-session-must-not-be-read.json"
+    original_read_bytes = Path.read_bytes
+
+    def guarded_read_bytes(path: Path) -> bytes:
+        if path == denied:
+            raise AssertionError("an unauthorized export must not be read")
+        return original_read_bytes(path)
+
+    monkeypatch.setattr(Path, "read_bytes", guarded_read_bytes)
+
+    assert (
+        main(
+            [
+                "run",
+                str(tmp_path),
+                "--no-git",
+                "--opencode-export",
+                str(allowed),
+                "--opencode-export",
+                str(denied),
+                "--authorize-opencode-export",
+                str(allowed),
+            ]
+        )
+        == 0
+    )
+
+    trace = json.loads((tmp_path / ".learntrace" / "task3-result.json").read_text(encoding="utf-8"))
+    assert trace["status"] == "parsed"
+    assert trace["events"]
+    assert "export_not_authorized" in [warning["code"] for warning in trace["warnings"]]
+    assert str(denied) not in json.dumps(trace, ensure_ascii=False)
 
 
 def test_cli_merges_shorthand_confirmation_file(tmp_path: Path) -> None:

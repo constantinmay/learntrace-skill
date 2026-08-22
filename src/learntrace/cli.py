@@ -23,7 +23,7 @@ def _add_parse_options(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--document", action="append", type=Path, default=None)
     parser.add_argument("--test-log", action="append", type=Path, default=None)
     parser.add_argument("--no-git", action="store_true", help="Do not read local Git history.")
-    parser.add_argument("--max-commits", type=int, default=50)
+    parser.add_argument("--max-commits", type=int, default=None, help="Default: 50.")
     parser.add_argument("--find-copies-harder", action="store_true")
 
 
@@ -85,7 +85,10 @@ def build_parser() -> argparse.ArgumentParser:
         action="append",
         type=Path,
         default=[],
-        help="Explicit student-confirmation JSON file (repeatable).",
+        help=(
+            "Second-stage confirmation JSON file (repeatable). This reuses the existing "
+            "archive snapshot and cannot be combined with evidence collection options."
+        ),
     )
     run_parser.add_argument("-o", "--output", type=Path)
     return parser
@@ -108,7 +111,7 @@ def _parse_project(
         document_paths=documents,
         test_log_paths=test_logs,
         include_git=not args.no_git,
-        max_commits=args.max_commits,
+        max_commits=args.max_commits if args.max_commits is not None else 50,
         find_copies_harder=args.find_copies_harder,
         inventory_excluded_paths=excluded_documents,
     )
@@ -174,6 +177,29 @@ def _run_command(args: argparse.Namespace, parser: argparse.ArgumentParser) -> i
         output = args.output or root / "learning-record.md"
         archive_snapshot = work_dir / "archive-records.json"
         if args.confirmations:
+            conflicting_options: list[str] = []
+            if args.document is not None:
+                conflicting_options.append("--document")
+            if args.test_log is not None:
+                conflicting_options.append("--test-log")
+            if args.no_git:
+                conflicting_options.append("--no-git")
+            if args.max_commits is not None:
+                conflicting_options.append("--max-commits")
+            if args.find_copies_harder:
+                conflicting_options.append("--find-copies-harder")
+            if args.opencode_export:
+                conflicting_options.append("--opencode-export")
+            if args.authorized:
+                conflicting_options.append("--authorized")
+            if args.authorize_opencode_export:
+                conflicting_options.append("--authorize-opencode-export")
+            if conflicting_options:
+                joined = ", ".join(conflicting_options)
+                raise ValueError(
+                    "--confirmations reuses the existing analysis snapshot and cannot be "
+                    f"combined with evidence collection options: {joined}"
+                )
             archive_result = write_learning_record_result(
                 work_dir,
                 output_path=output,

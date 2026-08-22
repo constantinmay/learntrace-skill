@@ -1129,22 +1129,31 @@ def _limit_candidate_drafts(
 def _dedupe_candidate_drafts(
     drafts: tuple[CandidateDraft, ...],
 ) -> tuple[tuple[CandidateDraft, ...], int]:
-    """Remove repeated questions that add no distinct learning value."""
+    """Merge repeated questions while preserving all distinct evidence."""
 
-    unique: list[CandidateDraft] = []
-    seen: set[tuple[NodeType, str, str]] = set()
+    merged: dict[tuple[NodeType, str, str, str], CandidateDraft] = {}
     for draft in drafts:
         question = (
             draft.question_to_student
             if isinstance(draft.question_to_student, str)
             else json.dumps(draft.question_to_student.to_dict(), ensure_ascii=False, sort_keys=True)
         )
-        key = (draft.node_type, draft.statement.strip(), question.strip())
-        if key in seen:
+        key = (
+            draft.node_type,
+            draft.statement.strip(),
+            question.strip(),
+            draft.uncertainty.strip(),
+        )
+        existing = merged.get(key)
+        if existing is None:
+            merged[key] = draft
             continue
-        seen.add(key)
-        unique.append(draft)
-    return tuple(unique), len(drafts) - len(unique)
+        merged[key] = replace(
+            existing,
+            basis_event_ids=tuple(sorted({*existing.basis_event_ids, *draft.basis_event_ids})),
+        )
+    unique = tuple(merged.values())
+    return unique, len(drafts) - len(unique)
 
 
 def validate_bundle(
@@ -1233,7 +1242,10 @@ def build_archive_bundle(
 
         candidate_inferencer = default_candidate_inferencer()
 
+    from learntrace.reporting.llm import OpenAIChatCandidateInferencer
+
     configured_inference_mode = str(getattr(candidate_inferencer, "inference_mode", "custom"))
+    supports_llm_fallback = isinstance(candidate_inferencer, OpenAIChatCandidateInferencer)
     inference_failure_warnings: tuple[ArchiveWarning, ...] = ()
     try:
         inferred_drafts = candidate_inferencer.infer(deduped_events)
@@ -1242,7 +1254,7 @@ def build_archive_bundle(
         # remote LLM adapter receives the documented local fallback.
         from learntrace.reporting.llm import LLMInferenceError
 
-        if configured_inference_mode != "llm" or not isinstance(exc, LLMInferenceError):
+        if not supports_llm_fallback or not isinstance(exc, LLMInferenceError):
             raise
         inferred_drafts = ()
         failure_code = str(getattr(exc, "code", "llm_inference_failed"))
@@ -1258,9 +1270,7 @@ def build_archive_bundle(
             ),
         )
 
-    fallback_used = (
-        configured_inference_mode == "llm" and not inferred_drafts and bool(deduped_events)
-    )
+    fallback_used = supports_llm_fallback and not inferred_drafts and bool(deduped_events)
     if fallback_used:
         inferred_drafts = StubCandidateInferencer().infer(deduped_events)
     unique_drafts, duplicate_count = _dedupe_candidate_drafts(inferred_drafts)

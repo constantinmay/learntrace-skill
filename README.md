@@ -113,11 +113,20 @@ learntrace run <project-dir> `
 记录需要 `candidate_id`、`decision` 和 RFC 3339 格式的 `confirmed_at`。
 `student_statement` 只能填写学生原话；未提供原话时应省略，LearnTrace 会记录
 显式的 `not_recorded`，不会替学生生成陈述。
+确认阶段只复用首次分析生成的快照，不能同时传入 `--document`、`--test-log`、
+Git 范围或 OpenCode 导出参数；这些组合会被 CLI 明确拒绝，而不会静默忽略。
+候选状态 `resolved` 只表示用户已经处理该问题，具体结果仍由确认记录中的
+`confirmed`、`supplemented` 或 `denied` 表示。
 
 `.learntrace/archive-records.json` 包含用于审计的来源索引，应视为本地敏感产物；
 对外分享前应检查已脱敏的 `learning-record.md`，不要直接上传机器归档。
+`learning-record.md` 只展示项目目标、阶段进展、测试日志和候选直接引用的证据；
+未被选中的文档事实不会为了显示脱敏占位符而进入主报告，完整记录仍保留在机器归档中。
 OpenCode 原始导出还可能包含完整聊天和工具内容，也不得提交；隐私优先时可先用
 `opencode export <sessionID> --sanitize` 生成脱敏导出，但其项目路径证据会相应减少。
+Markdown 的路径识别采用隐私优先策略：明确的 `/api` 和版本化 `/v1` 一类接口路由
+会保留，其他以 `/` 开头且无法可靠区分用途的文本（例如 `/health`、`/docs/x`）
+可能按绝对路径脱敏。完整来源只保存在本地机器归档中。
 
 `parse`、`adapt` 和 `archive` 也可以分别运行。读取 OpenCode 导出时必须对
 `adapt` 或 `run` 同时传入 `--authorized`；LearnTrace 不会执行目标项目代码、
