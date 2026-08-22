@@ -66,7 +66,7 @@ _COMMIT_PREFIX_RE = re.compile(
     r"^(?:提交|commit)\s+[a-f0-9]+\s*(?:[：:]|的提交信息为)\s*",
     re.IGNORECASE,
 )
-_TRACE_TOOL_RE = re.compile(r"OpenCode 工具 (?P<tool>[A-Za-z0-9_.-]+)")
+_TRACE_TOOL_RE = re.compile(r"(?:OpenCode|Claude Code|Codex) 工具 (?P<tool>[A-Za-z0-9_.-]+)")
 _HOME_PATH_RE = re.compile(
     r"(?i)(?<!\w)(?:~[^\\/\s]*|\$(?:HOME|USERPROFILE|HOMEPATH)|"
     r"\$\{(?:HOME|USERPROFILE|HOMEPATH)\}|\$env:(?:HOME|USERPROFILE|HOMEPATH)|"
@@ -210,7 +210,9 @@ def _relevant_trace_events(bundle: ArchiveBundle) -> tuple[list[ObservableEvent]
         # human-facing AI collaboration overview above aggregates completed
         # operations separately, so they are represented without flooding the
         # report with per-event identifiers.
-        if searchable.startswith("opencode 工具") and "已完成" in searchable:
+        if searchable.startswith(("opencode 工具", "claude code 工具", "codex 工具")) and (
+            "已完成" in searchable
+        ):
             continue
         relevant.append(event)
     visible = relevant[:_MAX_RENDERED_TRACE_EVENTS]
