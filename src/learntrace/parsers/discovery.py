@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 from collections import Counter
+from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -79,9 +80,20 @@ def _matches_any(relative: Path, markers: tuple[str, ...]) -> bool:
     return any(marker in value for marker in markers)
 
 
-def discover_static_materials(project_root: Path) -> DiscoveredMaterials:
+def discover_static_materials(
+    project_root: Path,
+    *,
+    excluded_paths: Iterable[Path] = (),
+) -> DiscoveredMaterials:
     """发现候选文件；调用方必须确认后再传给具体解析函数。"""
     root = repo_root(project_root)
+    excluded_references: set[str] = set()
+    for requested in excluded_paths:
+        candidate = requested if requested.is_absolute() else root / requested
+        try:
+            excluded_references.add(candidate.resolve(strict=False).relative_to(root).as_posix())
+        except ValueError:
+            continue
     documents: list[Path] = []
     test_logs: list[Path] = []
     files: list[Path] = []
@@ -120,6 +132,8 @@ def discover_static_materials(project_root: Path) -> DiscoveredMaterials:
             if path.is_symlink():
                 continue
             relative = path.relative_to(root)
+            if relative.as_posix() in excluded_references:
+                continue
             files.append(relative)
             suffix = path.suffix.lower() or "[no extension]"
             extensions[suffix] += 1

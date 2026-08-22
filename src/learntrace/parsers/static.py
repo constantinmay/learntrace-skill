@@ -25,12 +25,18 @@ def parse_static_materials(
     include_git: bool = True,
     max_commits: int = 50,
     find_copies_harder: bool = False,
+    inventory_excluded_paths: Iterable[Path] = (),
 ) -> ParseResult:
     """解析调用方已确认的范围，返回事实事件和非致命告警。"""
     root = repo_root(project_root)
     documents = deduplicate_paths(root, document_paths)
     logs = deduplicate_paths(root, test_log_paths)
-    discovered = discover_static_materials(root)
+    excluded = tuple(inventory_excluded_paths)
+    discovered = (
+        discover_static_materials(root, excluded_paths=excluded)
+        if excluded
+        else discover_static_materials(root)
+    )
     inventory = discovered.inventory
     scope = AnalysisScope(
         include_git=include_git,

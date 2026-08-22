@@ -6,7 +6,9 @@ LearnTrace 是一个面向 AI 辅助课程项目的学习档案 Skill。它从�
 
 ## 当前状态
 
-项目处于 M1 初始化阶段，当前目标是跑通一条可信学习节点的端到端闭环。详细范围参见 [项目陈述](docs/project-statement.md) 和 [团队工作计划](docs/team-workplan.md)。
+项目已完成统一 CLI 与 OpenCode Skill 的隔离端到端联调：可以从项目仓库
+生成 Task 2 证据、可选接入经授权的 Task 3 轨迹，并产出学习档案。详细范围
+参见 [项目陈述](docs/project-statement.md) 和 [团队工作计划](docs/team-workplan.md)。
 
 ## 开发环境
 
@@ -20,29 +22,140 @@ LearnTrace 是一个面向 AI 辅助课程项目的学习档案 Skill。它从�
 安装依赖并运行检查：
 
 ```powershell
-uv sync --dev
+uv sync --dev --locked
 uv run ruff check .
 uv run ruff format --check .
 uv run pyright
 uv run pytest
 ```
 
-## Task 4 local CLI
+## 用户安装
 
-Build a Markdown learning archive from local LearnTrace JSON records:
+克隆发布版本后，在 LearnTrace 仓库中安装独立 CLI：
 
 ```powershell
-python -m learntrace.archive <project-dir> `
-  --output learning-record.md `
-  --records-output archive-records.json `
-  --questions-output learning-questions.md
+uv tool install .
+learntrace --version
 ```
 
-The CLI uses the deterministic stub inferencer by default. It skips common noise
-directories such as `.venv`, `.git`, and `node_modules`; pass `--strict-inputs`
-when every JSON file in the input tree is expected to be a LearnTrace artifact.
-The machine-readable archive contains an audit manifest with a stable SHA-256
-fingerprint, and the CLI prints the same fingerprint plus record counts.
+然后将 `skills/learntrace/` 放入 OpenCode 的项目级
+`.opencode/skills/learntrace/` 或全局 `~/.config/opencode/skills/learntrace/`。
+只复制 Skill 目录不会自动安装 Python CLI。OpenCode 当前的 Skill 发现路径参见
+[官方 Agent Skills 文档](https://opencode.ai/docs/skills)。
+
+## 推荐使用方式
+
+在待分析项目中启动 OpenCode，并要求它使用 `$learntrace`。Skill 会先检查 CLI，
+再用一次 `learntrace discover` 展示候选 Git、文档和测试日志范围；学生确认前，
+不应读取这些内容。若需要使用 OpenCode 会话导出，还必须单独提供文件并明确
+授权。
+
+OpenCode 使用的模型负责遵循 Skill 和调用本地 CLI；LearnTrace 用来生成学习
+候选的远程 LLM 是另一条、默认关闭的可选路径。使用 `$learntrace` 不会自动
+启用远程候选推断，也不会自动授权上传 OpenCode 轨迹。
+
+Skill 是宿主 Agent 的工作流约束，不是操作系统沙箱。实际联调已验证授权前
+停止、单次归档和归档后优先提问；宿主模型仍可能产生多余的元数据查询，最终
+的工具权限边界应由 OpenCode 配置和用户审批共同保证。
+
+## 本地 CLI
+
+从项目仓库运行完整本地流程：
+
+```powershell
+learntrace discover <project-dir>
+learntrace run <project-dir>
+```
+
+`discover` 只列出候选文档、测试日志和 Git 是否可用，不读取文件内容。宿主
+Agent 应先向学生展示该范围，确认后再运行完整解析。
+
+首次运行会生成 `learning-record.md`，并在 `<project-dir>/.learntrace/`
+写入 Task 2、Task 3、机器可读档案和待确认问题。
+
+三个主要输出用途不同：
+
+- `learning-record.md`：供学生和老师阅读的精简档案，不倾倒全部工具日志。
+- `.learntrace/archive-records.json`：保留完整事实、来源索引、候选关系、告警
+  和内容指纹的机器审计档案。
+- `.learntrace/learning-questions.md`：只保存需要学生本人确认、补充或否认
+  的问题。
+
+如需纳入 OpenCode 轨迹，首次运行时显式提供导出与授权：
+
+```powershell
+learntrace run <project-dir> `
+  --opencode-export <opencode-export.json> --authorized
+```
+
+项目跨越多个 OpenCode 会话时，每个导出文件都必须分别提供并授权：
+
+```powershell
+learntrace run <project-dir> `
+  --opencode-export <session-1.json> `
+  --opencode-export <session-2.json> `
+  --authorize-opencode-export <session-1.json> `
+  --authorize-opencode-export <session-2.json>
+```
+
+多会话结果会合并并按事件去重，来源仍保留各自的 session 标识。未逐个授权
+的导出不会被读取。旧的 `--authorized` 仅用于单个导出文件。
+
+学生填写独立确认文件后，第二次运行直接使用首次保存的事实和候选快照，
+不会重新解析轨迹或调用 LLM：
+
+```powershell
+learntrace run <project-dir> `
+  --confirmations student-confirmations.json
+```
+
+`--confirmations` 可重复传入；文件需包含非空 `confirmations` 列表。每条简写
+记录需要 `candidate_id`、`decision` 和 RFC 3339 格式的 `confirmed_at`。
+`student_statement` 只能填写学生原话；未提供原话时应省略，LearnTrace 会记录
+显式的 `not_recorded`，不会替学生生成陈述。
+确认阶段只复用首次分析生成的快照，不能同时传入 `--document`、`--test-log`、
+Git 范围或 OpenCode 导出参数；这些组合会被 CLI 明确拒绝，而不会静默忽略。
+候选状态 `resolved` 只表示用户已经处理该问题，具体结果仍由确认记录中的
+`confirmed`、`supplemented` 或 `denied` 表示。
+
+`.learntrace/archive-records.json` 包含用于审计的来源索引，应视为本地敏感产物；
+对外分享前应检查已脱敏的 `learning-record.md`，不要直接上传机器归档。
+`learning-record.md` 只展示项目目标、阶段进展、测试日志和候选直接引用的证据；
+未被选中的文档事实不会为了显示脱敏占位符而进入主报告，完整记录仍保留在机器归档中。
+OpenCode 原始导出还可能包含完整聊天和工具内容，也不得提交；隐私优先时可先用
+`opencode export <sessionID> --sanitize` 生成脱敏导出，但其项目路径证据会相应减少。
+Markdown 的路径识别采用隐私优先策略：明确的 `/api` 和版本化 `/v1` 一类接口路由
+会保留，其他以 `/` 开头且无法可靠区分用途的文本（例如 `/health`、`/docs/x`）
+可能按绝对路径脱敏。完整来源只保存在本地机器归档中。
+
+`parse`、`adapt` 和 `archive` 也可以分别运行。读取 OpenCode 导出时必须对
+`adapt` 或 `run` 同时传入 `--authorized`；LearnTrace 不会执行目标项目代码、
+测试或日志中的命令。分阶段确认时，应对 `archive` 同时传入首次生成的
+`--snapshot archive-records.json`，避免重新推断候选。
+
+已有 Task 2、Task 3 JSON 时，不需要复制或重新解析输入。从项目根目录运行：
+
+```powershell
+New-Item -ItemType Directory -Force .learntrace | Out-Null
+learntrace archive <records-dir> `
+  --output learning-record.md `
+  --records-output .learntrace/archive-records.json `
+  --questions-output .learntrace/learning-questions.md
+```
+
+命令成功后直接读取 `.learntrace/learning-questions.md`，不要重复执行首次归档。
+确认阶段对同一个 `records-dir` 使用 `.learntrace/archive-records.json` 快照。
+
+CLI 默认使用确定性候选推断器。归档扫描会跳过 `.opencode`、`.venv`、`.git`
+和 `node_modules` 等噪音目录；只有确认输入树中的每个 JSON 都应是 LearnTrace
+产物时，才对 `archive` 使用 `--strict-inputs`。机器可读档案包含带稳定
+SHA-256 指纹的审计清单，CLI 同时输出该指纹与记录数量。
+远程 LLM 没有返回可用候选或响应无法解析时，归档会保留告警并回退到本地
+确定性推断，不会静默生成一份没有说明的空候选档案。
+推理模型需要更多输出预算时，可通过 `LEARNTRACE_LLM_MAX_TOKENS` 调整候选
+推断请求的输出上限（默认 `8000`，允许 `256` 到 `65536`）。如果响应因长度
+终止或只返回推理内容，机器档案会记录具体原因并使用本地回退；即使没有形成
+候选，待确认问题文件也会提供基于证据缺口的学生复盘问题，而不会编造候选。
 
 ## 目录结构
 

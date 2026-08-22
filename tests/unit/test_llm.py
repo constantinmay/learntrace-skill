@@ -6,10 +6,12 @@ from typing import cast
 import pytest
 
 from learntrace.models import EventKind, ObservableEvent, SourceRef, SourceType
-from learntrace.reporting import render_markdown
+from learntrace.reporting import render_markdown, render_questions_markdown
 from learntrace.reporting.llm import (
+    DEFAULT_LLM_MAX_TOKENS,
     LLM_API_KEY_ENV,
     LLM_BASE_URL_ENV,
+    LLM_MAX_TOKENS_ENV,
     LLM_MODEL_ENV,
     LLMConfig,
     LLMInferenceError,
@@ -17,7 +19,11 @@ from learntrace.reporting.llm import (
     default_candidate_inferencer,
     llm_config_from_env,
 )
-from learntrace.reporting.pipeline import StubCandidateInferencer, build_archive_bundle
+from learntrace.reporting.pipeline import (
+    StubCandidateInferencer,
+    build_archive_bundle,
+    bundle_to_dict,
+)
 
 
 def _event(record_id: str, kind: EventKind, summary: str) -> ObservableEvent:
@@ -61,6 +67,19 @@ def test_llm_config_from_env_accepts_base_url_and_model() -> None:
     assert config is not None
     assert config.base_url == "https://example.test/v1"
     assert config.model == "smart/default"
+
+
+def test_llm_config_from_env_accepts_bounded_max_tokens() -> None:
+    config = llm_config_from_env({LLM_API_KEY_ENV: "secret", LLM_MAX_TOKENS_ENV: "12000"})
+
+    assert config is not None
+    assert config.max_tokens == 12000
+
+
+@pytest.mark.parametrize("value", ["not-a-number", "1", "999999"])
+def test_llm_config_from_env_rejects_invalid_max_tokens(value: str) -> None:
+    with pytest.raises(ValueError, match=LLM_MAX_TOKENS_ENV):
+        llm_config_from_env({LLM_API_KEY_ENV: "secret", LLM_MAX_TOKENS_ENV: value})
 
 
 def test_default_candidate_inferencer_uses_stub_without_key() -> None:
@@ -135,9 +154,100 @@ def test_llm_inferencer_returns_schema_valid_candidate() -> None:
     assert bundle.candidates[0].node_type.value == "revise_ai_suggestion"
     assert bundle.candidates[0].basis_event_ids == ("evt-demo-trace", "evt-demo-commit")
     assert inferencer.payloads
-    assert inferencer.payloads[0]["max_tokens"] == 3000
+    assert inferencer.payloads[0]["max_tokens"] == DEFAULT_LLM_MAX_TOKENS
     assert bundle.inference_mode == "llm"
     assert "候选生成模式：`llm`" in render_markdown(bundle)
+
+
+def test_llm_empty_candidate_result_falls_back_to_stub() -> None:
+    inferencer = FakeLLMInferencer(json.dumps({"candidates": []}))
+
+    bundle = build_archive_bundle(
+        (
+            _event(
+                "evt-demo-trace",
+                EventKind.TRACE_RECORD,
+                "AI suggested regex validation for student identifiers.",
+            ),
+            _event(
+                "evt-demo-commit",
+                EventKind.GIT_COMMIT,
+                "Commit a1b2c3d: replace regex validation with a parser helper.",
+            ),
+        ),
+        inferencer=inferencer,
+    )
+
+    assert len(bundle.candidates) == 1
+    assert bundle.candidates[0].node_type.value == "revise_ai_suggestion"
+    assert bundle.inference_mode == "llm_stub_fallback"
+    assert [warning.code for warning in bundle.warnings] == [
+        "llm_no_candidates",
+        "llm_fallback_to_stub",
+    ]
+
+
+def test_llm_length_response_reports_actionable_limit_warning(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class Response:
+        def __enter__(self) -> Response:
+            return self
+
+        def __exit__(self, *args: object) -> None:
+            return None
+
+        def read(self) -> bytes:
+            return json.dumps(
+                {
+                    "choices": [
+                        {
+                            "finish_reason": "length",
+                            "message": {"content": "", "reasoning_content": "thinking"},
+                        }
+                    ],
+                    "usage": {"completion_tokens_details": {"reasoning_tokens": 8000}},
+                }
+            ).encode()
+
+    def fake_urlopen(*args: object, **kwargs: object) -> Response:
+        del args, kwargs
+        return Response()
+
+    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+    inferencer = OpenAIChatCandidateInferencer(
+        LLMConfig(api_key="test-key", base_url="https://example.test/v1")
+    )
+
+    bundle = build_archive_bundle(
+        (_event("evt-document", EventKind.DOCUMENT, "项目目标：完成课程项目。"),),
+        inferencer=inferencer,
+    )
+
+    assert bundle.inference_mode == "llm_stub_fallback"
+    assert [warning.code for warning in bundle.warnings] == [
+        "llm_output_limit_reached",
+        "llm_fallback_to_stub",
+    ]
+    assert LLM_MAX_TOKENS_ENV in bundle.warnings[0].message
+    assert "reasoning_tokens=8000" in bundle.warnings[0].message
+
+
+def test_zero_candidate_bundle_keeps_reflection_questions_without_inventing_candidate() -> None:
+    bundle = build_archive_bundle(
+        (_event("evt-document", EventKind.DOCUMENT, "项目说明记录了实现范围。"),),
+        inferencer=StubCandidateInferencer(),
+    )
+
+    archive = bundle_to_dict(bundle)
+    pending = cast(list[dict[str, object]], archive["pending_questions"])
+    markdown = render_questions_markdown(bundle)
+
+    assert bundle.candidates == ()
+    assert pending
+    assert all(question["candidate_id"] is None for question in pending)
+    assert "gap-test-evidence" in markdown
+    assert "gap-learning-reflection" in markdown
 
 
 def test_llm_payload_omits_source_refs_and_private_fields() -> None:
@@ -181,7 +291,7 @@ def test_llm_payload_sanitizes_private_markers_in_summary() -> None:
         kind=EventKind.TEST_LOG,
         summary=(
             "跑了 alice@example.com 的用例，C:/Users/alice/proj/src/x.py 失败；"
-            "api_key=sk-1234567890 的命令被跳过。"
+            "根路径 /secret 无法读取；api_key=sk-1234567890 的命令被跳过。"
         ),
         source_refs=(SourceRef(type=SourceType.FILE, ref="logs/a.log"),),
     )
@@ -196,8 +306,38 @@ def test_llm_payload_sanitizes_private_markers_in_summary() -> None:
     summary = cast(str, sent_fields["summary"])
     assert "alice@example.com" not in summary
     assert "C:/Users/alice" not in summary
+    assert "/secret" not in summary
     assert "sk-1234567890" not in summary
     assert "alice@example.com" not in json.dumps(payload, ensure_ascii=False)
+
+
+def test_llm_payload_preserves_routes_urls_and_natural_slashes() -> None:
+    content = json.dumps({"candidates": []}, ensure_ascii=False)
+    inferencer = FakeLLMInferencer(content)
+    event = ObservableEvent(
+        id="evt-route-1",
+        kind=EventKind.DOCUMENT,
+        summary=(
+            "读书/资源管理系统通过 /api 和 /api/books 提供接口，"
+            "文档位于 https://example.test/docs；根路径 /secret 不应发送。"
+        ),
+        source_refs=(SourceRef(type=SourceType.DOCUMENT, ref="README.md:1-2"),),
+    )
+
+    inferencer.infer((event,))
+
+    payload = inferencer.payloads[0]
+    messages = cast(list[dict[str, object]], payload["messages"])
+    sent_fields = json.loads(
+        cast(str, messages[1]["content"]).rsplit("ObservableEvent records:\n", 1)[1]
+    )[0]
+    summary = cast(str, sent_fields["summary"])
+
+    assert "读书/资源管理系统" in summary
+    assert "/api 和" in summary
+    assert "/api/books" in summary
+    assert "https://example.test/docs" in summary
+    assert "/secret" not in summary
 
 
 def test_llm_payload_sanitizes_bearer_header_and_bare_token() -> None:
@@ -229,6 +369,36 @@ def test_llm_payload_sanitizes_bearer_header_and_bare_token() -> None:
     assert "ghp_" not in summary
     assert "Authorization: Bearer ghp_" not in summary
     assert "ghp_ABC1234567890" not in json.dumps(payload, ensure_ascii=False)
+
+
+def test_llm_payload_redacts_all_documented_secret_shapes_and_code() -> None:
+    content = json.dumps({"candidates": []}, ensure_ascii=False)
+    inferencer = FakeLLMInferencer(content)
+    event = ObservableEvent(
+        id="evt-outbound-contract-1",
+        kind=EventKind.DOCUMENT,
+        summary=(
+            "tokens: sk-abcdefgh12345678 AKIAABCDEFGHIJKLMNOP "
+            "ASIAQRSTUVWXYZABCDEF xoxb-12345678-abcdefgh; "
+            "inline `private_call(secret)` and fenced:\n"
+            "```python\nprint('repository code')\n```"
+        ),
+        source_refs=(SourceRef(type=SourceType.DOCUMENT, ref="notes.md:1-4"),),
+    )
+
+    inferencer.infer((event,))
+
+    serialized = json.dumps(inferencer.payloads[0], ensure_ascii=False)
+    for forbidden in (
+        "sk-abcdefgh12345678",
+        "AKIAABCDEFGHIJKLMNOP",
+        "ASIAQRSTUVWXYZABCDEF",
+        "xoxb-12345678-abcdefgh",
+        "private_call(secret)",
+        "repository code",
+    ):
+        assert forbidden not in serialized
+    assert "[REDACTED]" in serialized
 
 
 def test_llm_inferencer_accepts_fenced_json() -> None:
@@ -272,6 +442,27 @@ def test_llm_inferencer_wraps_unparseable_json() -> None:
         inferencer.infer(
             (_event("evt-demo-commit", EventKind.GIT_COMMIT, "Commit added parser tests."),)
         )
+
+
+def test_archive_falls_back_when_llm_response_is_unparseable() -> None:
+    inferencer = FakeLLMInferencer('```json\n{"candidates": [}\n```')
+    events = (
+        _event(
+            "evt-demo-commit",
+            EventKind.GIT_COMMIT,
+            "Commit a1b2c3d: fix parser handling for quoted values.",
+        ),
+    )
+
+    bundle = build_archive_bundle(events, inferencer=inferencer)
+
+    assert len(bundle.candidates) == 1
+    assert bundle.candidates[0].node_type.value == "fix_failed_approach"
+    assert bundle.inference_mode == "llm_stub_fallback"
+    assert [warning.code for warning in bundle.warnings] == [
+        "llm_inference_failed",
+        "llm_fallback_to_stub",
+    ]
 
 
 def test_llm_inferencer_ai_candidate_requires_trace_record() -> None:
@@ -347,3 +538,9 @@ def test_llm_inferencer_drops_candidates_with_unknown_basis_event() -> None:
     )
 
     assert bundle.candidates == ()
+    assert [warning.code for warning in bundle.warnings] == [
+        "invalid_llm_candidates_discarded",
+        "llm_no_candidates",
+        "llm_fallback_to_stub",
+    ]
+    assert bundle.inference_mode == "llm_stub_fallback"

@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import os
 import re
 from datetime import UTC, datetime
 from pathlib import Path
@@ -346,5 +347,91 @@ def adapt_opencode_export(
     return TraceAdapterResult(
         status=result_status,
         events=tuple(events),
+        warnings=tuple(warnings),
+    )
+
+
+def adapt_opencode_exports(
+    export_paths: tuple[Path, ...],
+    *,
+    authorized_paths: tuple[Path, ...],
+    project_root: Path | None = None,
+    validator: ContractValidator | None = None,
+) -> TraceAdapterResult:
+    """Merge multiple explicitly authorized OpenCode session exports.
+
+    Authorization is matched per path before a file is opened. Repeating an
+    overlapping export is safe: identical events are retained once while their
+    session-bearing ``trace://`` provenance remains on the event.
+    """
+
+    if not export_paths:
+        return TraceAdapterResult(status=TraceInputStatus.NOT_PROVIDED)
+
+    def path_key(path: Path) -> str:
+        try:
+            return os.path.normcase(str(path.resolve(strict=False)))
+        except OSError:
+            return os.path.normcase(str(path.absolute()))
+
+    authorized_keys = {path_key(path) for path in authorized_paths}
+    if not authorized_keys:
+        return TraceAdapterResult(status=TraceInputStatus.NOT_AUTHORIZED)
+
+    events_by_id: dict[str, ObservableEvent] = {}
+    warnings: list[TraceParseIssue] = []
+    any_authorized = False
+    for export_index, export_path in enumerate(export_paths):
+        prefix = f"exports[{export_index}]"
+        if path_key(export_path) not in authorized_keys:
+            warnings.append(
+                _issue(
+                    "export_not_authorized",
+                    prefix,
+                    "该 OpenCode 会话导出未获单独授权，未读取。",
+                )
+            )
+            continue
+        any_authorized = True
+        result = adapt_opencode_export(
+            export_path,
+            authorized=True,
+            project_root=project_root,
+            validator=validator,
+        )
+        warnings.extend(
+            _issue(issue.code, f"{prefix}.{issue.location}", issue.message)
+            for issue in result.warnings
+        )
+        duplicate_count = 0
+        for event in result.events:
+            existing = events_by_id.get(event.id)
+            if existing is None:
+                events_by_id[event.id] = event
+                continue
+            if existing.to_dict() != event.to_dict():
+                raise UnsupportedOpenCodeFormatError(
+                    "多个 OpenCode 导出包含 ID 相同但内容冲突的工具记录。"
+                )
+            duplicate_count += 1
+        if duplicate_count:
+            warnings.append(
+                _issue(
+                    "duplicate_export_event",
+                    prefix,
+                    f"与先前会话导出重叠的 {duplicate_count} 条工具记录已去重。",
+                )
+            )
+
+    if not any_authorized:
+        return TraceAdapterResult(
+            status=TraceInputStatus.NOT_AUTHORIZED,
+            warnings=tuple(warnings),
+        )
+    events = tuple(sorted(events_by_id.values(), key=_event_sort_key))
+    warnings.sort(key=lambda issue: (issue.location, issue.code, issue.message))
+    return TraceAdapterResult(
+        status=(TraceInputStatus.PARSED if events else TraceInputStatus.AUTHORIZED_NOT_FOUND),
+        events=events,
         warnings=tuple(warnings),
     )

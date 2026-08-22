@@ -10,7 +10,7 @@ import urllib.error
 import urllib.request
 from collections.abc import Mapping
 from dataclasses import dataclass, field
-from typing import Any, cast
+from typing import cast
 
 from learntrace.models import (
     CandidateStatus,
@@ -21,6 +21,7 @@ from learntrace.models import (
 )
 from learntrace.privacy import redact_sensitive_text
 from learntrace.reporting.pipeline import (
+    ArchiveWarning,
     CandidateDraft,
     CandidateInferencer,
     StubCandidateInferencer,
@@ -31,8 +32,12 @@ LLM_API_KEY_ENV = "LEARNTRACE_LLM_API_KEY"
 LLM_BASE_URL_ENV = "LEARNTRACE_LLM_BASE_URL"
 LLM_MODEL_ENV = "LEARNTRACE_LLM_MODEL"
 LLM_ENABLED_ENV = "LEARNTRACE_LLM_ENABLED"
+LLM_MAX_TOKENS_ENV = "LEARNTRACE_LLM_MAX_TOKENS"
 DEFAULT_LLM_BASE_URL = "https://api.llm.ustc.edu.cn/v1"
 DEFAULT_LLM_MODEL = "smart/default"
+DEFAULT_LLM_MAX_TOKENS = 8000
+_MIN_LLM_MAX_TOKENS = 256
+_MAX_LLM_MAX_TOKENS = 65536
 _UNCERTAINTY_PREFIXES = ("\u9ad8\uff1a", "\u4e2d\uff1a", "\u4f4e\uff1a")
 
 # Outbound-boundary redaction: even though `source_refs` (with filesystem
@@ -47,11 +52,16 @@ _UNCERTAINTY_PREFIXES = ("\u9ad8\uff1a", "\u4e2d\uff1a", "\u4f4e\uff1a")
 # instead of a second, weaker regex.
 _EMAIL_RE = re.compile(r"[\w.+-]+@[\w-]+(?:\.[\w-]+)+")
 _DISK_PATH_RE = re.compile(
-    r"([A-Za-z]:[\\/][^\s\uff0c\u3002\uff1b\u3001\"'`]+|[\\/][^\s\uff0c\u3002\uff1b\u3001\"'`]*[\\/][^\s\uff0c\u3002\uff1b\u3001\"'`]+)"
+    r"((?<![A-Za-z0-9])[A-Za-z]:[\\/][^\s\uff0c\u3002\uff1b\u3001\"'`]+|"
+    r"\\\\[^\\/\s]+[\\/][^\s\uff0c\u3002\uff1b\u3001\"'`]+|"
+    r"(?<![\w:/])/(?!api(?:/|\b)|v\d+(?:/|\b))"
+    r"[^\s\uff0c\u3002\uff1b\u3001\"'`]+)"
 )
 _WINDOWS_HOME_RE = re.compile(
     r"[Cc]:[\\/][Uu]sers[\\/][^\\/]+(?:[\\/][^\s\uff0c\u3002\uff1b\u3001\"'`]*)?"
 )
+_FENCED_CODE_RE = re.compile(r"(?:`{3,}|~{3,})[\s\S]*?(?:(?:`{3,}|~{3,})|$)")
+_INLINE_CODE_RE = re.compile(r"`[^`\r\n]+`")
 
 
 def _sanitize_summary(summary: str) -> str:
@@ -64,7 +74,9 @@ def _sanitize_summary(summary: str) -> str:
     Secret scrubbing reuses `learntrace.privacy.redact_sensitive_text`; a large
     ``limit`` is passed so a long summary's semantics are not truncated here.
     """
-    text = redact_sensitive_text(summary, limit=len(summary) or 1)
+    text = _FENCED_CODE_RE.sub("[REDACTED]", summary)
+    text = _INLINE_CODE_RE.sub("[REDACTED]", text)
+    text = redact_sensitive_text(text, limit=len(text) or 1)
     text = _EMAIL_RE.sub("<email>", text)
     text = _WINDOWS_HOME_RE.sub("<user-path>", text)
     text = _DISK_PATH_RE.sub("<path>", text)
@@ -77,11 +89,15 @@ class LLMConfig:
     base_url: str = DEFAULT_LLM_BASE_URL
     model: str = DEFAULT_LLM_MODEL
     timeout_seconds: float = 180.0
-    max_tokens: int = 3000
+    max_tokens: int = DEFAULT_LLM_MAX_TOKENS
 
 
 class LLMInferenceError(RuntimeError):
     """Raised when a configured LLM call cannot return parseable candidates."""
+
+    def __init__(self, message: str, *, code: str = "llm_inference_failed") -> None:
+        super().__init__(message)
+        self.code = code
 
 
 class OpenAIChatCandidateInferencer:
@@ -97,14 +113,41 @@ class OpenAIChatCandidateInferencer:
     ) -> None:
         self._config = config
         self._validator = validator if validator is not None else ContractValidator()
+        self._inference_warnings: tuple[ArchiveWarning, ...] = ()
 
     def infer(self, events: tuple[ObservableEvent, ...]) -> tuple[CandidateDraft, ...]:
+        self._inference_warnings = ()
         if not events:
             return ()
         payload = self._build_payload(events)
         content = self._complete(payload)
         raw_candidates = _extract_llm_candidates(content)
-        return self._validated_drafts(raw_candidates, events)
+        drafts = self._validated_drafts(raw_candidates, events)
+        warnings: list[ArchiveWarning] = []
+        rejected_count = len(raw_candidates) - len(drafts)
+        if rejected_count:
+            warnings.append(
+                ArchiveWarning(
+                    code="invalid_llm_candidates_discarded",
+                    source="candidate_inference",
+                    message=(f"LLM 返回的候选中有 {rejected_count} 条因校验失败或重复未进入档案。"),
+                )
+            )
+        if not drafts:
+            warnings.append(
+                ArchiveWarning(
+                    code="llm_no_candidates",
+                    source="candidate_inference",
+                    message="LLM 未生成可用候选；归档流水线将尝试本地确定性回退。",
+                )
+            )
+        self._inference_warnings = tuple(warnings)
+        return drafts
+
+    def inference_warnings(self) -> tuple[ArchiveWarning, ...]:
+        """Return diagnostics from the most recent inference call."""
+
+        return self._inference_warnings
 
     @staticmethod
     def _redacted_event(event: ObservableEvent) -> dict[str, str | None]:
@@ -176,22 +219,62 @@ class OpenAIChatCandidateInferencer:
                 timeout=self._config.timeout_seconds,
             ) as response:
                 raw_response = response.read().decode("utf-8")
+        except UnicodeDecodeError as exc:
+            msg = "LLM response was not valid UTF-8"
+            raise LLMInferenceError(msg) from exc
         except (OSError, urllib.error.URLError) as exc:
             msg = f"LLM request failed: {exc}"
             raise LLMInferenceError(msg) from exc
 
         try:
-            data = cast(dict[str, Any], json.loads(raw_response))
+            raw_data: object = json.loads(raw_response)
+            if not isinstance(raw_data, dict):
+                raise TypeError("response must be an object")
+            data = cast(dict[str, object], raw_data)
             choices = data["choices"]
-            first_choice = choices[0]
-            message = first_choice["message"]
-            content = message["content"]
+            if not isinstance(choices, list) or not choices:
+                raise TypeError("choices must be a non-empty list")
+            first_choice_raw = cast(list[object], choices)[0]
+            if not isinstance(first_choice_raw, dict):
+                raise TypeError("choice must be an object")
+            first_choice = cast(dict[str, object], first_choice_raw)
+            message_raw = first_choice["message"]
+            if not isinstance(message_raw, dict):
+                raise TypeError("choice and message must be objects")
+            message = cast(dict[str, object], message_raw)
+            content = message.get("content")
+            finish_reason = first_choice.get("finish_reason")
         except (KeyError, IndexError, TypeError, json.JSONDecodeError) as exc:
             msg = "LLM response did not contain choices[0].message.content"
             raise LLMInferenceError(msg) from exc
+        if finish_reason == "length":
+            usage = data.get("usage")
+            reasoning_tokens: object | None = None
+            if isinstance(usage, dict):
+                usage_data = cast(dict[str, object], usage)
+                details = usage_data.get("completion_tokens_details")
+                if isinstance(details, dict):
+                    detail_data = cast(dict[str, object], details)
+                    reasoning_tokens = detail_data.get("reasoning_tokens")
+            suffix = (
+                f"，其中 reasoning_tokens={reasoning_tokens}"
+                if isinstance(reasoning_tokens, int)
+                else ""
+            )
+            msg = (
+                f"LLM output reached max_tokens={self._config.max_tokens}{suffix}；"
+                f"请调高 {LLM_MAX_TOKENS_ENV} 或改用非推理模型。"
+            )
+            raise LLMInferenceError(msg, code="llm_output_limit_reached")
         if not isinstance(content, str) or not content.strip():
-            msg = "LLM response content was empty"
-            raise LLMInferenceError(msg)
+            reasoning_content = message.get("reasoning_content")
+            if isinstance(reasoning_content, str) and reasoning_content.strip():
+                msg = (
+                    "LLM 只返回了 reasoning_content，正式 content 为空；"
+                    f"请调高 {LLM_MAX_TOKENS_ENV} 或改用非推理模型。"
+                )
+                raise LLMInferenceError(msg, code="llm_reasoning_only_response")
+            raise LLMInferenceError("LLM response content was empty")
         return content
 
     def _validated_drafts(
@@ -203,13 +286,13 @@ class OpenAIChatCandidateInferencer:
         event_by_id = {event.id: event for event in events}
         drafts: list[CandidateDraft] = []
         used_ids: set[str] = set()
-        for index, raw in enumerate(raw_candidates, start=1):
+        for raw in raw_candidates:
             draft = _candidate_draft_from_llm(raw, event_ids, event_by_id)
             if draft is None:
                 continue
             candidate_id = stable_candidate_id(draft)
             if candidate_id in used_ids:
-                candidate_id = f"{candidate_id}-{index}"
+                continue
             used_ids.add(candidate_id)
             candidate = LearningNodeCandidate(
                 id=candidate_id,
@@ -232,10 +315,23 @@ def llm_config_from_env(env: Mapping[str, str] | None = None) -> LLMConfig | Non
         return None
     base_url = values.get(LLM_BASE_URL_ENV) or DEFAULT_LLM_BASE_URL
     model = values.get(LLM_MODEL_ENV) or DEFAULT_LLM_MODEL
+    raw_max_tokens = values.get(LLM_MAX_TOKENS_ENV)
+    max_tokens = DEFAULT_LLM_MAX_TOKENS
+    if raw_max_tokens is not None and raw_max_tokens.strip():
+        try:
+            max_tokens = int(raw_max_tokens)
+        except ValueError as exc:
+            raise ValueError(f"{LLM_MAX_TOKENS_ENV} must be an integer") from exc
+        if not _MIN_LLM_MAX_TOKENS <= max_tokens <= _MAX_LLM_MAX_TOKENS:
+            raise ValueError(
+                f"{LLM_MAX_TOKENS_ENV} must be between "
+                f"{_MIN_LLM_MAX_TOKENS} and {_MAX_LLM_MAX_TOKENS}"
+            )
     return LLMConfig(
         api_key=api_key,
         base_url=base_url.rstrip("/"),
         model=model,
+        max_tokens=max_tokens,
     )
 
 

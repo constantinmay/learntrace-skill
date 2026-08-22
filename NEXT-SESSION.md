@@ -1,89 +1,48 @@
 # LearnTrace 下一会话交接
 
-更新时间：2026-07-17
+更新时间：2026-08-20
 
-## 唯一工作目录
+## 当前可运行流程
 
-    E:\cs_and_ai\LearnTrace-Skill
+当前仓库实现的是统一的一次性本地流水线，不是 `init → reflect → report`
+状态机。裸项目仓库的可复现入口为：
 
-不要在原路径 E:\cs_and_ai\107 或其他目录修改项目文件。
+```powershell
+uv sync --locked
+uv run --locked python -m learntrace run <project-dir>
+```
 
-## 当前状态
+该命令调用 `parse → 可选 adapt → archive`，但只读取 Git、文档、已有测试
+日志和显式授权的 OpenCode 导出，不执行被分析项目、测试或日志命令。
+`parse`、`adapt`、`archive` 也可分别运行。
 
-- Git 已初始化，当前分支为 main，工作区在创建本文前是干净的。
-- GitHub 远程仓库和功能分支尚未创建。
-- 仓库名计划使用 learntrace-skill，Python 包与 CLI 使用 learntrace。
-- 使用 Python 3.11、uv、Ruff、Pyright、Pytest 和 pre-commit。
-- uv.lock 已生成。
-- 根目录改名后，旧 .venv 已删除，并使用 uv sync --dev --locked 在新路径成功重建。
-- SSH 操作文档位于 local 目录并被 Git 忽略。
-- 未添加 VS Code 专用配置。
+首次运行生成待确认问题。学生填写确认文件后，可再次运行：
 
-## 当前产品决策
+```powershell
+uv run --locked python -m learntrace run <project-dir> `
+  --confirmations student-confirmations.json
+```
 
-MVP 不以普通 ZIP 上传分析为主线，也不立即实现持续运行的实时并行 Agent。
+默认使用确定性候选推断器。只有同时设置
+`LEARNTRACE_LLM_ENABLED=1` 和 `LEARNTRACE_LLM_API_KEY` 时才启用远程
+LLM 候选推断；出站字段和隐私边界以 `skills/learntrace/SKILL.md` 为准。
 
-推荐流程：
+## 当前产物
 
-    learntrace init
-        -> 学生正常开发
-        -> learntrace reflect
-        -> learntrace report
+- `learning-record.md`：可编辑学习档案。
+- `archive-records.json`：带稳定指纹和来源索引的机器可读档案。
+- `learning-questions.md`：尚待学生确认的问题。
+- `.learntrace/task2-result.json`：Task 2 静态证据。
+- `.learntrace/task3-result.json`：Task 3 授权轨迹或未授权状态。
 
-init 只读分析当前仓库，经用户确认分析范围和隐私排除项后，生成项目指南与结构化基线。
+## 维护原则
 
-reflect 由学生在阶段节点主动触发，整理上次检查点以来的 Git、文件、既有测试和授权轨迹证据，提出少量候选学习节点，并由学生确认、补充或否认。
+- 可观察事实、候选推断和学生确认必须分层。
+- 学生没有提供的目标、反思或后续计划显示为“未记录”，不得代写。
+- AI 使用章节只展示项目范围内、有学习语义的授权轨迹。
+- 所有功能修改运行 Ruff、Pyright、Pytest 和 pre-commit。
 
-report 只汇总经过学生确认的阶段记录，生成本地 Markdown 学习档案。
+## 未来路线（尚未实现）
 
-计划产物：
-
-    LEARNTRACE.md
-    .learntrace/project.json
-    .learntrace/journal/
-    learning-portfolio.md
-
-## 未来实时集成
-
-实时跟踪不需要重写项目。Python 核心继续负责统一事件、证据和报告；Skill 提供 init、reflect、report；Hook 确定性捕获生命周期事件；Plugin 将它们集成到 OpenCode，后续再适配 Claude Code。
-
-原则是：Hook 记录事实，Agent 理解和提问，学生最终确认。实时 Hook 属于后续扩展，不阻塞检查点式 MVP。
-
-## 证据与隐私
-
-- 可观察事实必须引用 Git、文件、文档、既有日志或授权轨迹。
-- 学生确认必须与系统候选分开保存。
-- 系统候选推断必须附依据和不确定性，未经确认不得成为结论。
-- 证据不足时使用“未记录”，不得补全事件。
-- 不执行被分析仓库中的代码、测试或日志命令。
-- 完整 AI 对话只有在学生明确授权时才能读取。
-
-## 四人建议分工
-
-1. 数据契约：schemas、models、contract tests、fixtures。
-2. 项目建档：项目发现、parsers、init 流程。
-3. 检查点证据：reflection、privacy、未来 adapters。
-4. Skill 与报告：skills、CLI、reporting、integration tests。
-
-schema v0 的正式字段、类型和枚举仍需四人讨论后冻结。当前 schemas/v0/README.md 只是占位说明。
-
-## 下一会话待办
-
-现有 README、docs/project-statement.md、docs/architecture.md、docs/team-workplan.md 和 skills/learntrace/SKILL.md 仍主要描述旧路线，尚未统一到 init -> reflect -> report。
-
-下一会话应先阅读上述文件、src/README.md 和本文，然后：
-
-1. 只在新的项目根目录工作。
-2. 将产品文档和 Skill 统一到 init、reflect、report。
-3. 暂不实现普通 ZIP、Web 平台或持续实时监听。
-4. 运行 Ruff、格式检查、Pyright、Pytest 和 Skill 校验。
-5. 提交文档统一变更。
-6. 经用户确认后再创建私有 GitHub 远程仓库和分支保护。
-
-验证命令：
-
-    uv sync --dev --locked
-    uv run ruff check .
-    uv run ruff format --check .
-    uv run pyright
-    uv run pytest
+`learntrace init`、`learntrace reflect`、`learntrace report`、持续 Hook 和
+实时 Agent 都属于未来路线。文档不得把这些命令描述为当前可用功能。

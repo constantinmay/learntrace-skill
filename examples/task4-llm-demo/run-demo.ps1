@@ -14,11 +14,17 @@ if ($env:LEARNTRACE_LLM_API_KEY) {
     $env:LEARNTRACE_LLM_ENABLED = "1"
 }
 
-& (Join-Path $root ".venv\Scripts\python.exe") -m learntrace.archive `
-    $demo `
-    --output (Join-Path $out "learning-record.md") `
-    --records-output (Join-Path $out "archive-records.json") `
-    --questions-output (Join-Path $out "learning-questions.md")
+Push-Location $root
+try {
+    uv run --locked python -m learntrace.archive `
+        $demo `
+        --output (Join-Path $out "learning-record.md") `
+        --records-output (Join-Path $out "archive-records.json") `
+        --questions-output (Join-Path $out "learning-questions.md")
+}
+finally {
+    Pop-Location
+}
 
 if ($LASTEXITCODE -ne 0) {
     exit $LASTEXITCODE

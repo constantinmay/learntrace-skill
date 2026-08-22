@@ -60,7 +60,7 @@
       "id": "evt-demo-commit-state-machine",
       "evidence_level": "observable_fact",
       "kind": "git_commit",
-      "summary": "Commit 7d3c9f1 replaced the one-regex roster parser with a small state-machine parser and added tests for quoted commas, empty salary fields, and trailing notes.",
+      "summary": "Commit 7d3c9f1: replace the one-regex roster parser with a small state-machine parser and add tests for quoted commas, empty salary fields, and trailing notes.",
       "occurred_at": "2026-07-20T11:05:00+08:00",
       "source_refs": [
         {

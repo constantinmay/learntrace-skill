@@ -2,7 +2,7 @@
   "schema_version": "v0",
   "id": "conf-s05",
   "evidence_level": "student_confirmation",
-  "candidate_id": "cand-s05-add_tests-e24f35c1",
+  "candidate_id": "cand-s05-add_tests-30682dc7fed30c52",
   "decision": "confirmed",
   "student_statement": "是，我意识到空行会让解析崩溃，所以补了这几个用例。",
   "confirmed_at": "2026-04-20T08:45:00+08:00"

@@ -8,7 +8,13 @@ from typing import Any, cast
 
 import pytest
 
-from learntrace.archive import load_project_artifacts, load_project_records, write_learning_record
+from learntrace.archive import (
+    load_archive_snapshot,
+    load_project_artifacts,
+    load_project_records,
+    write_learning_record,
+    write_learning_record_result,
+)
 from learntrace.models import (
     ConfirmationDecision,
     ContractValidator,
@@ -21,21 +27,66 @@ from learntrace.models import (
     StudentConfirmation,
 )
 from learntrace.reporting import (
+    ArchiveWarning,
     CandidateDraft,
     build_archive_bundle,
     bundle_to_dict,
     render_markdown,
 )
-from learntrace.reporting.pipeline import MAX_CANDIDATES, StubCandidateInferencer
+from learntrace.reporting.pipeline import StubCandidateInferencer
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SCHEMA_DIR = REPO_ROOT / "src" / "learntrace" / "schemas" / "v0"
 SCENARIOS_DIR = REPO_ROOT / "tests" / "fixtures" / "golden" / "scenarios"
 SCENARIO_DIRS = tuple(sorted(path for path in SCENARIOS_DIR.iterdir() if path.is_dir()))
+DEMO_DIR = REPO_ROOT / "examples" / "task4-llm-demo"
 
 
 def _load_json(path: Path) -> Any:
     return json.loads(path.read_text(encoding="utf-8"))
+
+
+def test_archive_snapshot_rejects_records_that_do_not_match_fingerprint(
+    tmp_path: Path,
+) -> None:
+    snapshot = tmp_path / "archive-records.json"
+    write_learning_record_result(
+        SCENARIOS_DIR / "09-sparse-evidence-high-uncertainty",
+        output_path=tmp_path / "learning-record.md",
+        records_output_path=snapshot,
+    )
+    payload = _load_json(snapshot)
+    payload["events"][0]["summary"] = "tampered summary"
+    snapshot.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="snapshot fingerprint"):
+        load_archive_snapshot(snapshot)
+
+
+def test_public_demo_runs_both_analysis_and_snapshot_confirmation(tmp_path: Path) -> None:
+    snapshot = tmp_path / "archive-records.json"
+    first = write_learning_record_result(
+        DEMO_DIR,
+        output_path=tmp_path / "learning-record.md",
+        records_output_path=snapshot,
+        questions_output_path=tmp_path / "learning-questions.md",
+    )
+
+    first_counts = cast(dict[str, object], first.archive["record_counts"])
+    assert first_counts["candidate_inference"] == 1
+    assert first_counts["pending_questions"] == 1
+
+    confirmed = write_learning_record_result(
+        DEMO_DIR,
+        output_path=tmp_path / "confirmed-learning-record.md",
+        records_output_path=tmp_path / "confirmed-archive-records.json",
+        confirmation_paths=(DEMO_DIR / "student-confirmations.json.example",),
+        snapshot_path=snapshot,
+    )
+
+    confirmed_counts = cast(dict[str, object], confirmed.archive["record_counts"])
+    assert confirmed_counts["student_confirmation"] == 1
+    assert confirmed_counts["pending_questions"] == 0
 
 
 def _expected_candidates(scenario_dir: Path) -> list[dict[str, Any]]:
@@ -77,6 +128,7 @@ def test_render_markdown_contains_required_sections(scenario_dir: Path) -> None:
 
     for heading in (
         "## 项目概览",
+        "## 项目目标",
         "## 审计摘要",
         "## 证据分层",
         "## AI 使用",
@@ -87,6 +139,103 @@ def test_render_markdown_contains_required_sections(scenario_dir: Path) -> None:
         "## AI 使用声明",
     ):
         assert heading in markdown
+
+
+def test_render_markdown_does_not_expose_source_directory(tmp_path: Path) -> None:
+    event = ObservableEvent(
+        id="evt-source-dir-privacy",
+        kind=EventKind.DOCUMENT,
+        summary="记录了实现目标。",
+        source_refs=(SourceRef(type=SourceType.DOCUMENT, ref="task.md:1-2"),),
+    )
+    bundle = build_archive_bundle((event,))
+
+    markdown = render_markdown(bundle, source_dir=tmp_path.resolve())
+
+    assert str(tmp_path.resolve()) not in markdown
+    assert "- 证据目录：." in markdown
+    assert "~/.ssh" not in render_markdown(bundle, source_dir=Path("~/.ssh"))
+
+
+def test_render_markdown_redacts_paths_and_secrets_from_record_body(tmp_path: Path) -> None:
+    private_root = str(tmp_path.resolve())
+    secret = "sk-abcdefgh12345678"
+    event = ObservableEvent(
+        id="evt-body-privacy",
+        kind=EventKind.DOCUMENT,
+        summary=f"项目目标记录在 {private_root}\\notes.md，token={secret}",
+        source_refs=(SourceRef(type=SourceType.DOCUMENT, ref=f"{private_root}\\notes.md:1-2"),),
+    )
+    bundle = build_archive_bundle(
+        (event,),
+        warnings=(
+            ArchiveWarning(
+                code="private-warning",
+                source=f"{private_root}\\input.json",
+                message=f"用户目录 ~/.ssh/id_rsa 和 /secret 无法读取，token={secret}",
+            ),
+        ),
+    )
+
+    markdown = render_markdown(bundle, source_dir=tmp_path.resolve())
+
+    assert private_root not in markdown
+    assert "~/.ssh/id_rsa" not in markdown
+    assert "/secret" not in markdown
+    assert secret not in markdown
+    assert "[REDACTED]" in markdown
+    assert "[absolute-path]" in markdown
+    assert "[private-path]" in markdown
+
+
+@pytest.mark.parametrize(
+    "source_ref",
+    [r"C:\Users\learner\project\notes.md:1-2", "/home/learner/project/notes.md:1-2"],
+)
+def test_nested_absolute_document_is_not_misclassified_as_root_goal(source_ref: str) -> None:
+    event = ObservableEvent(
+        id="evt-nested-goal",
+        kind=EventKind.DOCUMENT,
+        summary="项目目标记录在嵌套的私人笔记中。",
+        source_refs=(SourceRef(type=SourceType.DOCUMENT, ref=source_ref),),
+    )
+
+    markdown = render_markdown(build_archive_bundle((event,)))
+
+    assert "项目目标记录在嵌套的私人笔记中" not in markdown
+    assert "请由学生根据课程任务或项目 README 补充" in markdown
+
+
+def test_render_markdown_preserves_routes_urls_and_natural_slashes() -> None:
+    event = ObservableEvent(
+        id="evt-readable-route",
+        kind=EventKind.DOCUMENT,
+        summary=(
+            "读书/资源管理系统通过 /api 和 /api/books 提供接口，参考 https://example.test/docs。"
+        ),
+        source_refs=(SourceRef(type=SourceType.DOCUMENT, ref="README.md:1-2"),),
+    )
+
+    markdown = render_markdown(build_archive_bundle((event,)))
+
+    assert "读书/资源管理系统" in markdown
+    assert "/api 和" in markdown
+    assert "/api/books" in markdown
+    assert "https://example.test/docs" in markdown
+
+
+def test_render_markdown_calls_out_missing_test_evidence() -> None:
+    event = ObservableEvent(
+        id="evt-no-tests",
+        kind=EventKind.GIT_COMMIT,
+        summary="提交 a1b2c3d：实现接口。",
+        source_refs=(SourceRef(type=SourceType.GIT_COMMIT, ref="a1b2c3d"),),
+    )
+
+    markdown = render_markdown(build_archive_bundle((event,)))
+
+    assert "未发现测试日志" in markdown
+    assert "不能证明项目测试已运行或通过" in markdown
 
 
 def test_render_markdown_handles_missing_info_and_degraded_cases() -> None:
@@ -110,7 +259,7 @@ def test_render_markdown_handles_missing_info_and_degraded_cases() -> None:
     bundle_08 = build_archive_bundle(events_08, confirmations=confirmations_08, validator=validator)
     markdown_08 = render_markdown(bundle_08, source_dir=scenario_08)
     assert "当前证据未形成可提问的学习节点候选。" in markdown_08
-    assert "未见授权轨迹，未据此推断 AI 使用。" in markdown_08
+    assert "未见与本项目范围相关的授权轨迹" in markdown_08
 
     events_09, confirmations_09 = load_project_records(
         scenario_09,
@@ -118,10 +267,177 @@ def test_render_markdown_handles_missing_info_and_degraded_cases() -> None:
     )
     bundle_09 = build_archive_bundle(events_09, confirmations=confirmations_09, validator=validator)
     markdown_09 = render_markdown(bundle_09, source_dir=scenario_09)
-    assert (
-        "待补充 cand-s09-adjust_constraints-79510e31：增加 --ignore-missing 是出于什么考虑？"  # noqa: E501
-        in markdown_09
+    assert "调整缺失输入的处理方式是出于什么考虑？" in markdown_09
+
+
+def test_human_summary_omits_machine_ids_but_audit_keeps_provenance() -> None:
+    scenario = SCENARIOS_DIR / "09-sparse-evidence-high-uncertainty"
+    events, confirmations = load_project_records(scenario)
+    bundle = build_archive_bundle(events, confirmations=confirmations)
+
+    markdown = render_markdown(bundle, source_dir=scenario)
+    human_summary, audit_appendix = markdown.split("<details>", maxsplit=1)
+
+    assert "cand-" not in human_summary
+    assert "evt-" not in human_summary
+    assert "trace://" not in human_summary
+    assert "cand-s09-adjust_constraints-5678a64e29b362f5" in audit_appendix
+    assert "evt-s09-1" in audit_appendix
+
+
+def test_render_markdown_extracts_documented_goal_without_inventing_one() -> None:
+    goal_event = ObservableEvent(
+        id="evt-goal",
+        kind=EventKind.DOCUMENT,
+        summary="README 记录项目目标：实现一个本地课程学习档案生成器。",
+        source_refs=(SourceRef(type=SourceType.DOCUMENT, ref="README.md:1-4"),),
     )
+    commit_event = ObservableEvent(
+        id="evt-commit",
+        kind=EventKind.GIT_COMMIT,
+        summary="提交 a1b2c3d：初始化项目。",
+        source_refs=(SourceRef(type=SourceType.GIT_COMMIT, ref="a1b2c3d"),),
+    )
+
+    with_goal = render_markdown(build_archive_bundle((goal_event,)))
+    without_goal = render_markdown(build_archive_bundle((commit_event,)))
+
+    assert "## 项目目标" in with_goal
+    assert "实现一个本地课程学习档案生成器" in with_goal
+    assert "请由学生根据课程任务或项目 README 补充" in without_goal
+
+
+def test_project_goal_filters_fenced_code_hidden_behind_document_prefix() -> None:
+    code_event = ObservableEvent(
+        id="evt-goal-code",
+        kind=EventKind.DOCUMENT,
+        summary="文档章节‘目录结构’记录：``` backend/ Go 后端 frontend/ React 前端 ```",
+        source_refs=(SourceRef(type=SourceType.DOCUMENT, ref="README.md:20-26"),),
+    )
+    goal_event = ObservableEvent(
+        id="evt-goal-title",
+        kind=EventKind.DOCUMENT,
+        summary="文档章节‘项目目标’记录：实现一个前后端分离的资源管理系统。",
+        source_refs=(SourceRef(type=SourceType.DOCUMENT, ref="README.md:1-4"),),
+    )
+    feature_event = ObservableEvent(
+        id="evt-goal-features",
+        kind=EventKind.DOCUMENT,
+        summary="文档章节‘功能特性’记录：支持资源增删改查和分类管理。",
+        source_refs=(SourceRef(type=SourceType.DOCUMENT, ref="README.md:8-12"),),
+    )
+    startup_event = ObservableEvent(
+        id="evt-goal-startup",
+        kind=EventKind.DOCUMENT,
+        summary="文档章节‘启动后端’记录：执行 go run . 并监听 8080 端口。",
+        source_refs=(SourceRef(type=SourceType.DOCUMENT, ref="README.md:30-34"),),
+    )
+
+    markdown = render_markdown(
+        build_archive_bundle((code_event, goal_event, feature_event, startup_event))
+    )
+    goal_section = markdown.split("## 项目目标\n", 1)[1].split("\n## 项目进展", 1)[0]
+
+    assert "前后端分离的资源管理系统" in goal_section
+    assert "资源增删改查和分类管理" in goal_section
+    assert "backend/" not in goal_section
+    assert "go run" not in goal_section
+
+
+def test_ai_use_section_filters_irrelevant_trace_events() -> None:
+    traces = (
+        ObservableEvent(
+            id="evt-meaningful",
+            kind=EventKind.TRACE_RECORD,
+            summary="学生追问为何要为解析器补充边界测试。",
+            source_refs=(SourceRef(type=SourceType.TRACE_RECORD, ref="trace://session/1"),),
+        ),
+        ObservableEvent(
+            id="evt-outside",
+            kind=EventKind.TRACE_RECORD,
+            summary="OpenCode 工具 write 已完成。路径：[outside-project]。",
+            source_refs=(SourceRef(type=SourceType.TRACE_RECORD, ref="trace://session/2"),),
+        ),
+        ObservableEvent(
+            id="evt-kill",
+            kind=EventKind.TRACE_RECORD,
+            summary="OpenCode 工具 bash 已完成。命令类型：kill。",
+            source_refs=(SourceRef(type=SourceType.TRACE_RECORD, ref="trace://session/3"),),
+        ),
+        ObservableEvent(
+            id="evt-self",
+            kind=EventKind.TRACE_RECORD,
+            summary="OpenCode 工具 edit 已完成。路径：skills/learntrace/SKILL.md。",
+            source_refs=(SourceRef(type=SourceType.TRACE_RECORD, ref="trace://session/4"),),
+        ),
+        ObservableEvent(
+            id="evt-generic",
+            kind=EventKind.TRACE_RECORD,
+            summary="OpenCode 工具 write 已完成。路径：src/app.py。",
+            source_refs=(SourceRef(type=SourceType.TRACE_RECORD, ref="trace://session/5"),),
+        ),
+    )
+
+    markdown = render_markdown(build_archive_bundle(traces))
+    ai_section = markdown.split("## AI 使用\n", 1)[1].split("\n## 关键决策", 1)[0]
+
+    assert "evt-meaningful" in ai_section
+    for hidden_id in ("evt-outside", "evt-kill", "evt-self", "evt-generic"):
+        assert hidden_id not in ai_section
+    assert "授权轨迹仅包含通用工具操作" not in ai_section
+    assert "已过滤或省略 4 条" in ai_section
+
+
+def test_generic_traces_are_summarized_without_claiming_no_trace_exists() -> None:
+    trace = ObservableEvent(
+        id="evt-generic-only",
+        kind=EventKind.TRACE_RECORD,
+        summary="OpenCode 工具 read 已完成。",
+        source_refs=(SourceRef(type=SourceType.TRACE_RECORD, ref="trace://session/1"),),
+    )
+
+    markdown = render_markdown(build_archive_bundle((trace,)))
+
+    assert "read：共 1 次，完成 1 次，错误 0 次，未完成 0 次" in markdown
+    assert "授权轨迹仅包含通用工具操作" in markdown
+    assert "未见与本项目范围相关的授权轨迹" not in markdown
+    assert "待确认问题：3 条" in markdown
+
+
+def test_ai_collaboration_does_not_count_incomplete_tool_as_completed() -> None:
+    trace = ObservableEvent(
+        id="evt-incomplete-tool",
+        kind=EventKind.TRACE_RECORD,
+        summary="OpenCode 工具 task 在消息错误结束时未完成。",
+        source_refs=(SourceRef(type=SourceType.TRACE_RECORD, ref="trace://session/1"),),
+    )
+
+    markdown = render_markdown(build_archive_bundle((trace,)))
+
+    assert "task：共 1 次，完成 0 次，错误 0 次，未完成 1 次" in markdown
+
+
+def test_human_learning_label_reflects_denied_confirmation() -> None:
+    scenario = SCENARIOS_DIR / "02-revise-ai-suggestion-denied"
+    events, confirmations = load_project_records(scenario)
+
+    markdown = render_markdown(build_archive_bundle(events, confirmations=confirmations))
+    human_summary = markdown.split("<details>", maxsplit=1)[0]
+
+    assert "系统线索（学生已否认）" in human_summary
+    assert "学习线索（待学生确认）" not in human_summary
+
+
+def test_reflection_is_an_editable_student_field_not_confirmation_echo() -> None:
+    scenario = SCENARIOS_DIR / "01-revise-ai-suggestion-confirmed"
+    events, confirmations = load_project_records(scenario)
+    bundle = build_archive_bundle(events, confirmations=confirmations)
+
+    markdown = render_markdown(bundle)
+    reflection = markdown.split("## 个人反思\n", 1)[1].split("\n## 后续学习", 1)[0]
+
+    assert "系统不会用确认陈述代写反思" in reflection
+    assert "默认推断会把含千分位的列解析成字符串" not in reflection
 
 
 def test_cli_writes_learning_record(tmp_path: Path) -> None:
@@ -134,7 +450,7 @@ def test_cli_writes_learning_record(tmp_path: Path) -> None:
 
     assert output_path.exists()
     markdown = output_path.read_text(encoding="utf-8")
-    assert "学生可能判断 AI 建议的默认类型推断不适合含千分位的数据" in markdown
+    assert "学生可能没有直接采用 AI 的数据解析建议" in markdown
 
 
 def test_loads_task2_style_batch_json(tmp_path: Path) -> None:
@@ -233,18 +549,7 @@ def test_realistic_task2_task3_chain_avoids_candidate_explosion(tmp_path: Path) 
         validator=ContractValidator(schema_dir=SCHEMA_DIR),
     )
 
-    assert 0 < len(bundle.candidates) <= MAX_CANDIDATES
-    assert all(
-        candidate.node_type != NodeType.ADJUST_CONSTRAINTS for candidate in bundle.candidates
-    )
-    event_kind_by_id = {event.id: event.kind for event in bundle.events}
-    assert all(
-        any(
-            event_kind_by_id[event_id] == EventKind.TRACE_RECORD
-            for event_id in candidate.basis_event_ids
-        )
-        for candidate in bundle.candidates
-    )
+    assert bundle.candidates == ()
 
 
 def test_loads_task2_style_batch_json_without_marker_when_events_look_valid(tmp_path: Path) -> None:
@@ -295,12 +600,14 @@ def test_cli_writes_machine_readable_archive_and_questions(tmp_path: Path) -> No
     pending_questions = cast(list[dict[str, Any]], records["pending_questions"])
     assert records["archive_version"] == "v0"
     assert record_counts["pending_questions"] == 1
-    assert pending_questions[0]["candidate_id"] == "cand-s09-adjust_constraints-79510e31"
+    assert pending_questions[0]["candidate_id"] == "cand-s09-adjust_constraints-5678a64e29b362f5"
     quality_checks = cast(dict[str, bool], records["quality_checks"])
     risk_flags = cast(dict[str, bool], records["risk_flags"])
     assert quality_checks["schema_valid"] is True
     assert risk_flags["has_pending_questions"] is True
-    assert "cand-s09-adjust_constraints-79510e31" in questions_output.read_text(encoding="utf-8")
+    assert "cand-s09-adjust_constraints-5678a64e29b362f5" in questions_output.read_text(
+        encoding="utf-8"
+    )
 
 
 def test_machine_readable_archive_includes_stable_manifest(tmp_path: Path) -> None:
@@ -358,10 +665,10 @@ def test_machine_readable_archive_includes_provenance_indexes(tmp_path: Path) ->
         if cast(dict[str, str], entry["source_ref"])["ref"] == "f6a7b8c"
     )
     assert git_source["event_ids"] == ["evt-s05-1"]
-    assert git_source["candidate_ids"] == ["cand-s05-add_tests-e24f35c1"]
+    assert git_source["candidate_ids"] == ["cand-s05-add_tests-30682dc7fed30c52"]
     assert candidate_links == [
         {
-            "candidate_id": "cand-s05-add_tests-e24f35c1",
+            "candidate_id": "cand-s05-add_tests-30682dc7fed30c52",
             "node_type": "add_tests",
             "basis_event_ids": ["evt-s05-1", "evt-s05-2"],
             "confirmation_id": "conf-s05",
@@ -654,6 +961,9 @@ def test_loader_ignores_unrelated_json_and_dependency_dirs(tmp_path: Path) -> No
     venv_dir = tmp_path / ".venv"
     venv_dir.mkdir()
     (venv_dir / "broken.json").write_text("{", encoding="utf-8")
+    opencode_dir = tmp_path / ".opencode" / "skills" / "learntrace-skill"
+    opencode_dir.mkdir(parents=True)
+    (opencode_dir / "invalid-fixture.json").write_text("{", encoding="utf-8")
 
     loaded = load_project_artifacts(
         tmp_path,
@@ -661,6 +971,7 @@ def test_loader_ignores_unrelated_json_and_dependency_dirs(tmp_path: Path) -> No
     )
 
     assert [event.id for event in loaded.events] == ["evt-s09-1"]
+    assert loaded.warnings == ()
 
 
 def test_empty_events_business_json_is_not_misread_as_learntrace(tmp_path: Path) -> None:
@@ -683,6 +994,21 @@ def test_empty_events_business_json_is_not_misread_as_learntrace(tmp_path: Path)
     # is ignored rather than misread as a container and aborting on its
     # non-LearnTrace warning shape.
     assert [event.id for event in loaded.events] == ["evt-s09-1"]
+
+
+def test_loader_accepts_confirmation_only_container(tmp_path: Path) -> None:
+    confirmation = _load_json(
+        SCENARIOS_DIR / "01-revise-ai-suggestion-confirmed" / "student-confirmation.json"
+    )
+    (tmp_path / "confirmations.json").write_text(
+        json.dumps({"events": [], "confirmations": [confirmation]}, ensure_ascii=False),
+        encoding="utf-8",
+    )
+
+    loaded = load_project_artifacts(tmp_path, validator=ContractValidator(schema_dir=SCHEMA_DIR))
+
+    assert loaded.events == ()
+    assert [item.to_dict() for item in loaded.confirmations] == [confirmation]
 
 
 def test_foreign_json_with_unknown_evidence_level_is_skipped(tmp_path: Path) -> None:
@@ -726,23 +1052,45 @@ def test_strict_inputs_rejects_unrelated_json(tmp_path: Path) -> None:
         )
 
 
-def test_loader_reports_schema_errors_with_source_path(tmp_path: Path) -> None:
+def test_loader_downgrades_discovered_schema_errors_to_warning(tmp_path: Path) -> None:
+    valid_record = (
+        SCENARIOS_DIR / "09-sparse-evidence-high-uncertainty" / "observable-event-commit.json"
+    )
+    (tmp_path / "valid-event.json").write_text(
+        valid_record.read_text(encoding="utf-8"), encoding="utf-8"
+    )
     bad_record = (
         REPO_ROOT / "tests" / "fixtures" / "golden" / "invalid" / "event-missing-source-refs.json"
     )
     target = tmp_path / "bad-event.json"
     target.write_text(bad_record.read_text(encoding="utf-8"), encoding="utf-8")
 
-    with pytest.raises(ValueError) as exc_info:
+    loaded = load_project_artifacts(
+        tmp_path,
+        validator=ContractValidator(schema_dir=SCHEMA_DIR),
+    )
+
+    assert [event.id for event in loaded.events] == ["evt-s09-1"]
+    assert [warning.code for warning in loaded.warnings] == ["invalid_learntrace_input"]
+    assert loaded.warnings[0].source == "bad-event.json"
+    assert "invalid observable_event" in loaded.warnings[0].message
+    assert "source_refs" in loaded.warnings[0].message
+
+
+def test_strict_inputs_keeps_discovered_schema_errors_fatal(tmp_path: Path) -> None:
+    bad_record = (
+        REPO_ROOT / "tests" / "fixtures" / "golden" / "invalid" / "event-missing-source-refs.json"
+    )
+    (tmp_path / "bad-event.json").write_text(
+        bad_record.read_text(encoding="utf-8"), encoding="utf-8"
+    )
+
+    with pytest.raises(ValueError, match="invalid observable_event"):
         load_project_artifacts(
             tmp_path,
             validator=ContractValidator(schema_dir=SCHEMA_DIR),
+            strict_inputs=True,
         )
-
-    message = str(exc_info.value)
-    assert "bad-event.json" in message
-    assert "invalid observable_event" in message
-    assert "source_refs" in message
 
 
 def test_loader_reports_conflicting_duplicate_event_paths(tmp_path: Path) -> None:
