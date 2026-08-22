@@ -40,3 +40,7 @@ class TraceAdapterResult:
 
 class UnsupportedOpenCodeFormatError(ValueError):
     """The supplied file is not a supported OpenCode JSON export."""
+
+
+class UnsupportedTraceFormatError(ValueError):
+    """The supplied file is not a supported Claude Code or Codex JSONL trace."""
