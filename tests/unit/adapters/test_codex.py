@@ -189,6 +189,21 @@ def test_oversized_arguments_are_never_parsed(tmp_path: Path) -> None:
     assert result.events[0].summary == "Codex 工具 apply_patch 已完成。"
 
 
+def test_exec_command_cmd_key_is_summarized(tmp_path: Path) -> None:
+    """Codex 0.149's exec_command tool passes the command as a ``cmd`` string."""
+    session_path = _write_session(
+        tmp_path / "session.jsonl",
+        _session_meta(),
+        _function_call(name="exec_command", arguments='{"cmd": "cat src/calc.py"}'),
+        _call_output(),
+    )
+
+    result = adapt_codex_export(session_path, authorized=True)
+
+    assert len(result.events) == 1
+    assert result.events[0].summary == "Codex 工具 exec_command 已完成。 命令类型：cat。"
+
+
 def test_unparseable_arguments_fall_back_to_a_generic_summary(tmp_path: Path) -> None:
     session_path = _write_session(
         tmp_path / "session.jsonl",

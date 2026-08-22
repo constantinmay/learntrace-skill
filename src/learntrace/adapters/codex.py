@@ -127,6 +127,9 @@ def _command_from_arguments(value: object) -> str | None:
     command = arguments.get("command")
     if isinstance(command, str):
         return command
+    cmd = arguments.get("cmd")
+    if isinstance(cmd, str):
+        return cmd
     return _joined_command_tokens(command)
 
 
