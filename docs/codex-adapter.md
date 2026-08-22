@@ -3,8 +3,9 @@
 ## 输入方式
 
 OpenAI Codex CLI 会把每个会话保存为本地 JSONL 文件（通常位于
-`~/.codex/sessions/<日期>/rollout-<时间>-<uuid>.jsonl`）。LearnTrace 不会扫描或
-读取该目录；使用者需要自己把要归档的会话文件复制出来，再逐个显式授权：
+`~/.codex/sessions/<年/月/日>/rollout-<时间>-<uuid>.jsonl`；归档后移至
+`~/.codex/archived_sessions/`）。LearnTrace 不会扫描或
+读取这些目录；使用者需要自己把要归档的会话文件复制出来，再逐个显式授权：
 
 ```powershell
 learntrace run <project-dir> `
