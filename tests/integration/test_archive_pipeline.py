@@ -788,6 +788,51 @@ def test_loader_skips_generated_archive_outputs_and_learntrace_dir(tmp_path: Pat
     )
 
 
+def test_loader_skips_old_format_archive_snapshot_without_marker(tmp_path: Path) -> None:
+    """Archive snapshots from before ``learntrace_bundle`` existed (which carry
+    ``archive_manifest`` + ``record_counts`` + ``archive_version`` but no
+    ``learntrace_bundle`` marker) must still be recognized as generated output,
+    so they are not re-ingested as input alongside the authoritative parse-result
+    events and do not collide."""
+    scenario_dir = SCENARIOS_DIR / "05-add-tests-confirmed"
+    generated_records = tmp_path / "historical-snapshot.json"
+
+    write_learning_record(
+        scenario_dir,
+        output_path=tmp_path / "learning-record.md",
+        records_output_path=generated_records,
+        validator=ContractValidator(schema_dir=SCHEMA_DIR),
+    )
+
+    # Strip the marker to simulate a pre-marker snapshot. Everything else that
+    # makes it an archive-only shape remains (``archive_manifest``,
+    # ``record_counts``, ``archive_version``, ``events``, ``candidates``).
+    snapshot = _load_json(generated_records)
+    assert snapshot.pop("learntrace_bundle") is True
+    generated_records.write_text(json.dumps(snapshot, ensure_ascii=False), encoding="utf-8")
+
+    for source in scenario_dir.glob("*.json"):
+        (tmp_path / source.name).write_text(source.read_text(encoding="utf-8"), encoding="utf-8")
+
+    validator = ContractValidator(schema_dir=SCHEMA_DIR)
+    loaded = load_project_artifacts(tmp_path, validator=validator)
+    bundle = build_archive_bundle(
+        loaded.events,
+        confirmations=loaded.confirmations,
+        warnings=loaded.warnings,
+        validator=validator,
+    )
+
+    # Only the authoritative parse-result events are loaded; the stale
+    # pre-marker snapshot is not re-ingested (so no duplicate/conflicting event).
+    assert [event.id for event in bundle.events] == ["evt-s05-1", "evt-s05-2"]
+
+    # load_archive_snapshot must accept the pre-marker snapshot (previously the
+    # marker-only guard rejected it, breaking confirmation reuse after upgrade).
+    snapshot_loaded = load_archive_snapshot(generated_records, validator=validator)
+    assert [event.id for event in snapshot_loaded.events] == ["evt-s05-1", "evt-s05-2"]
+
+
 def test_stable_candidate_id_regardless_of_order() -> None:
     """Candidate IDs must be stable when input events are reordered."""
     validator = ContractValidator(schema_dir=SCHEMA_DIR)

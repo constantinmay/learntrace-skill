@@ -32,6 +32,10 @@ from learntrace.privacy import (
 )
 
 _MAX_EXPORT_BYTES = 32 * 1024 * 1024
+# Reject pathologically deep JSON nesting before handing it to json.loads: the C
+# accelerator can parse hundreds of bracket levels without hitting the Python
+# recursion limit, so a RecursionError alone is not a reliable guard.
+_MAX_JSON_NESTING_DEPTH = 128
 _SUPPORTED_STATUS = frozenset({"pending", "running", "completed", "error"})
 _INCOMPLETE_STATUS = frozenset({"pending", "running"})
 _FILE_TOOLS = frozenset({"read", "edit", "write", "apply_patch"})
@@ -57,6 +61,38 @@ def _issue(code: str, location: str, message: str) -> TraceParseIssue:
     return TraceParseIssue(code=code, location=location, message=message)
 
 
+def _max_nesting_depth(text: str) -> int:
+    """Return the deepest bracket nesting, honoring string literals.
+
+    A single forward pass over the raw text tracks ``{[`` pairs (and marks
+    strings so braces inside JSON strings are not counted). This is cheaper and
+    more robust than relying on json.loads recursion depth to reject hostile
+    input.
+    """
+
+    depth = 0
+    max_depth = 0
+    in_string = False
+    escaped = False
+    for char in text:
+        if in_string:
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == '"':
+                in_string = False
+            continue
+        if char == '"':
+            in_string = True
+        elif char in "[{":
+            depth += 1
+            max_depth = max(max_depth, depth)
+        elif char in "]}":
+            depth -= 1
+    return max_depth
+
+
 def _load_export(export_path: Path) -> dict[str, object]:
     try:
         size = export_path.stat().st_size
@@ -76,6 +112,8 @@ def _load_export(export_path: Path) -> dict[str, object]:
         text = raw_bytes.decode("utf-8")
     except UnicodeDecodeError as exc:
         raise UnsupportedOpenCodeFormatError("OpenCode 导出文件不是有效 UTF-8。") from exc
+    if _max_nesting_depth(text) > _MAX_JSON_NESTING_DEPTH:
+        raise UnsupportedOpenCodeFormatError("OpenCode 导出文件嵌套过深。")
     try:
         parsed: object = json.loads(text)
     except (ValueError, RecursionError) as exc:
