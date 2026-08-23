@@ -179,19 +179,55 @@ def _trace_event_sort_key(event: ObservableEvent) -> tuple[bool, str, str]:
     )
 
 
-def _merge_trace_results(results: tuple[TraceAdapterResult, ...]) -> TraceAdapterResult:
+def _merge_trace_results(
+    results: tuple[tuple[str, TraceAdapterResult], ...],
+) -> TraceAdapterResult:
     """Merge per-host adapter results into one Task 3 batch.
 
     Events are deduplicated by stable ID; conflicting duplicates fail loudly.
-    The merged status keeps the most informative outcome across hosts.
+    Hosts whose input was supplied but not processed (unauthorized or missing)
+    always produce an explicit warning, so partial success across hosts is
+    never reported as a fully parsed batch. When more than one host
+    contributes input, warning locations are prefixed with the host name so
+    warnings stay attributable after merging.
     """
 
+    contributing_hosts = [
+        host for host, result in results if result.status is not TraceInputStatus.NOT_PROVIDED
+    ]
+    multi_host = len(contributing_hosts) > 1
     events_by_id: dict[str, ObservableEvent] = {}
     warnings: list[TraceParseIssue] = []
     statuses: list[TraceInputStatus] = []
-    for result in results:
+    for host, result in results:
         statuses.append(result.status)
-        warnings.extend(result.warnings)
+        for issue in result.warnings:
+            if multi_host:
+                warnings.append(
+                    TraceParseIssue(
+                        code=issue.code,
+                        location=f"{host}.{issue.location}",
+                        message=issue.message,
+                    )
+                )
+            else:
+                warnings.append(issue)
+        if result.status is TraceInputStatus.NOT_AUTHORIZED:
+            warnings.append(
+                TraceParseIssue(
+                    code="host_input_not_authorized",
+                    location=host,
+                    message=f"宿主 {host} 的会话文件未获授权，未读取。",
+                )
+            )
+        elif result.status is TraceInputStatus.AUTHORIZED_NOT_FOUND:
+            warnings.append(
+                TraceParseIssue(
+                    code="host_authorized_not_found",
+                    location=host,
+                    message=f"宿主 {host} 的会话文件未找到，未读取。",
+                )
+            )
         for event in result.events:
             existing = events_by_id.get(event.id)
             if existing is None:
@@ -304,6 +340,14 @@ def _run_command(args: argparse.Namespace, parser: argparse.ArgumentParser) -> i
                 conflicting_options.append("--authorized")
             if args.authorize_opencode_export:
                 conflicting_options.append("--authorize-opencode-export")
+            if args.claude_code_export:
+                conflicting_options.append("--claude-code-export")
+            if args.authorize_claude_code_export:
+                conflicting_options.append("--authorize-claude-code-export")
+            if args.codex_export:
+                conflicting_options.append("--codex-export")
+            if args.authorize_codex_export:
+                conflicting_options.append("--authorize-codex-export")
             if conflicting_options:
                 joined = ", ".join(conflicting_options)
                 raise ValueError(
@@ -339,20 +383,29 @@ def _run_command(args: argparse.Namespace, parser: argparse.ArgumentParser) -> i
         )
         trace_result = _merge_trace_results(
             (
-                adapt_opencode_exports(
-                    export_paths,
-                    authorized_paths=authorized_paths,
-                    project_root=root,
+                (
+                    "opencode",
+                    adapt_opencode_exports(
+                        export_paths,
+                        authorized_paths=authorized_paths,
+                        project_root=root,
+                    ),
                 ),
-                adapt_claude_code_exports(
-                    tuple(args.claude_code_export),
-                    authorized_paths=tuple(args.authorize_claude_code_export),
-                    project_root=root,
+                (
+                    "claude-code",
+                    adapt_claude_code_exports(
+                        tuple(args.claude_code_export),
+                        authorized_paths=tuple(args.authorize_claude_code_export),
+                        project_root=root,
+                    ),
                 ),
-                adapt_codex_exports(
-                    tuple(args.codex_export),
-                    authorized_paths=tuple(args.authorize_codex_export),
-                    project_root=root,
+                (
+                    "codex",
+                    adapt_codex_exports(
+                        tuple(args.codex_export),
+                        authorized_paths=tuple(args.authorize_codex_export),
+                        project_root=root,
+                    ),
                 ),
             )
         )
