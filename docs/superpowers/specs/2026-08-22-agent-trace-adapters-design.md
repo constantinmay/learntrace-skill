@@ -50,3 +50,28 @@ JSONL 会话适配器，关键决策：
   状态、上限与截断、ID 稳定性、泄漏断言、多会话合并去重。
 - 集成测试覆盖 `write_trace_result` → `load_project_artifacts` 往返与 warning
   `location→source` 映射。
+
+## 修订：PR #19 Review 修复（2026-08-23）
+
+针对 review 指出的 5 个必改项与 3 个建议项的修订记录：
+
+1. **Codex 退出状态三态化**：无法确认退出状态时不再默认成功，summary 记为
+   "结束（状态未知）"；退出码识别扩展到 JSON `metadata.exit_code`、顶层
+   `exit_code` 与文本形式（"Exit code: N" / "exited with code N"）。render
+   协作概览同步增加"状态未知"分类。
+2. **多宿主合并可见性**：任一宿主 parsed 时，未授权
+   （`host_input_not_authorized`）或文件不存在（`host_authorized_not_found`）
+   的宿主会生成明确 warning，部分成功不再表现为整体成功；多宿主场景下 warning
+   location 加 `{host}.` 前缀。
+3. **末行检查链补全**：末尾无换行的行不再绕过 16 MiB 单行限制与 marker 预过滤，
+   全部检查通过后才按 `truncated_final_line` 容忍解析。
+4. **解析阶段资源上限**：事件达到 2000 条后停止构造（不再"先构造后截断"）；
+   警告最多保留 200 条（超出汇总为一条）；未配对调用跟踪上限 2000 条；各上限
+   触发时均发汇总警告。事件上限语义从"保留最早"改为"流式截止"。
+5. **确认阶段冲突检查**：`--confirmations` 与四个新轨迹 flag 同现时报错，与
+   OpenCode 参数对称。
+6. **Codex 支持范围明确**：`custom_tool_call` / `custom_tool_call_output` 
+   记入 `unsupported_call_type` 警告并跳过；文档注明验证版本（0.149）与支持的
+   记录类型。
+7. 文档内存描述同步修正（不再声称"内存与文件大小无关"，改为逐行流式 + 累积
+   上限的准确描述）。

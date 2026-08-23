@@ -156,3 +156,103 @@ def test_run_without_new_host_authorization_reports_not_authorized(
     )
     assert trace["status"] == "not_authorized"
     assert trace["events"] == []
+    assert any(warning["code"] == "host_input_not_authorized" for warning in trace["warnings"])
+
+
+def test_run_reports_unauthorized_host_alongside_parsed_host(sample_project: Path) -> None:
+    """A parsed host must not hide that another host's input went unread."""
+
+    exit_code = main(
+        [
+            "run",
+            str(sample_project),
+            "--no-git",
+            "--claude-code-export",
+            str(CLAUDE_FIXTURE),
+            "--authorize-claude-code-export",
+            str(CLAUDE_FIXTURE),
+            "--codex-export",
+            str(CODEX_FIXTURE),
+        ]
+    )
+
+    assert exit_code == 0
+    trace = json.loads(
+        (sample_project / ".learntrace" / "task3-result.json").read_text(encoding="utf-8")
+    )
+    assert trace["status"] == "parsed"
+    assert len(trace["events"]) == 3
+    host_warning = next(
+        warning for warning in trace["warnings"] if warning["code"] == "host_input_not_authorized"
+    )
+    assert host_warning["location"] == "codex"
+    assert "未获授权" in host_warning["message"]
+    # With multiple contributing hosts every warning location is host-prefixed.
+    assert all(
+        warning["location"].startswith(("claude-code.", "codex", "trace_merge"))
+        for warning in trace["warnings"]
+    )
+
+
+def test_run_reports_missing_authorized_host_file_alongside_parsed_host(
+    sample_project: Path,
+) -> None:
+    missing_codex = sample_project / "missing-codex-session.jsonl"
+
+    exit_code = main(
+        [
+            "run",
+            str(sample_project),
+            "--no-git",
+            "--claude-code-export",
+            str(CLAUDE_FIXTURE),
+            "--authorize-claude-code-export",
+            str(CLAUDE_FIXTURE),
+            "--codex-export",
+            str(missing_codex),
+            "--authorize-codex-export",
+            str(missing_codex),
+        ]
+    )
+
+    assert exit_code == 0
+    trace = json.loads(
+        (sample_project / ".learntrace" / "task3-result.json").read_text(encoding="utf-8")
+    )
+    assert trace["status"] == "parsed"
+    host_warning = next(
+        warning for warning in trace["warnings"] if warning["code"] == "host_authorized_not_found"
+    )
+    assert host_warning["location"] == "codex"
+    assert "未找到" in host_warning["message"]
+
+
+@pytest.mark.parametrize(
+    "conflicting_args",
+    [
+        ["--claude-code-export", "session.jsonl"],
+        ["--authorize-claude-code-export", "session.jsonl"],
+        ["--codex-export", "session.jsonl"],
+        ["--authorize-codex-export", "session.jsonl"],
+    ],
+)
+def test_run_confirmation_stage_rejects_agent_trace_flags(
+    sample_project: Path,
+    capsys: pytest.CaptureFixture[str],
+    conflicting_args: list[str],
+) -> None:
+    with pytest.raises(SystemExit) as exc_info:
+        main(
+            [
+                "run",
+                str(sample_project),
+                "--confirmations",
+                "confirmations.json",
+                *conflicting_args,
+            ]
+        )
+
+    assert exc_info.value.code == 1
+    error = capsys.readouterr().err
+    assert "reuses the existing analysis snapshot" in error
+    assert "cannot be combined with evidence collection options" in error

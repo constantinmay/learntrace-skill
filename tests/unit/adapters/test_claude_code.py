@@ -278,9 +278,11 @@ def test_duplicate_tool_call_is_skipped(tmp_path: Path) -> None:
     assert any(warning.code == "duplicate_tool_call" for warning in result.warnings)
 
 
-def test_event_cap_keeps_earliest_events_deterministically(
+def test_event_cap_stops_constructing_events_at_the_limit(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """Beyond the cap no further events are built, so parse memory stays bounded."""
+
     records: list[dict[str, Any]] = []
     for index in range(3):
         block_id = f"toolu_{index}"
@@ -301,7 +303,123 @@ def test_event_cap_keeps_earliest_events_deterministically(
     assert len(result.events) == 2
     assert result.events[0].occurred_at == "2026-08-20T10:00:00Z"
     assert result.events[1].occurred_at == "2026-08-20T10:00:01Z"
-    assert any(warning.code == "event_cap_reached" for warning in result.warnings)
+    cap_warning = next(
+        warning for warning in result.warnings if warning.code == "event_cap_reached"
+    )
+    assert "其余 1 条工具记录未导入" in cap_warning.message
+
+
+def test_event_cap_keeps_file_order_not_global_earliest(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The cap is enforced while streaming, not by keeping globally earliest events."""
+
+    timestamps = ("2026-08-20T10:00:02Z", "2026-08-20T10:00:00Z", "2026-08-20T10:00:01Z")
+    records: list[dict[str, Any]] = []
+    for index, timestamp in enumerate(timestamps):
+        block_id = f"toolu_{index}"
+        records.append(
+            _assistant_record(
+                _tool_use_block(block_id=block_id),
+                message_id=f"msg_{index}",
+                timestamp=timestamp,
+            )
+        )
+        records.append(_user_record(_tool_result_block(block_id)))
+    session_path = _write_session(tmp_path / "session.jsonl", *records)
+
+    monkeypatch.setattr("learntrace.adapters.claude_code._MAX_EVENTS_PER_SESSION", 2)
+
+    result = adapt_claude_code_export(session_path, authorized=True)
+
+    assert len(result.events) == 2
+    kept_ids = {event.occurred_at for event in result.events}
+    assert kept_ids == {"2026-08-20T10:00:02Z", "2026-08-20T10:00:00Z"}
+
+
+def test_tracked_call_cap_bounds_pending_growth(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    records: list[dict[str, Any]] = []
+    for index in range(3):
+        records.append(
+            _assistant_record(
+                _tool_use_block(block_id=f"toolu_{index}"),
+                message_id=f"msg_{index}",
+            )
+        )
+    session_path = _write_session(tmp_path / "session.jsonl", *records)
+
+    monkeypatch.setattr("learntrace.adapters.claude_code._MAX_TRACKED_CALLS", 2)
+
+    result = adapt_claude_code_export(session_path, authorized=True)
+
+    assert result.events == ()
+    incomplete = [w for w in result.warnings if w.code == "incomplete_tool_call"]
+    assert len(incomplete) == 2
+    cap_warning = next(
+        warning for warning in result.warnings if warning.code == "tracked_call_cap_reached"
+    )
+    assert "其余 1 条调用记录未导入" in cap_warning.message
+
+
+def test_warning_cap_collapses_repeated_issues_into_one_summary(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    lines = ["{ not valid json with tool_use marker"] * 10
+    session_path = tmp_path / "session.jsonl"
+    session_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+    monkeypatch.setattr("learntrace.adapters._jsonl._MAX_WARNINGS_PER_SESSION", 3)
+
+    result = adapt_claude_code_export(session_path, authorized=True)
+
+    detailed = [w for w in result.warnings if w.code == "invalid_line"]
+    assert len(detailed) == 3
+    summary = next(warning for warning in result.warnings if warning.code == "warning_cap_reached")
+    assert "另有 7 条警告" in summary.message
+
+
+def test_final_line_over_the_size_limit_is_rejected(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A marker-bearing final line without a newline still hits the size limit."""
+
+    session_path = tmp_path / "session.jsonl"
+    valid = _assistant_record(_tool_use_block(), message_id="msg_valid")
+    session_path.write_text(
+        json.dumps(valid, ensure_ascii=False)
+        + "\n"
+        + '{"type": "assistant", "tool_use": "'
+        + "x" * 512
+        + '"}',
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr("learntrace.adapters._jsonl._MAX_LINE_BYTES", 64)
+
+    result = adapt_claude_code_export(session_path, authorized=True)
+
+    assert result.events == ()
+    assert any(warning.code == "line_too_large" for warning in result.warnings)
+    assert not any(warning.code == "truncated_final_line" for warning in result.warnings)
+
+
+def test_marker_free_final_line_is_never_parsed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A marker-free final line cannot reach JSON parsing even without a newline."""
+
+    session_path = tmp_path / "session.jsonl"
+    session_path.write_text(
+        '{"type": "assistant", "message": {"content": "not-a-list"',
+        encoding="utf-8",
+    )
+
+    result = adapt_claude_code_export(session_path, authorized=True)
+
+    assert result.events == ()
+    assert result.warnings == ()
 
 
 def test_exports_require_per_path_authorization(tmp_path: Path) -> None:

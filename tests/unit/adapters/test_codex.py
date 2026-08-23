@@ -83,6 +83,14 @@ def _call_output(
     }
 
 
+def _raw_call_output(call_id: str = "call_main", *, output: str) -> dict[str, Any]:
+    return {
+        "timestamp": "2026-08-20T10:00:03.000Z",
+        "type": "response_item",
+        "payload": {"type": "function_call_output", "call_id": call_id, "output": output},
+    }
+
+
 def _write_session(path: Path, *records: dict[str, Any]) -> Path:
     text = "".join(f"{json.dumps(record, ensure_ascii=False)}\n" for record in records)
     path.write_text(text, encoding="utf-8")
@@ -288,9 +296,11 @@ def test_duplicate_call_is_skipped(tmp_path: Path) -> None:
     assert any(warning.code == "duplicate_tool_call" for warning in result.warnings)
 
 
-def test_event_cap_keeps_earliest_events_deterministically(
+def test_event_cap_stops_constructing_events_at_the_limit(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """Beyond the cap no further events are built, so parse memory stays bounded."""
+
     records: list[dict[str, Any]] = [_session_meta()]
     for index in range(3):
         records.append(
@@ -309,7 +319,144 @@ def test_event_cap_keeps_earliest_events_deterministically(
     assert len(result.events) == 2
     assert result.events[0].occurred_at == "2026-08-20T10:00:01Z"
     assert result.events[1].occurred_at == "2026-08-20T10:00:02Z"
-    assert any(warning.code == "event_cap_reached" for warning in result.warnings)
+    cap_warning = next(
+        warning for warning in result.warnings if warning.code == "event_cap_reached"
+    )
+    assert "其余 1 条工具记录未导入" in cap_warning.message
+
+
+def test_text_exit_code_in_plain_output_is_recognized_as_error(tmp_path: Path) -> None:
+    session_path = _write_session(
+        tmp_path / "session.jsonl",
+        _session_meta(),
+        _function_call(),
+        _raw_call_output(output="Exit code: 1"),
+    )
+
+    result = adapt_codex_export(session_path, authorized=True)
+
+    assert len(result.events) == 1
+    assert result.events[0].summary == "Codex 工具 shell 以错误结束。 命令类型：bash。"
+
+
+def test_process_exited_with_code_text_is_recognized_as_error(tmp_path: Path) -> None:
+    session_path = _write_session(
+        tmp_path / "session.jsonl",
+        _session_meta(),
+        _function_call(),
+        _raw_call_output(output="Process exited with code 1"),
+    )
+
+    result = adapt_codex_export(session_path, authorized=True)
+
+    assert len(result.events) == 1
+    assert "以错误结束" in result.events[0].summary
+
+
+def test_zero_text_exit_code_is_reported_as_completed(tmp_path: Path) -> None:
+    session_path = _write_session(
+        tmp_path / "session.jsonl",
+        _session_meta(),
+        _function_call(),
+        _raw_call_output(output="Exit code: 0"),
+    )
+
+    result = adapt_codex_export(session_path, authorized=True)
+
+    assert len(result.events) == 1
+    assert "已完成" in result.events[0].summary
+
+
+def test_top_level_exit_code_json_is_recognized_as_error(tmp_path: Path) -> None:
+    session_path = _write_session(
+        tmp_path / "session.jsonl",
+        _session_meta(),
+        _function_call(),
+        _raw_call_output(output='{"exit_code": 1}'),
+    )
+
+    result = adapt_codex_export(session_path, authorized=True)
+
+    assert len(result.events) == 1
+    assert "以错误结束" in result.events[0].summary
+
+
+def test_unconfirmable_exit_status_is_reported_as_unknown(tmp_path: Path) -> None:
+    """A result without any observable exit signal must not claim success."""
+
+    session_path = _write_session(
+        tmp_path / "session.jsonl",
+        _session_meta(),
+        _function_call(),
+        _raw_call_output(output='{"output": "some tool output"}'),
+    )
+
+    result = adapt_codex_export(session_path, authorized=True)
+
+    assert len(result.events) == 1
+    assert result.events[0].summary == "Codex 工具 shell 结束（状态未知）。 命令类型：bash。"
+
+
+def test_custom_tool_call_is_reported_as_unsupported(tmp_path: Path) -> None:
+    session_path = _write_session(
+        tmp_path / "session.jsonl",
+        _session_meta(),
+        {
+            "timestamp": "2026-08-20T10:00:02.000Z",
+            "type": "response_item",
+            "payload": {
+                "type": "custom_tool_call",
+                "call_id": "call_custom",
+                "name": "web_search",
+                "input": "FORBIDDEN_TOOL_INPUT",
+            },
+        },
+    )
+
+    result = adapt_codex_export(session_path, authorized=True)
+
+    assert result.events == ()
+    assert any(warning.code == "unsupported_call_type" for warning in result.warnings)
+    serialized = json.dumps([warning.message for warning in result.warnings], ensure_ascii=False)
+    assert "FORBIDDEN_TOOL_INPUT" not in serialized
+
+
+def test_tracked_call_cap_bounds_pending_growth(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    records: list[dict[str, Any]] = [_session_meta()]
+    for index in range(3):
+        records.append(_function_call(call_id=f"call_{index}"))
+    session_path = _write_session(tmp_path / "session.jsonl", *records)
+
+    monkeypatch.setattr("learntrace.adapters.codex._MAX_TRACKED_CALLS", 2)
+
+    result = adapt_codex_export(session_path, authorized=True)
+
+    assert result.events == ()
+    incomplete = [w for w in result.warnings if w.code == "incomplete_tool_call"]
+    assert len(incomplete) == 2
+    cap_warning = next(
+        warning for warning in result.warnings if warning.code == "tracked_call_cap_reached"
+    )
+    assert "其余 1 条调用记录未导入" in cap_warning.message
+
+
+def test_warning_cap_collapses_repeated_issues_into_one_summary(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    lines = ['{"type": "response_item", "payload": {"type": "function_call"'] * 10
+    session_path = tmp_path / "session.jsonl"
+    session_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+    monkeypatch.setattr("learntrace.adapters._jsonl._MAX_WARNINGS_PER_SESSION", 3)
+
+    result = adapt_codex_export(session_path, authorized=True)
+
+    detailed = [w for w in result.warnings if w.code == "invalid_line"]
+    assert len(detailed) == 3
+    summary = next(warning for warning in result.warnings if warning.code == "warning_cap_reached")
+    assert "另有 7 条警告" in summary.message
 
 
 def test_fixture_session_is_safely_adapted_without_leaks() -> None:
