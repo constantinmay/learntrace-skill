@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import TypeGuard, cast
 from urllib.parse import quote
 
-from learntrace.adapters._jsonl import iter_jsonl_records
+from learntrace.adapters._jsonl import WarningLog, iter_jsonl_records
 from learntrace.adapters.types import (
     TraceAdapterResult,
     TraceInputStatus,
@@ -32,6 +32,7 @@ from learntrace.privacy import (
 )
 
 _MAX_EVENTS_PER_SESSION = 2000
+_MAX_TRACKED_CALLS = 2000
 _FILE_TOOLS = frozenset({"read", "write", "edit", "notebookedit"})
 _KNOWN_BLOCK_TYPES = frozenset({"text", "thinking", "redacted_thinking", "tool_result", "image"})
 _LINE_MARKERS = ("tool_use", "tool_result")
@@ -49,10 +50,6 @@ class _PendingCall:
     location: str
 
 
-def _issue(code: str, location: str, message: str) -> TraceParseIssue:
-    return TraceParseIssue(code=code, location=location, message=message)
-
-
 def _is_safe_external_id(value: object) -> TypeGuard[str]:
     return isinstance(value, str) and _SAFE_EXTERNAL_ID_RE.fullmatch(value) is not None
 
@@ -67,12 +64,12 @@ def _occurred_at(
     value: object,
     *,
     location: str,
-    warnings: list[TraceParseIssue],
+    warnings: WarningLog,
 ) -> str | None:
     if value is None:
         return None
     if not isinstance(value, str):
-        warnings.append(_issue("invalid_timestamp", location, "工具开始时间无效，已省略。"))
+        warnings.add("invalid_timestamp", location, "工具开始时间无效，已省略。")
         return None
     text = value.strip()
     if text.endswith(("Z", "z")):
@@ -80,7 +77,7 @@ def _occurred_at(
     try:
         timestamp = datetime.fromisoformat(text)
     except ValueError:
-        warnings.append(_issue("invalid_timestamp", location, "工具开始时间无效，已省略。"))
+        warnings.add("invalid_timestamp", location, "工具开始时间无效，已省略。")
         return None
     if timestamp.tzinfo is None:
         timestamp = timestamp.replace(tzinfo=UTC)
@@ -129,6 +126,10 @@ def _event_sort_key(event: ObservableEvent) -> tuple[bool, str, str]:
     )
 
 
+def _sorted_issues(issues: list[TraceParseIssue]) -> list[TraceParseIssue]:
+    return sorted(issues, key=lambda issue: (issue.location, issue.code, issue.message))
+
+
 def _resolve_session_id(
     record: dict[str, object],
     resolved: str | None,
@@ -151,21 +152,27 @@ def _collect_tool_calls(
     line_number: int,
     *,
     session_id: str,
-    warnings: list[TraceParseIssue],
+    warnings: WarningLog,
     pending: dict[str, _PendingCall],
     seen_calls: set[tuple[str, str, str]],
-) -> None:
+) -> int:
+    """Collect tool calls from one assistant record.
+
+    Returns the number of calls dropped because the tracked-call cap was
+    already reached, so parse-phase memory stays bounded.
+    """
+
     line_location = f"lines[{line_number - 1}]"
     message_value = record.get("message")
     if not isinstance(message_value, dict):
-        warnings.append(_issue("invalid_record", line_location, "记录结构无效，已跳过。"))
-        return
+        warnings.add("invalid_record", line_location, "记录结构无效，已跳过。")
+        return 0
     message = cast("dict[str, object]", message_value)
     message_id = record.get("uuid")
     content_value = message.get("content")
     if not _is_safe_external_id(message_id) or not isinstance(content_value, list):
-        warnings.append(_issue("invalid_record", line_location, "记录结构无效，已跳过。"))
-        return
+        warnings.add("invalid_record", line_location, "记录结构无效，已跳过。")
+        return 0
     content = cast("list[object]", content_value)
     timestamp = _occurred_at(
         record.get("timestamp"),
@@ -173,19 +180,18 @@ def _collect_tool_calls(
         warnings=warnings,
     )
 
+    dropped = 0
     for block_index, block_value in enumerate(content):
         block_location = f"{line_location}.content[{block_index}]"
         if not isinstance(block_value, dict):
-            warnings.append(
-                _issue("invalid_tool_call", block_location, "工具记录结构无效，已跳过。")
-            )
+            warnings.add("invalid_tool_call", block_location, "工具记录结构无效，已跳过。")
             continue
         block = cast("dict[str, object]", block_value)
         block_type = block.get("type")
         if block_type != "tool_use":
             if isinstance(block_type, str) and block_type in _KNOWN_BLOCK_TYPES:
                 continue
-            warnings.append(_issue("unknown_block_type", block_location, "未知记录类型，已跳过。"))
+            warnings.add("unknown_block_type", block_location, "未知记录类型，已跳过。")
             continue
 
         tool_use_id = block.get("id")
@@ -197,14 +203,15 @@ def _collect_tool_calls(
             or not tool
             or not isinstance(input_value, dict)
         ):
-            warnings.append(
-                _issue("invalid_tool_call", block_location, "工具记录结构无效，已跳过。")
-            )
+            warnings.add("invalid_tool_call", block_location, "工具记录结构无效，已跳过。")
             continue
 
+        if len(seen_calls) >= _MAX_TRACKED_CALLS:
+            dropped += 1
+            continue
         identity = (session_id, message_id, tool_use_id)
         if identity in seen_calls:
-            warnings.append(_issue("duplicate_tool_call", block_location, "重复工具记录已跳过。"))
+            warnings.add("duplicate_tool_call", block_location, "重复工具记录已跳过。")
             continue
         seen_calls.add(identity)
         pending[tool_use_id] = _PendingCall(
@@ -215,13 +222,14 @@ def _collect_tool_calls(
             occurred_at=timestamp,
             location=block_location,
         )
+    return dropped
 
 
 def _matched_tool_results(
     record: dict[str, object],
     line_number: int,
     *,
-    warnings: list[TraceParseIssue],
+    warnings: WarningLog,
     pending: dict[str, _PendingCall],
 ) -> list[tuple[_PendingCall, bool]]:
     line_location = f"lines[{line_number - 1}]"
@@ -242,15 +250,11 @@ def _matched_tool_results(
             continue
         tool_use_id = block.get("tool_use_id")
         if not _is_safe_external_id(tool_use_id):
-            warnings.append(
-                _issue("invalid_tool_result", line_location, "工具结果记录结构无效，已跳过。")
-            )
+            warnings.add("invalid_tool_result", line_location, "工具结果记录结构无效，已跳过。")
             continue
         pending_call = pending.pop(tool_use_id, None)
         if pending_call is None:
-            warnings.append(
-                _issue("orphan_tool_result", line_location, "未找到对应工具调用的结果，已跳过。")
-            )
+            warnings.add("orphan_tool_result", line_location, "未找到对应工具调用的结果，已跳过。")
             continue
         matched.append((pending_call, block.get("is_error") is True))
     return matched
@@ -298,7 +302,9 @@ def adapt_claude_code_export(
 
     A tool call becomes an event only when its ``tool_result`` arrives, so the
     recorded status is observed rather than inferred. Result payloads are never
-    copied; only the ``is_error`` flag is read.
+    copied; only the ``is_error`` flag is read. Parse-phase memory is bounded:
+    event construction, warning collection and unmatched-call tracking all
+    stop at their caps with a summary warning.
     """
 
     if not authorized:
@@ -312,12 +318,14 @@ def adapt_claude_code_export(
     if not is_file:
         return TraceAdapterResult(status=TraceInputStatus.AUTHORIZED_NOT_FOUND)
 
-    warnings: list[TraceParseIssue] = []
+    warnings = WarningLog()
     event_validator = validator if validator is not None else ContractValidator()
     events: list[ObservableEvent] = []
     pending: dict[str, _PendingCall] = {}
     seen_calls: set[tuple[str, str, str]] = set()
     resolved_session: str | None = None
+    dropped_events = 0
+    dropped_calls = 0
 
     for line_number, record in iter_jsonl_records(
         export_path,
@@ -334,7 +342,7 @@ def adapt_claude_code_export(
             export_path=export_path,
         )
         if record_type == "assistant":
-            _collect_tool_calls(
+            dropped_calls += _collect_tool_calls(
                 record,
                 line_number,
                 session_id=resolved_session,
@@ -349,6 +357,9 @@ def adapt_claude_code_export(
             warnings=warnings,
             pending=pending,
         ):
+            if len(events) >= _MAX_EVENTS_PER_SESSION:
+                dropped_events += 1
+                continue
             events.append(
                 _build_event(
                     pending_call,
@@ -360,34 +371,37 @@ def adapt_claude_code_export(
             )
 
     for unmatched in sorted(pending.values(), key=lambda call: call.location):
-        warnings.append(
-            _issue(
-                "incomplete_tool_call",
-                unmatched.location,
-                "工具调用未观察到结果记录，已跳过。",
-            )
+        warnings.add(
+            "incomplete_tool_call",
+            unmatched.location,
+            "工具调用未观察到结果记录，已跳过。",
+        )
+    if dropped_events:
+        warnings.add(
+            "event_cap_reached",
+            "events",
+            (
+                f"单会话轨迹事件达到 {_MAX_EVENTS_PER_SESSION} 条上限，"
+                f"其余 {dropped_events} 条工具记录未导入。"
+            ),
+        )
+    if dropped_calls:
+        warnings.add(
+            "tracked_call_cap_reached",
+            "pending",
+            (
+                f"未配对工具调用跟踪达到 {_MAX_TRACKED_CALLS} 条上限，"
+                f"其余 {dropped_calls} 条调用记录未导入。"
+            ),
         )
 
     events.sort(key=_event_sort_key)
-    skipped = len(events) - _MAX_EVENTS_PER_SESSION
-    if skipped > 0:
-        events = events[:_MAX_EVENTS_PER_SESSION]
-        warnings.append(
-            _issue(
-                "event_cap_reached",
-                "events",
-                (
-                    f"单会话轨迹事件超过 {_MAX_EVENTS_PER_SESSION} 条上限，"
-                    f"已保留最早的 {len(events)} 条。"
-                ),
-            )
-        )
-    warnings.sort(key=lambda issue: (issue.location, issue.code, issue.message))
+    issues = _sorted_issues(warnings.finalize())
     result_status = TraceInputStatus.PARSED if events else TraceInputStatus.AUTHORIZED_NOT_FOUND
     return TraceAdapterResult(
         status=result_status,
         events=tuple(events),
-        warnings=tuple(warnings),
+        warnings=tuple(issues),
     )
 
 
@@ -420,17 +434,15 @@ def adapt_claude_code_exports(
         return TraceAdapterResult(status=TraceInputStatus.NOT_AUTHORIZED)
 
     events_by_id: dict[str, ObservableEvent] = {}
-    warnings: list[TraceParseIssue] = []
+    warnings = WarningLog()
     any_authorized = False
     for export_index, export_path in enumerate(export_paths):
         prefix = f"exports[{export_index}]"
         if _path_key(export_path) not in authorized_keys:
-            warnings.append(
-                _issue(
-                    "export_not_authorized",
-                    prefix,
-                    "该 Claude Code 会话文件未获单独授权，未读取。",
-                )
+            warnings.add(
+                "export_not_authorized",
+                prefix,
+                "该 Claude Code 会话文件未获单独授权，未读取。",
             )
             continue
         any_authorized = True
@@ -441,7 +453,11 @@ def adapt_claude_code_exports(
             validator=validator,
         )
         warnings.extend(
-            _issue(issue.code, f"{prefix}.{issue.location}", issue.message)
+            TraceParseIssue(
+                code=issue.code,
+                location=f"{prefix}.{issue.location}",
+                message=issue.message,
+            )
             for issue in result.warnings
         )
         duplicate_count = 0
@@ -456,25 +472,22 @@ def adapt_claude_code_exports(
                 )
             duplicate_count += 1
         if duplicate_count:
-            warnings.append(
-                _issue(
-                    "duplicate_export_event",
-                    prefix,
-                    f"与先前会话重叠的 {duplicate_count} 条工具记录已去重。",
-                )
+            warnings.add(
+                "duplicate_export_event",
+                prefix,
+                f"与先前会话重叠的 {duplicate_count} 条工具记录已去重。",
             )
 
     if not any_authorized:
         return TraceAdapterResult(
             status=TraceInputStatus.NOT_AUTHORIZED,
-            warnings=tuple(warnings),
+            warnings=tuple(_sorted_issues(warnings.finalize())),
         )
     events = tuple(sorted(events_by_id.values(), key=_event_sort_key))
-    warnings.sort(key=lambda issue: (issue.location, issue.code, issue.message))
     return TraceAdapterResult(
         status=(TraceInputStatus.PARSED if events else TraceInputStatus.AUTHORIZED_NOT_FOUND),
         events=events,
-        warnings=tuple(warnings),
+        warnings=tuple(_sorted_issues(warnings.finalize())),
     )
 
 

@@ -247,13 +247,15 @@ def _ai_collaboration_lines(bundle: ArchiveBundle) -> list[str]:
         tool = match.group("tool") if match else "其他工具"
         if "未完成" in event.summary or "incomplete" in event.summary.casefold():
             status = "incomplete"
+        elif "状态未知" in event.summary:
+            status = "unknown"
         elif "错误" in event.summary or "error" in event.summary.casefold():
             status = "error"
         else:
             status = "completed"
         tool_counts = counts.setdefault(
             tool,
-            {"completed": 0, "error": 0, "incomplete": 0},
+            {"completed": 0, "error": 0, "incomplete": 0, "unknown": 0},
         )
         tool_counts[status] += 1
     if not counts:
@@ -262,14 +264,15 @@ def _ai_collaboration_lines(bundle: ArchiveBundle) -> list[str]:
     for tool, values in sorted(
         counts.items(),
         key=lambda item: (
-            -(item[1]["completed"] + item[1]["error"] + item[1]["incomplete"]),
+            -(item[1]["completed"] + item[1]["error"] + item[1]["incomplete"] + item[1]["unknown"]),
             item[0],
         ),
     ):
-        total = values["completed"] + values["error"] + values["incomplete"]
+        total = values["completed"] + values["error"] + values["incomplete"] + values["unknown"]
         lines.append(
             f"- {tool}：共 {total} 次，完成 {values['completed']} 次，"
-            f"错误 {values['error']} 次，未完成 {values['incomplete']} 次。"
+            f"错误 {values['error']} 次，未完成 {values['incomplete']} 次，"
+            f"状态未知 {values['unknown']} 次。"
         )
     if excluded:
         lines.append(f"- 另有 {excluded} 条越界或低信号轨迹未纳入协作概览。")
