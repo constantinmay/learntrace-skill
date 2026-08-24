@@ -225,7 +225,10 @@ def _merge_trace_results(
                 TraceParseIssue(
                     code="host_authorized_not_found",
                     location=host,
-                    message=f"宿主 {host} 的会话文件未找到，未读取。",
+                    message=(
+                        f"宿主 {host} 的授权输入未产生可导入事件；"
+                        "文件可能不存在，或其中没有受支持的轨迹记录。"
+                    ),
                 )
             )
         for event in result.events:
