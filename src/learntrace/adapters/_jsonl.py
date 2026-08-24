@@ -12,32 +12,48 @@ from learntrace.adapters.types import TraceParseIssue, UnsupportedTraceFormatErr
 _MAX_SESSION_BYTES = 256 * 1024 * 1024
 _MAX_LINE_BYTES = 16 * 1024 * 1024
 _MAX_WARNINGS_PER_SESSION = 200
+_SUMMARY_WARNING_CODES = frozenset(
+    {"warning_cap_reached", "event_cap_reached", "tracked_call_cap_reached"}
+)
 
 
 class WarningLog:
     """Collect parse warnings with a hard cap to bound parse-phase memory.
 
     Detailed issues are kept until the cap; beyond it only a count is kept and
-    a single summary warning is appended by :meth:`finalize`.
+    a single summary warning is appended by :meth:`finalize`. Summary warnings
+    (cap-reached rollups) live on a separate channel so they always survive
+    regardless of how many detailed issues were dropped; :meth:`add` and
+    :meth:`extend` route known summary codes there automatically, which keeps
+    summaries intact when a caller re-logs another adapter's result.
     """
 
     def __init__(self) -> None:
         self._issues: list[TraceParseIssue] = []
+        self._summaries: list[TraceParseIssue] = []
         self._dropped = 0
 
     def add(self, code: str, location: str, message: str) -> None:
+        if code in _SUMMARY_WARNING_CODES:
+            self.add_summary(code, location, message)
+            return
         if len(self._issues) < _MAX_WARNINGS_PER_SESSION:
             self._issues.append(TraceParseIssue(code=code, location=location, message=message))
         else:
             self._dropped += 1
+
+    def add_summary(self, code: str, location: str, message: str) -> None:
+        """Record a cap-reached summary that never counts against the detail cap."""
+        self._summaries.append(TraceParseIssue(code=code, location=location, message=message))
 
     def extend(self, issues: Iterable[TraceParseIssue]) -> None:
         for issue in issues:
             self.add(issue.code, issue.location, issue.message)
 
     def finalize(self) -> list[TraceParseIssue]:
+        """Return detailed issues followed by summaries; call exactly once."""
         if self._dropped:
-            self._issues.append(
+            self._summaries.append(
                 TraceParseIssue(
                     code="warning_cap_reached",
                     location="warnings",
@@ -47,7 +63,7 @@ class WarningLog:
                     ),
                 )
             )
-        return self._issues
+        return [*self._issues, *self._summaries]
 
 
 def _decode_line(

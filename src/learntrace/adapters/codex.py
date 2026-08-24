@@ -109,6 +109,21 @@ def _joined_command_tokens(command: object) -> str | None:
     return " ".join(tokens) if tokens else None
 
 
+def _exceeds_argument_cap(value: str) -> bool:
+    """Return True when ``value`` exceeds the byte cap once UTF-8 encoded.
+
+    The character count bounds the byte length between ``len(value)`` and
+    ``4 * len(value)``, so only the ambiguous middle range pays for an actual
+    encoding pass.
+    """
+
+    if len(value) > _MAX_ARGUMENT_BYTES:
+        return True
+    if len(value) * 4 <= _MAX_ARGUMENT_BYTES:
+        return False
+    return len(value.encode("utf-8")) > _MAX_ARGUMENT_BYTES
+
+
 def _command_from_arguments(value: object) -> str | None:
     """Extract a conservative command label from JSON-encoded call arguments.
 
@@ -116,7 +131,7 @@ def _command_from_arguments(value: object) -> str | None:
     contents that must not reach the parser in the first place.
     """
 
-    if not isinstance(value, str) or not value or len(value) > _MAX_ARGUMENT_BYTES:
+    if not isinstance(value, str) or not value or _exceeds_argument_cap(value):
         return None
     try:
         parsed: object = json.loads(value)
@@ -159,7 +174,7 @@ def _output_exit_status(value: object) -> bool | None:
     outcome is never silently reported as success.
     """
 
-    if not isinstance(value, str) or not value or len(value) > _MAX_ARGUMENT_BYTES:
+    if not isinstance(value, str) or not value or _exceeds_argument_cap(value):
         return None
     try:
         parsed: object = json.loads(value)
@@ -386,7 +401,7 @@ def adapt_codex_export(
             "工具调用未观察到结果记录，已跳过。",
         )
     if dropped_events:
-        warnings.add(
+        warnings.add_summary(
             "event_cap_reached",
             "events",
             (
@@ -395,7 +410,7 @@ def adapt_codex_export(
             ),
         )
     if dropped_calls:
-        warnings.add(
+        warnings.add_summary(
             "tracked_call_cap_reached",
             "pending",
             (

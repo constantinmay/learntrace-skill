@@ -377,7 +377,7 @@ def adapt_claude_code_export(
             "工具调用未观察到结果记录，已跳过。",
         )
     if dropped_events:
-        warnings.add(
+        warnings.add_summary(
             "event_cap_reached",
             "events",
             (
@@ -386,7 +386,7 @@ def adapt_claude_code_export(
             ),
         )
     if dropped_calls:
-        warnings.add(
+        warnings.add_summary(
             "tracked_call_cap_reached",
             "pending",
             (
