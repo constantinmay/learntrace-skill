@@ -224,7 +224,54 @@ def test_run_reports_missing_authorized_host_file_alongside_parsed_host(
         warning for warning in trace["warnings"] if warning["code"] == "host_authorized_not_found"
     )
     assert host_warning["location"] == "codex"
-    assert "未找到" in host_warning["message"]
+    assert "未产生可导入事件" in host_warning["message"]
+
+
+def test_run_reports_authorized_host_without_events_alongside_parsed_host(
+    sample_project: Path,
+) -> None:
+    """An existing but event-less session must not be reported as missing."""
+
+    empty_codex = sample_project / "empty-codex-session.jsonl"
+    empty_codex.write_text(
+        json.dumps(
+            {
+                "timestamp": "2026-08-23T00:00:00.000Z",
+                "type": "session_meta",
+                "payload": {"id": "ses_cli_empty", "cwd": "/private/project"},
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    exit_code = main(
+        [
+            "run",
+            str(sample_project),
+            "--no-git",
+            "--claude-code-export",
+            str(CLAUDE_FIXTURE),
+            "--authorize-claude-code-export",
+            str(CLAUDE_FIXTURE),
+            "--codex-export",
+            str(empty_codex),
+            "--authorize-codex-export",
+            str(empty_codex),
+        ]
+    )
+
+    assert exit_code == 0
+    trace = json.loads(
+        (sample_project / ".learntrace" / "task3-result.json").read_text(encoding="utf-8")
+    )
+    assert trace["status"] == "parsed"
+    host_warning = next(
+        warning for warning in trace["warnings"] if warning["code"] == "host_authorized_not_found"
+    )
+    assert host_warning["location"] == "codex"
+    assert "未产生可导入事件" in host_warning["message"]
+    assert "未找到" not in host_warning["message"]
 
 
 @pytest.mark.parametrize(

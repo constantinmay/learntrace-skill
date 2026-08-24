@@ -64,7 +64,9 @@ learntrace adapt <session-1.jsonl> <session-2.jsonl> `
   行一样先经过大小与标记检查，通过后才容忍解析并警告；
 - 解析阶段的累积同样有上限：单会话事件达到 2000 条后不再构造新事件，警告最多保留
   200 条（超出部分汇总为一条），未配对调用跟踪达到 2000 条后不再积累；多宿主合并
-  总量上限 10000 条。各上限触发时均记录汇总警告。
+  总量上限 10000 条。各上限触发时均记录汇总警告（`event_cap_reached` /
+  `tracked_call_cap_reached` / `warning_cap_reached`），且汇总警告不占用 200 条
+  详细警告配额，即使详细警告超限被丢弃也始终保留。
 
 测试样例 `tests/fixtures/codex/authorized-session.jsonl` 是人工编写的数据，
 不来自真实会话。

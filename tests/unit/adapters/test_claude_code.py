@@ -380,6 +380,58 @@ def test_warning_cap_collapses_repeated_issues_into_one_summary(
     assert "另有 7 条警告" in summary.message
 
 
+def test_event_cap_summary_survives_detail_warning_cap(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Truncation summaries survive even when detail warnings were dropped."""
+
+    lines = ["{ not valid json with tool_use marker"] * 5
+    records = [
+        _assistant_record(_tool_use_block(block_id="toolu_a"), message_id="msg_a"),
+        _user_record(_tool_result_block("toolu_a")),
+        _assistant_record(_tool_use_block(block_id="toolu_b"), message_id="msg_b"),
+        _user_record(_tool_result_block("toolu_b")),
+    ]
+    lines.extend(json.dumps(record, ensure_ascii=False) for record in records)
+    session_path = tmp_path / "session.jsonl"
+    session_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+    monkeypatch.setattr("learntrace.adapters._jsonl._MAX_WARNINGS_PER_SESSION", 3)
+    monkeypatch.setattr("learntrace.adapters.claude_code._MAX_EVENTS_PER_SESSION", 1)
+
+    result = adapt_claude_code_export(session_path, authorized=True)
+
+    assert len(result.events) == 1
+    codes = {warning.code for warning in result.warnings}
+    assert "warning_cap_reached" in codes
+    assert "event_cap_reached" in codes
+
+
+def test_tracked_call_cap_summary_survives_detail_warning_cap(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The pending-call cap summary survives a full detail warning quota too."""
+
+    lines = ["{ not valid json with tool_use marker"] * 5
+    records = [
+        _assistant_record(_tool_use_block(block_id="toolu_a"), message_id="msg_a"),
+        _assistant_record(_tool_use_block(block_id="toolu_b"), message_id="msg_b"),
+    ]
+    lines.extend(json.dumps(record, ensure_ascii=False) for record in records)
+    session_path = tmp_path / "session.jsonl"
+    session_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+    monkeypatch.setattr("learntrace.adapters._jsonl._MAX_WARNINGS_PER_SESSION", 3)
+    monkeypatch.setattr("learntrace.adapters.claude_code._MAX_TRACKED_CALLS", 1)
+
+    result = adapt_claude_code_export(session_path, authorized=True)
+
+    assert result.events == ()
+    codes = {warning.code for warning in result.warnings}
+    assert "warning_cap_reached" in codes
+    assert "tracked_call_cap_reached" in codes
+
+
 def test_final_line_over_the_size_limit_is_rejected(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

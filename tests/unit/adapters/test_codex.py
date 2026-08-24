@@ -459,6 +459,81 @@ def test_warning_cap_collapses_repeated_issues_into_one_summary(
     assert "另有 7 条警告" in summary.message
 
 
+def test_event_cap_summary_survives_detail_warning_cap(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Truncation summaries survive even when detail warnings were dropped."""
+
+    lines = ['{"type": "response_item", "payload": {"type": "function_call"'] * 5
+    records = [
+        _session_meta(),
+        _function_call(call_id="call_a"),
+        _call_output("call_a"),
+        _function_call(call_id="call_b"),
+        _call_output("call_b"),
+    ]
+    lines.extend(json.dumps(record, ensure_ascii=False) for record in records)
+    session_path = tmp_path / "session.jsonl"
+    session_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+    monkeypatch.setattr("learntrace.adapters._jsonl._MAX_WARNINGS_PER_SESSION", 3)
+    monkeypatch.setattr("learntrace.adapters.codex._MAX_EVENTS_PER_SESSION", 1)
+
+    result = adapt_codex_export(session_path, authorized=True)
+
+    assert len(result.events) == 1
+    codes = {warning.code for warning in result.warnings}
+    assert "warning_cap_reached" in codes
+    assert "event_cap_reached" in codes
+
+
+def test_tracked_call_cap_summary_survives_detail_warning_cap(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The pending-call cap summary survives a full detail warning quota too."""
+
+    lines = ['{"type": "response_item", "payload": {"type": "function_call"'] * 5
+    records = [
+        _session_meta(),
+        _function_call(call_id="call_a"),
+        _function_call(call_id="call_b"),
+    ]
+    lines.extend(json.dumps(record, ensure_ascii=False) for record in records)
+    session_path = tmp_path / "session.jsonl"
+    session_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+    monkeypatch.setattr("learntrace.adapters._jsonl._MAX_WARNINGS_PER_SESSION", 3)
+    monkeypatch.setattr("learntrace.adapters.codex._MAX_TRACKED_CALLS", 1)
+
+    result = adapt_codex_export(session_path, authorized=True)
+
+    assert result.events == ()
+    codes = {warning.code for warning in result.warnings}
+    assert "warning_cap_reached" in codes
+    assert "tracked_call_cap_reached" in codes
+
+
+def test_arguments_over_the_byte_cap_are_never_parsed(tmp_path: Path) -> None:
+    """The argument size guard counts UTF-8 bytes, not characters."""
+
+    arguments = json.dumps({"command": "echo " + "啊" * 22000}, ensure_ascii=False)
+    assert len(arguments) < 64 * 1024
+    assert len(arguments.encode("utf-8")) > 64 * 1024
+    session_path = _write_session(
+        tmp_path / "session.jsonl",
+        _session_meta(),
+        _function_call(call_id="call_wide", arguments=arguments),
+        _call_output("call_wide"),
+    )
+
+    result = adapt_codex_export(session_path, authorized=True)
+
+    assert len(result.events) == 1
+    event = result.events[0]
+    assert event.summary == "Codex 工具 shell 已完成。"
+    assert "啊" not in json.dumps(event.to_dict(), ensure_ascii=False)
+
+
 def test_fixture_session_is_safely_adapted_without_leaks() -> None:
     result = adapt_codex_export(FIXTURE_PATH, authorized=True)
 

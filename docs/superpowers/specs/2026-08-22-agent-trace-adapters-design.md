@@ -60,7 +60,7 @@ JSONL 会话适配器，关键决策：
    `exit_code` 与文本形式（"Exit code: N" / "exited with code N"）。render
    协作概览同步增加"状态未知"分类。
 2. **多宿主合并可见性**：任一宿主 parsed 时，未授权
-   （`host_input_not_authorized`）或文件不存在（`host_authorized_not_found`）
+   （`host_input_not_authorized`）或授权输入无可导入事件（`host_authorized_not_found`）
    的宿主会生成明确 warning，部分成功不再表现为整体成功；多宿主场景下 warning
    location 加 `{host}.` 前缀。
 3. **末行检查链补全**：末尾无换行的行不再绕过 16 MiB 单行限制与 marker 预过滤，
@@ -70,8 +70,29 @@ JSONL 会话适配器，关键决策：
    触发时均发汇总警告。事件上限语义从"保留最早"改为"流式截止"。
 5. **确认阶段冲突检查**：`--confirmations` 与四个新轨迹 flag 同现时报错，与
    OpenCode 参数对称。
-6. **Codex 支持范围明确**：`custom_tool_call` / `custom_tool_call_output` 
+6. **Codex 支持范围明确**：`custom_tool_call` / `custom_tool_call_output`
    记入 `unsupported_call_type` 警告并跳过；文档注明验证版本（0.149）与支持的
    记录类型。
 7. 文档内存描述同步修正（不再声称"内存与文件大小无关"，改为逐行流式 + 累积
    上限的准确描述）。
+## 修订 2：PR #19 第二轮 Review 修复（2026-08-24）
+
+针对第二轮 review 指出的 2 个必改项与可即时处理的非阻塞项：
+
+1. **`host_authorized_not_found` 表述中立化**：`authorized_not_found` 状态在四状态
+   模型中本就同时覆盖"文件不存在"与"文件存在但无可导入事件"（见
+   `docs/opencode-adapter.md`），但合并层 warning 此前写成"会话文件未找到"，
+   对实际存在的文件写出了错误事实。现改为中立表述："授权输入未产生可导入事件；
+   文件可能不存在，或其中没有受支持的轨迹记录。"状态模型保持不变（不新增
+   枚举值），避免波及 OpenCode 适配器与既有归档定位格式。
+2. **截断汇总警告独立通道**：`WarningLog` 新增 `add_summary()`，
+   `event_cap_reached` / `tracked_call_cap_reached` / `warning_cap_reached`
+   三类汇总警告不再占用 200 条详细警告配额，即使详细警告已超限被丢弃，截断
+   事实也始终可见；`add()` / `extend()` 按 code 自动路由已知汇总码，多导出
+   包装层转写 warning 时汇总同样不丢失。
+3. **参数大小检查字节精确化**：Codex 调用参数 64 KiB 上限此前按字符数计算，
+   非 ASCII 内容可能字节数超限仍进入 JSON 解析；现按 UTF-8 字节数判断
+   （字符数先做 O(1) 预筛，仅中间区间执行实际编码）。
+保留为后续优化（reviewer 认可的非阻塞项）：多宿主合并阶段的 10000 条总量
+上限仍在合并后截断，限制的是最终输出而非合并阶段内存；单会话 2000 条上限
+已使该路径风险有界。
