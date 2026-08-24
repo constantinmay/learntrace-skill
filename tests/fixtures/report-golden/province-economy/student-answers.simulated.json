@@ -1,0 +1,17 @@
+{
+  "_comment": "SIMULATED student answers for the province-economy golden fixture, authored for the report-presentation golden set. Not real student material. Consistent with the archive's existing confirmations: the test-log-format clue was denied ('不管'), so the Q2 answer treats agent.log as a debug log, not test output. Schema v0 has no prompt-response record type; this is a target-structure sketch for v1.",
+  "answers": [
+    {
+      "question_ref": "report-golden/province-economy/learning-questions.md#提示-1",
+      "decision": "supplemented",
+      "student_statement": "数据是从公开统计资料整理后写了抓取和清洗脚本;算法最初想直接接可视化,后来发现需要按年份切换,返工加了年份选择和缓存。当时没有测试,主要看终端输出的结果是否合理。",
+      "answered_at": "2026-06-03T20:10:00+08:00"
+    },
+    {
+      "question_ref": "report-golden/province-economy/learning-questions.md#提示-2",
+      "decision": "supplemented",
+      "student_statement": "三个测试文件当时运行过,全部通过;agent.log 只是调试日志,不打算作为测试输出,日志格式就这样了。",
+      "answered_at": "2026-06-03T20:12:00+08:00"
+    }
+  ]
+}

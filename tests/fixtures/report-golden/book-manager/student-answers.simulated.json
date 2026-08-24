@@ -1,0 +1,17 @@
+{
+  "_comment": "SIMULATED student answers for the golden fixture, authored for the report-presentation golden set. Not real student material. They are deliberately consistent with the existing denied confirmation conf-04497032c6d8d437 (the student did not locate the bug themselves). Schema v0 has no prompt-response record type; this is a target-structure sketch for v1.",
+  "answers": [
+    {
+      "question_ref": "report-golden/learning-questions.md#提示-1",
+      "decision": "supplemented",
+      "student_statement": "格式不一致是 AI 在检查接口时发现并修复的,我当时只看到修复提交,不清楚最初表现;事后我用 curl 分别请求了新建和列表接口,确认两处 created_at 格式已经一致。",
+      "answered_at": "2026-08-21T10:31:00+08:00"
+    },
+    {
+      "question_ref": "report-golden/learning-questions.md#提示-2",
+      "decision": "supplemented",
+      "student_statement": "没有写自动化测试。当时是本地同时起后端和前端,手动把书籍的增删改查、搜索和分类筛选都操作了一遍,确认页面和接口返回正常。",
+      "answered_at": "2026-08-21T10:33:00+08:00"
+    }
+  ]
+}
