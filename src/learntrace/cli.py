@@ -143,6 +143,15 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     run_parser.add_argument("-o", "--output", type=Path)
+    run_parser.add_argument(
+        "--evidence-layer",
+        action="store_true",
+        help=(
+            "Opt into the additive evidence-state frontend (semantic event log, "
+            "checkpoint, and explicit gap markers). Off by default; leaving it "
+            "off preserves the classic archive output unchanged."
+        ),
+    )
     return parser
 
 
@@ -364,6 +373,7 @@ def _run_command(args: argparse.Namespace, parser: argparse.ArgumentParser) -> i
                 questions_output_path=work_dir / "learning-questions.md",
                 confirmation_paths=tuple(args.confirmations),
                 snapshot_path=archive_snapshot,
+                evidence_layer=args.evidence_layer,
             )
             print(f"Applied confirmations to analysis snapshot: {archive_snapshot}")
             print(f"Wrote learning record: {archive_result.output_path}")
@@ -420,6 +430,7 @@ def _run_command(args: argparse.Namespace, parser: argparse.ArgumentParser) -> i
             records_output_path=archive_snapshot,
             questions_output_path=work_dir / "learning-questions.md",
             confirmation_paths=tuple(args.confirmations),
+            evidence_layer=args.evidence_layer,
         )
         print(f"Wrote parse result: {parse_output} (events={events}, warnings={warnings})")
         print(
