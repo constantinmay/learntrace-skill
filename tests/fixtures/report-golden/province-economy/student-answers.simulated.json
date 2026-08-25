@@ -1,16 +1,16 @@
 {
-  "_comment": "SIMULATED student answers for the province-economy golden fixture, authored for the report-presentation golden set. Not real student material. Consistent with the archive's existing confirmations: the test-log-format clue was denied ('不管'), so the Q2 answer treats agent.log as a debug log, not test output. Schema v0 has no prompt-response record type; this is a target-structure sketch for v1.",
-  "answers": [
+  "_comment": "SIMULATED student answers for the province-economy golden fixture, authored for the report-presentation golden set. Not real student material. Scoped to the author's own work (author-scope filter); the two out-of-scope denied candidates from the raw archive are not referenced.",
+  "confirmations": [
     {
-      "question_ref": "report-golden/province-economy/learning-questions.md#提示-1",
+      "candidate_id": "golden-question-1",
       "decision": "supplemented",
-      "student_statement": "数据是从公开统计资料整理后写了抓取和清洗脚本;算法最初想直接接可视化,后来发现需要按年份切换,返工加了年份选择和缓存。当时没有测试,主要看终端输出的结果是否合理。",
-      "answered_at": "2026-06-03T20:10:00+08:00"
+      "student_statement": "算法是先在终端跑通的，能输出分省年度结果后才开始对接可视化；缓存机制是因为每次重算太慢才加的。没有写自动化测试。",
+      "answered_at": "2026-06-03T20:05:00+08:00"
     },
     {
-      "question_ref": "report-golden/province-economy/learning-questions.md#提示-2",
+      "candidate_id": "golden-question-2",
       "decision": "supplemented",
-      "student_statement": "三个测试文件当时运行过,全部通过;agent.log 只是调试日志,不打算作为测试输出,日志格式就这样了。",
+      "student_statement": "「测试前」是联调前的存档点。图表修复是靠页面人工核对的，切换年份和省份点一遍看渲染对不对，没有留测试记录。",
       "answered_at": "2026-06-03T20:12:00+08:00"
     }
   ]

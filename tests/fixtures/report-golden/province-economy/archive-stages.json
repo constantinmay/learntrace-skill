@@ -1,153 +1,141 @@
 {
-  "_comment": "Target structure sketch for sample B (multi-branch, PR merges, truncated history), additive to schema v0. Demonstrates: first-parent mainline ordering, merge-boundary stage segmentation, side-commit folding, rebase-duplicate folding via content fingerprint, and an explicit truncated stage. Event ids reference the province-economy archive-records.json. Dates only (no clock times in the human layer).",
-  "development_stages": [
+  "_comment": "Target structure sketch for sample B (multi-branch, PR merges, truncated history), additive to schema v0. REVISED for multi-author reality: the project is a 3-person collaboration; this sketch assumes an author-scope filter applied at parse/consent time, so stages contain only the student's own commits. Demonstrates: author_scope declaration, first-parent mainline ordering, merge-boundary segmentation, side-commit folding, rebase-duplicate folding via content fingerprint, collaboration-boundary annotation without attribution, and explicit truncation handling (stage 0).",
+  "schema_note": "Draft target for the stage layer. Additive to schema v0; no existing fields changed. Names may change before implementation.",
+  "author_scope": {
+    "mode": "author",
+    "author": "Liushenwuzhu-Alpaca",
+    "decided_at": "consent_gate",
+    "excluded": "commits by other contributors are filtered at parse time, not merely hidden at render time",
+    "boundary_rule": "collaboration boundaries are stated as scope notes ('implemented by collaborators, out of scope'); no per-commit attribution and no contribution ranking in output"
+  },
+  "stages": [
     {
-      "id": "stage-0",
-      "title": "初始化、数据与算法模块(记录不完整)",
+      "stage_id": "stage-0",
+      "title": "初始化与模型分析模块（记录不完整）",
+      "order": 0,
+      "kind": "inferred_truncated",
       "time_range": null,
-      "goal_or_scope": "数据获取/清洗与算法实现(含年份选择与缓存)。",
-      "git_event_ids": [],
-      "document_event_ids": ["evt-doc-07fa99e9322a94bd"],
-      "test_event_ids": [],
-      "trace_touchpoints": [],
+      "evidence_event_ids": [],
       "merge_point_event_ids": [],
+      "goal_or_scope": "初始化仓库；实现模型分析模块（算法、年份选择与缓存机制）",
+      "key_changes": [
+        "算法初步实现并完成年度结果终端输出（仅合并消息可见）",
+        "年份选择与缓存机制、main.py 精简重构（仅合并消息可见）"
+      ],
       "evidence_gaps": [
-        "git_history_truncated: PR #1/#2 的合并点与侧支提交不在档案中,仅有范围性描述,不作过程断言"
-      ]
+        "Git 历史截断：PR #1/#2 合并点及本人侧支提交不在档案中",
+        "该阶段无任何测试日志"
+      ],
+      "questions_raised": ["golden-question-1"]
     },
     {
-      "id": "stage-1",
-      "title": "可视化模块",
-      "goal_or_scope": "建立可视化包结构,并修复图表缺陷。",
-      "merge_point_event_ids": ["evt-git-6708594e985b29365aaabae6179be8f67530dfb4"],
-      "git_event_ids": [
-        "evt-git-f5d3d7df80677b32aa679296b63684fc49194559",
-        "evt-git-e93fc5b360f4a2b4ff56cb953fa5ad5d0d6214b8",
-        "evt-git-821ccdd1516cef50059483325850753bd2d7b606",
-        "evt-git-426bc2bd5918a5e16ccbd7a99cf8b7ef80478131",
-        "evt-git-2273a9e98741249f5a4b2ac48710905a6eeece26",
-        "evt-git-db13e0b5f4bc14fe543887fd3a8a2c5174061f3f",
-        "evt-git-a74cc46b73717d635d0c884086365179899b655c",
-        "evt-git-e37573df398846007a40e50ea4daa710ade36e3d",
+      "stage_id": "stage-1",
+      "title": "可视化联调",
+      "order": 1,
+      "kind": "observed",
+      "time_range": { "start": "2026-05-02", "end": "2026-05-02" },
+      "evidence_event_ids": [
         "evt-git-c02b2b5a6c5058a1a31524b5e71782a080fef41b",
         "evt-git-78e35bf1bb13337179cb986395719f8f5b5844cf",
         "evt-git-9074914f303e191f6bf0efc642804bf4f94cbc7c",
-        "evt-git-9908fe98eb17374b3456bfa0d976e91106edd016"
+        "evt-git-9908fe98eb17374b3456bfa0d976e91106edd016",
+        "evt-git-4e95d0a13e6989df4a30413a7a13e301ae41264f"
       ],
-      "document_event_ids": [],
-      "test_event_ids": [],
-      "trace_touchpoints": [],
-      "evidence_gaps": []
+      "merge_point_event_ids": ["evt-git-6708594e985b29365aaabae6179be8f67530dfb4"],
+      "goal_or_scope": "配合可视化模块（协作方实现）完成联调与修复",
+      "key_changes": [
+        "修复热力图兼容性及其余小 bug",
+        "修复雷达图，添加年份切换功能",
+        "server 提取为独立包 src/server/"
+      ],
+      "evidence_gaps": ["「测试前」存档点之后无任何测试运行记录"],
+      "questions_raised": ["golden-question-2"]
     },
     {
-      "id": "stage-2",
-      "title": "数据扩展",
-      "goal_or_scope": "数据覆盖扩展至 2019-2024 年。",
+      "stage_id": "stage-2",
+      "title": "多年份数据接入",
+      "order": 2,
+      "kind": "observed",
+      "time_range": { "start": "2026-05-02", "end": "2026-05-02" },
+      "evidence_event_ids": [
+        "evt-git-8a43204360eeb86844f132fe74a8ab5a1f97cf06"
+      ],
       "merge_point_event_ids": ["evt-git-537af1d6cafab130a92ba68b20156e6e5af5dee8"],
-      "git_event_ids": [
-        "evt-git-8a43204360eeb86844f132fe74a8ab5a1f97cf06",
-        "evt-git-d08713ad3a303b0d0249b5de5c65cd4a2a6df5ca"
-      ],
-      "document_event_ids": [],
-      "test_event_ids": [],
-      "trace_touchpoints": [],
-      "evidence_gaps": [
-        "rebase_duplicate: d08713a 为 PR #4 侧支提交的重放副本,按内容指纹去重后计为同一变更"
-      ]
+      "goal_or_scope": "扩展数据覆盖范围；协作方实现 PR #4 内容，本人完成合入",
+      "key_changes": ["多年份数据添加（主线直接提交）"],
+      "evidence_gaps": [],
+      "questions_raised": []
     },
     {
-      "id": "stage-3",
-      "title": "Docker 部署",
-      "goal_or_scope": "容器化,支撑一键演示。",
-      "merge_point_event_ids": ["evt-git-37da7299f8ef58946bc72aef6a34aac17267bf39"],
-      "git_event_ids": [
+      "stage_id": "stage-3",
+      "title": "Docker 容器化",
+      "order": 3,
+      "kind": "observed",
+      "time_range": { "start": "2026-05-02", "end": "2026-05-02" },
+      "evidence_event_ids": [
         "evt-git-21d6ae6d4d6303b6d3b38f2d80255232c6c8aa1f",
         "evt-git-02ec8c5551ccd1dd3ef9868e322d0f36669f20ba",
         "evt-git-d85940f99489d5c768acf29b13f99f23ffbc494e",
+        "evt-git-40c3083270a7fe489594229c90004b5c2300d81d",
         "evt-git-d2152e8556ff0f2cf9050eb92d0d27ddbf21d2e7"
       ],
-      "document_event_ids": [],
-      "test_event_ids": [],
-      "trace_touchpoints": [],
-      "evidence_gaps": [
-        "git_history_truncated: 部分早期 Docker 提交(如 Dockerfile 初始引入)不在截断窗口内",
-        "rebase_duplicates_folded: 该分支携带阶段 1-2 的重放副本,已按内容指纹去重"
-      ]
+      "merge_point_event_ids": ["evt-git-37da7299f8ef58946bc72aef6a34aac17267bf39"],
+      "goal_or_scope": "容器化，支撑一键演示",
+      "key_changes": [
+        "Docker 部署与使用文档、演示须知",
+        "Go 重构（服务实现调整）",
+        "本人早期提交的重放副本（rebase 产生）按内容指纹去重，不计入本阶段工作量",
+        "部分早期 Docker 提交（Dockerfile、compose 初始引入）不在截断窗口内"
+      ],
+      "evidence_gaps": ["Dockerfile 与 compose 的初始引入提交超出档案截断窗口"],
+      "questions_raised": []
     },
     {
-      "id": "stage-4",
-      "title": "AI 智能助手模块",
-      "goal_or_scope": "加入 AI 问答能力,并纳入容器编排。",
+      "stage_id": "stage-4",
+      "title": "Agent 模块集成",
+      "order": 4,
+      "kind": "observed",
+      "time_range": { "start": "2026-05-02", "end": "2026-06-02" },
+      "evidence_event_ids": [
+        "evt-git-a76c6e52b158b518056e239b31a7ee993ebdba2f",
+        "evt-git-a207f72930106c084dd52a4b1af27382b14a82af"
+      ],
       "merge_point_event_ids": [
         "evt-git-1f0aaa42b0c52a9cd9275b46a06b2cb7ff66ffd6",
         "evt-git-7194e092d85d18ff289127278ed2a07cc020359f"
       ],
-      "git_event_ids": [
-        "evt-git-15e9eac04bc038537f2da99135b0f013a6762e2a",
-        "evt-git-1088dff3147d75eb174714156ff9f556ada1ea84",
-        "evt-git-0e2ada426787ee8452d1fb6d063b7a73cefcf3b6",
-        "evt-git-a76c6e52b158b518056e239b31a7ee993ebdba2f",
-        "evt-git-a207f72930106c084dd52a4b1af27382b14a82af"
+      "goal_or_scope": "将协作方实现的 AI 智能助手模块纳入容器编排",
+      "key_changes": [
+        "Agent 模块 docker 编排；容器内纳入中文嵌入模型缓存与 cloudflared",
+        "修复 Excalidraw 绘图小 bug（主线直接提交）"
       ],
-      "document_event_ids": ["evt-doc-000a694f2c435b05"],
-      "test_event_ids": ["evt-test-26adddd592d1fd44"],
-      "trace_touchpoints": [],
-      "evidence_gaps": [
-        "no_test_run_record: 测试代码存在但无运行记录,agent.log 格式未识别"
-      ]
+      "evidence_gaps": ["Agent 模块本体的实现过程不在作者范围内"],
+      "questions_raised": []
     },
     {
-      "id": "stage-5",
+      "stage_id": "stage-5",
       "title": "收尾",
-      "goal_or_scope": "文档最终版与仓库清理。",
-      "merge_point_event_ids": [],
-      "git_event_ids": [
+      "order": 5,
+      "kind": "observed",
+      "time_range": { "start": "2026-06-02", "end": "2026-06-02" },
+      "evidence_event_ids": [
         "evt-git-bfb85c6805c051ab412b6b57872f185e9f44ba8f",
         "evt-git-8a4b36c0d6c99fcb03781f5c40bce9722771a79b",
         "evt-git-01f5e21f84c6b02e3e4155f0ece44dcd07b8e18e"
       ],
-      "document_event_ids": [],
-      "test_event_ids": [],
-      "trace_touchpoints": [],
-      "evidence_gaps": []
+      "merge_point_event_ids": [],
+      "goal_or_scope": "文档最终定稿与仓库清理",
+      "key_changes": ["README 最终版", "清理不必要文件"],
+      "evidence_gaps": [],
+      "questions_raised": []
     }
   ],
-  "clue_relations": [
-    {
-      "candidate_id": "cand-git-fix_failed_approach-0b3375f591687b1c",
-      "stage_id": "stage-1",
-      "confirmation_decision": "supplemented",
-      "render_policy": "supplemented clue enters body; user correction overrides the inference direction"
-    },
-    {
-      "candidate_id": "cand-git-adjust_constraints-200cd11a3ebe18bf",
-      "stage_id": "stage-4",
-      "confirmation_decision": "confirmed",
-      "render_policy": "confirmed clue enters body as first-person-ready fact"
-    },
-    {
-      "candidate_id": "cand-trace-fix_failed_approach-f6637cb5d262bd14",
-      "stage_id": "stage-3",
-      "confirmation_decision": "supplemented",
-      "render_policy": "user clarified tool fault; render as corrected touchpoint, never as learning behavior"
-    },
-    {
-      "candidate_id": "cand-git-add_tests-1642a8ed7f6a5bdd",
-      "stage_id": "stage-4",
-      "confirmation_decision": "denied",
-      "render_policy": "denied clues stay in appendix"
-    },
-    {
-      "candidate_id": "cand-test-add_tests-f8a11ad99028b183",
-      "stage_id": "stage-4",
-      "confirmation_decision": "denied",
-      "render_policy": "denied clues stay in appendix"
-    }
-  ],
-  "render_policy_notes": {
-    "mainline_order": "first-parent sequence; side commits fold under their merge point, never scattered by author date",
-    "merge_commits": "stage anchors and title hints only; content stays in details blocks",
-    "rebase_duplicates": "folded by content fingerprint; logged in stage evidence_gaps",
-    "no_branch_counts": "branch/PR numbers are cited as provenance, never counted"
-  }
+  "segmentation_rules": {
+    "mainline": "first-parent",
+    "stage_boundary": "merge commits act as anchors and title hints only, never as stage content",
+    "side_commits": "folded under their merge anchor",
+    "truncation": "history cut off by the archive window becomes an explicit inferred_truncated stage-0",
+    "out_of_scope_authors": "collaborator commits are excluded at parse time; stages touching them carry a scope note, not attribution"
+  },
+  "ordering": "oldest -> newest (chronological)"
 }
