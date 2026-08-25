@@ -18,10 +18,10 @@ def test_frontend_detects_missing_timestamp_gap(make_event: Callable[..., Observ
         make_event("evt-b", EventKind.TRACE_RECORD, "轨迹", occurred_at=None),
     )
     bundle = ArchiveBundle(events=events, candidates=(), confirmations=(), inference_mode="stub")
-    state, checkpoint = build_evidence_state(bundle)
+    state, snapshot = build_evidence_state(bundle)
     keys = {gap.key for gap in state.gaps}
     assert "timestamps" in keys
-    assert checkpoint.seq_after == 2
+    assert snapshot.seq_after == 2
 
 
 def test_frontend_detects_missing_source_gaps(make_event: Callable[..., ObservableEvent]) -> None:

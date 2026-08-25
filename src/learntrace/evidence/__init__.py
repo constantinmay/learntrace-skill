@@ -8,13 +8,13 @@ becomes reachable only when ``write_learning_record*`` is called with
 from __future__ import annotations
 
 from learntrace.evidence.chain import EvidenceTier, LogGap
-from learntrace.evidence.checkpoint import Checkpoint
+from learntrace.evidence.snapshot import EvidenceSnapshot
 from learntrace.evidence.state import EvidenceGap, EvidenceState
 
 __all__ = [
     "EvidenceState",
     "EvidenceGap",
-    "Checkpoint",
+    "EvidenceSnapshot",
     "LogGap",
     "EvidenceTier",
 ]

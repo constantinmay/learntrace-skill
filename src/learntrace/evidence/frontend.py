@@ -2,7 +2,7 @@
 
 The archive pipeline already produces an ``ArchiveBundle`` (events, candidates,
 confirmations, warnings). This module turns it into an ``EvidenceState`` with
-an explicit gap register, and captures a ``Checkpoint`` bound to the
+an explicit gap register, and captures an ``EvidenceSnapshot`` bound to the
 event-log position the bundle was taken after.
 
 Nothing here changes how the bundle is built; it only derives the additive
@@ -12,14 +12,14 @@ view. Consumers that do not opt in never call this module.
 from __future__ import annotations
 
 from learntrace.evidence.chain import GapReason, LogGap, build_log
-from learntrace.evidence.checkpoint import Checkpoint
+from learntrace.evidence.snapshot import EvidenceSnapshot
 from learntrace.evidence.state import EvidenceGap, EvidenceState
 from learntrace.reporting import ArchiveBundle
 from learntrace.reporting.pipeline import EVIDENCE_GAP_SPECS
 
 
-def build_evidence_state(bundle: ArchiveBundle) -> tuple[EvidenceState, Checkpoint]:
-    """Derive the audit state and its checkpoint from a validated bundle."""
+def build_evidence_state(bundle: ArchiveBundle) -> tuple[EvidenceState, EvidenceSnapshot]:
+    """Derive the audit state and its snapshot from a validated bundle."""
 
     log = build_log(bundle.events)
     seq_after = len(log)
@@ -31,13 +31,13 @@ def build_evidence_state(bundle: ArchiveBundle) -> tuple[EvidenceState, Checkpoi
         confirmations=bundle.confirmations,
         gaps=gaps,
     )
-    checkpoint = Checkpoint.capture(
+    snapshot = EvidenceSnapshot.capture(
         seq_after=seq_after,
         events=bundle.events,
         candidates=bundle.candidates,
         confirmations=bundle.confirmations,
     )
-    return state, checkpoint
+    return state, snapshot
 
 
 def _detect_gaps(bundle: ArchiveBundle) -> tuple[EvidenceGap, ...]:

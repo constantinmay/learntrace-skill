@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections.abc import Callable
 
 from learntrace.evidence.chain import GapReason, build_log, tier_for
-from learntrace.evidence.checkpoint import Checkpoint
+from learntrace.evidence.snapshot import EvidenceSnapshot
 from learntrace.models import (
     EventKind,
     ObservableEvent,
@@ -40,28 +40,28 @@ def test_log_orders_by_timestamp_then_id(make_event: Callable[..., ObservableEve
     assert [entry.event.id for entry in log] == ["evt-early", "evt-late"]
 
 
-def test_checkpoint_capture_is_deterministic_and_binds_seq(
+def test_snapshot_capture_is_deterministic_and_binds_seq(
     make_event: Callable[..., ObservableEvent],
 ) -> None:
     events = (
         make_event("evt-a", EventKind.GIT_COMMIT, "提交 a"),
         make_event("evt-b", EventKind.TEST_LOG, "测试通过"),
     )
-    one = Checkpoint.capture(seq_after=2, events=events, candidates=(), confirmations=())
-    two = Checkpoint.capture(seq_after=2, events=events, candidates=(), confirmations=())
+    one = EvidenceSnapshot.capture(seq_after=2, events=events, candidates=(), confirmations=())
+    two = EvidenceSnapshot.capture(seq_after=2, events=events, candidates=(), confirmations=())
     assert one.content_hash == two.content_hash
     assert one.matches(two)
     assert one.seq_after == 2
 
 
-def test_checkpoint_differs_on_different_state(make_event: Callable[..., ObservableEvent]) -> None:
+def test_snapshot_differs_on_different_state(make_event: Callable[..., ObservableEvent]) -> None:
     a = (make_event("evt-a", EventKind.GIT_COMMIT, "提交 a"),)
     b = (
         make_event("evt-a", EventKind.GIT_COMMIT, "提交 a"),
         make_event("evt-b", EventKind.TEST_LOG, "测试"),
     )
-    one = Checkpoint.capture(seq_after=1, events=a, candidates=(), confirmations=())
-    two = Checkpoint.capture(seq_after=2, events=b, candidates=(), confirmations=())
+    one = EvidenceSnapshot.capture(seq_after=1, events=a, candidates=(), confirmations=())
+    two = EvidenceSnapshot.capture(seq_after=2, events=b, candidates=(), confirmations=())
     assert not one.matches(two)
 
 

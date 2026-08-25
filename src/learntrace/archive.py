@@ -825,10 +825,10 @@ def _write_evidence_state(bundle: ArchiveBundle, project_dir: Path) -> None:
     """
     from learntrace.evidence.frontend import build_evidence_state
 
-    state, checkpoint = build_evidence_state(bundle)
+    state, snapshot = build_evidence_state(bundle)
     payload = {
         "learntrace_evidence_state": True,
-        "checkpoint": checkpoint.to_dict(),
+        "snapshot": snapshot.to_dict(),
         "state": state.to_dict(),
     }
     destination = project_dir / ".learntrace" / "evidence-state.json"

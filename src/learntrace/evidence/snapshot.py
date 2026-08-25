@@ -1,9 +1,15 @@
-"""Checkpoints: immutable state snapshots bound to a log position and digest.
+"""Snapshots: an immutable content digest of archive state at a log position.
 
-A checkpoint pins an exact view of the learning archive — which events, which
-candidates, which confirmations — to the event-log ``seq`` it was taken after
-and a content hash. Two checkpoints whose hash differs are provably different
-states; no amount of re-reading can turn one into the other silently.
+An ``EvidenceSnapshot`` pins an exact view of the learning archive — which
+events, which candidates, which confirmations — to the event-log ``seq`` it
+was taken after and a content hash. Two snapshots whose hash differs are
+provably different states; no amount of re-reading can turn one into the
+other silently.
+
+Terminology note: this is a content *snapshot* of the archive state. It is not
+the design doc's stage-level "结构化检查点" (``docs/learning-trajectory-design.md``,
+§5.2/§6) — that is an audit boundary for a development stage. The two concepts
+are unrelated, and this rename keeps them from colliding.
 """
 
 from __future__ import annotations
@@ -19,7 +25,7 @@ from learntrace.models import (
 
 
 @dataclass(frozen=True, slots=True)
-class Checkpoint:
+class EvidenceSnapshot:
     """An immutable snapshot of archive state at a moment in time."""
 
     seq_after: int
@@ -36,7 +42,7 @@ class Checkpoint:
         events: tuple[ObservableEvent, ...],
         candidates: tuple[LearningNodeCandidate, ...],
         confirmations: tuple[StudentConfirmation, ...],
-    ) -> Checkpoint:
+    ) -> EvidenceSnapshot:
         import hashlib
         import json
 
@@ -56,7 +62,7 @@ class Checkpoint:
             content_hash=content_hash,
         )
 
-    def matches(self, other: Checkpoint) -> bool:
+    def matches(self, other: EvidenceSnapshot) -> bool:
         return self.content_hash == other.content_hash
 
     def to_dict(self) -> dict[str, Any]:

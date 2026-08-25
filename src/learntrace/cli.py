@@ -148,8 +148,8 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help=(
             "Opt into the additive evidence-state frontend (semantic event log, "
-            "checkpoint, and explicit gap markers). Off by default; leaving it "
-            "off preserves the classic archive output unchanged."
+            "state snapshot, and explicit gap markers). Off by default; leaving "
+            "it off preserves the classic archive output unchanged."
         ),
     )
     return parser
