@@ -1,7 +1,14 @@
 # report-golden:报告呈现层金标工件
 
 依据 `docs/learning-trajectory-design.md` §12,这些文件是渲染层重构的目标产物,
-**先于实现固定**,用作后续回归对照。按项目分目录:
+**先于实现固定**,用作后续回归对照。按项目分目录。
+
+> 2026-08-24 第三版:按信任域隐私模型与四层证据模型(事实 / 派生摘要 / 候选推断 /
+> 学生确认)修订——AI 协作章节改为五要素(可见性地图/活动形状/文件焦点/关键插曲/
+> 边界声明),新增派生摘要示例(标「派生」、可否认);新增 `narrative-payload.golden.json`
+> 作为 agent→CLI 中间件契约,与 markdown 渲染产物互为对照。
+> 维护注记:Issue #27(Git 截断整改)落地后,province-economy 的「阶段 0」范围
+> 应随新解析结果重新生成。
 
 ## book-manager/(线性历史、单作者、1 条被否认候选)
 
@@ -12,7 +19,9 @@
 - `learning-questions.md` — 可选复盘提示(2 条);
 - `student-answers.simulated.json` — **模拟**学生回答(非真实材料),驱动工作版到
   上交版的确认流程;
-- `archive-stages.json` — 阶段层目标结构草案(v0 纯新增)。
+- `archive-stages.json` — 阶段层目标结构草案(v0 纯新增);
+- `narrative-payload.golden.json` — 叙事 payload 金标(agent 产出、CLI 渲染的
+  中间件;verify 的校验对象)。
 
 ## province-economy/(多分支 + **多人协作** + PR 合并 + 历史截断)
 
@@ -38,7 +47,9 @@ golden 采用**作者范围过滤**口径:授权门处选择"仅纳入本人名�
   本人范围内的两条提示(模型分析实现过程、「测试前」后的验证方式);
 - `learning-questions.md` — 可选复盘提示(2 条,证据缺口驱动);
 - `archive-stages.json` — 阶段结构草案,含 author_scope 声明、merge_point_event_ids
-  与去重策略。
+  与去重策略;
+- `narrative-payload.golden.json` — 叙事 payload 金标(含 author_scope 与派生
+  摘要插曲示例)。
 - 合并消息与提交中的协作方用户名一律不写进档案,以"协作方"代称;事件 ID 保持可溯源。
 
 ## 使用方式
@@ -48,4 +59,6 @@ golden 采用**作者范围过滤**口径:授权门处选择"仅纳入本人名�
   merge commit 作阶段标题、提交跨阶段重复、上交版残留未确认徽章等视为回归);
 - 两版对照:上交版与工作版的事实层三节(项目概述/开发轨迹/阶段详情)必须
   逐字一致,差异只允许在叙事层;
+- payload 对照:`narrative-payload.golden.json` 的每个 citations 条目必须能在
+  对应 archive-records.json 解析;derived=true 的条目必须标 deniable;
 - `archive-stages.json` 是目标结构草案,随实现稳定后并入 schema v1 讨论。
