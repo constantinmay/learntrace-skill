@@ -82,7 +82,6 @@ class LogEntry:
     event: ObservableEvent
     tier: EvidenceTier
     content_hash: str
-    gap_before: LogGap | None = None
 
     def to_dict(self) -> dict[str, object]:
         data: dict[str, object] = {
@@ -93,8 +92,6 @@ class LogEntry:
             "content_hash": self.content_hash,
             "occurred_at": self.event.occurred_at or "",
         }
-        if self.gap_before is not None:
-            data["gap_before"] = self.gap_before.to_dict()
         return data
 
 
@@ -123,14 +120,3 @@ def build_log(events: tuple[ObservableEvent, ...]) -> tuple[LogEntry, ...]:
             )
         )
     return tuple(entries)
-
-
-def gap_before(entry: LogEntry) -> LogGap | None:
-    """Describe the chain break immediately before *entry*, if any.
-
-    A break exists when either event carries no timestamp: without both
-    timestamps the ``(entry, prior_entry)`` ordering is an assumption, not an
-    observation. This mirrors the reporting pipeline's ``UNVERIFIABLE`` stance,
-    but made explicit as a per-step marker rather than a single enum result.
-    """
-    return entry.gap_before
