@@ -121,7 +121,13 @@ def _exceeds_argument_cap(value: str) -> bool:
         return True
     if len(value) * 4 <= _MAX_ARGUMENT_BYTES:
         return False
-    return len(value.encode("utf-8")) > _MAX_ARGUMENT_BYTES
+    try:
+        encoded_length = len(value.encode("utf-8"))
+    except UnicodeEncodeError:
+        # Lone surrogates (e.g. from JSON "\ud800" escapes) cannot encode;
+        # treat the field as over the cap instead of aborting the session.
+        return True
+    return encoded_length > _MAX_ARGUMENT_BYTES
 
 
 def _command_from_arguments(value: object) -> str | None:

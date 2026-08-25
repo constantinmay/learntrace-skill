@@ -534,6 +534,43 @@ def test_arguments_over_the_byte_cap_are_never_parsed(tmp_path: Path) -> None:
     assert "啊" not in json.dumps(event.to_dict(), ensure_ascii=False)
 
 
+def test_lone_surrogate_arguments_do_not_abort_parsing(tmp_path: Path) -> None:
+    """A lone surrogate in the byte-cap middle range must not abort the parse."""
+
+    arguments = '{"command": "echo", "pad": "' + "x" * 20000 + "\ud800" + '"}'
+    assert 64 * 1024 // 4 < len(arguments) <= 64 * 1024
+    records = (_session_meta(), _function_call(arguments=arguments), _call_output())
+    session_path = tmp_path / "session.jsonl"
+    # Default ensure_ascii keeps the lone surrogate as a \uXXXX escape on disk;
+    # json.loads restores it as an unencodable str inside the adapter.
+    session_path.write_text(
+        "".join(f"{json.dumps(record)}\n" for record in records), encoding="utf-8"
+    )
+
+    result = adapt_codex_export(session_path, authorized=True)
+
+    assert result.status is TraceInputStatus.PARSED
+    assert len(result.events) == 1
+    assert result.events[0].summary == "Codex 工具 shell 已完成。"
+
+
+def test_lone_surrogate_output_is_reported_as_unknown(tmp_path: Path) -> None:
+    """A lone surrogate in a call output leaves the exit status unknown."""
+
+    output = "y" * 20000 + "\ud800"
+    records = (_session_meta(), _function_call(), _raw_call_output(output=output))
+    session_path = tmp_path / "session.jsonl"
+    session_path.write_text(
+        "".join(f"{json.dumps(record)}\n" for record in records), encoding="utf-8"
+    )
+
+    result = adapt_codex_export(session_path, authorized=True)
+
+    assert result.status is TraceInputStatus.PARSED
+    assert len(result.events) == 1
+    assert "结束（状态未知）" in result.events[0].summary
+
+
 def test_fixture_session_is_safely_adapted_without_leaks() -> None:
     result = adapt_codex_export(FIXTURE_PATH, authorized=True)
 
