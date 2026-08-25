@@ -32,4 +32,4 @@ def test_frontend_detects_missing_source_gaps(make_event: Callable[..., Observab
     bundle = ArchiveBundle(events=events, candidates=(), confirmations=(), inference_mode="stub")
     state, _ = build_evidence_state(bundle)
     keys = {gap.key for gap in state.gaps}
-    assert "test-evidence" in keys
+    assert "gap-test-evidence" in keys

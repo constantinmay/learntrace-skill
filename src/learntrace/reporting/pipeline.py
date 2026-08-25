@@ -1381,6 +1381,49 @@ def _missing_info_count(bundle: ArchiveBundle) -> int:
     return candidate_missing + confirmation_missing
 
 
+@dataclass(frozen=True, slots=True)
+class EvidenceGapSpec:
+    """Canonical wording of one mechanically confirmable evidence gap.
+
+    Both consumers of the gap concept read from here: the default reporting
+    path asks the student ``question`` (with ``uncertainty``); the optional
+    evidence-state frontend records ``statement`` as the gap marker. Keeping
+    the two wordings in one place is what stops them drifting apart.
+    """
+
+    key: str
+    label: str
+    required_kind: EventKind
+    reason: str
+    statement: str
+    question: str
+    uncertainty: str
+
+
+#: The two evidence gaps the archive can mechanically confirm from its event
+#: set: a test run left no record, or the project goal was never recorded.
+EVIDENCE_GAP_SPECS: tuple[EvidenceGapSpec, ...] = (
+    EvidenceGapSpec(
+        key="gap-test-evidence",
+        label="测试运行记录",
+        required_kind=EventKind.TEST_LOG,
+        reason="missing_source",
+        statement="没有发现测试运行记录；是否运行过测试无法从现有证据判断。",
+        question="当前材料中没有发现测试运行记录。你是否运行过测试，结果如何？",
+        uncertainty="高：系统只能确认测试证据未记录，不能判断测试是否实际运行。",
+    ),
+    EvidenceGapSpec(
+        key="gap-project-goal",
+        label="项目目标记录",
+        required_kind=EventKind.DOCUMENT,
+        reason="missing_source",
+        statement="没有明确记录项目目标；缺少可引用的任务书或要求类文档。",
+        question="当前材料没有明确记录项目目标，请补充本次任务目标。",
+        uncertainty="高：缺少可引用的任务书、README 或要求类文档。",
+    ),
+)
+
+
 def fallback_reflection_questions(bundle: ArchiveBundle) -> tuple[dict[str, object], ...]:
     """Return evidence-gap questions when inference produced no candidates.
 
@@ -1392,33 +1435,20 @@ def fallback_reflection_questions(bundle: ArchiveBundle) -> tuple[dict[str, obje
     if bundle.candidates:
         return ()
 
-    questions: list[dict[str, object]] = []
-    if not any(event.kind == EventKind.TEST_LOG for event in bundle.events):
-        questions.append(
-            {
-                "question_id": "gap-test-evidence",
-                "question_type": "evidence_gap",
-                "candidate_id": None,
-                "node_type": None,
-                "question_to_student": (
-                    "当前材料中没有发现测试运行记录。你是否运行过测试，结果如何？"
-                ),
-                "basis_event_ids": [],
-                "uncertainty": "高：系统只能确认测试证据未记录，不能判断测试是否实际运行。",
-            }
-        )
-    if not any(event.kind == EventKind.DOCUMENT for event in bundle.events):
-        questions.append(
-            {
-                "question_id": "gap-project-goal",
-                "question_type": "evidence_gap",
-                "candidate_id": None,
-                "node_type": None,
-                "question_to_student": "当前材料没有明确记录项目目标，请补充本次任务目标。",
-                "basis_event_ids": [],
-                "uncertainty": "高：缺少可引用的任务书、README 或要求类文档。",
-            }
-        )
+    kinds = {event.kind for event in bundle.events}
+    questions: list[dict[str, object]] = [
+        {
+            "question_id": spec.key,
+            "question_type": "evidence_gap",
+            "candidate_id": None,
+            "node_type": None,
+            "question_to_student": spec.question,
+            "basis_event_ids": [],
+            "uncertainty": spec.uncertainty,
+        }
+        for spec in EVIDENCE_GAP_SPECS
+        if spec.required_kind not in kinds
+    ]
     questions.append(
         {
             "question_id": "gap-learning-reflection",

@@ -1,9 +1,9 @@
 """Glue from the archive bundle to the optional evidence-state frontend.
 
 The archive pipeline already produces an ``ArchiveBundle`` (events, candidates,
-confirmations, warnings). This module turns it into an ``EvidenceState`` with an
-explicit gap register, and captures a ``Checkpoint`` bound to the event-log
-position the bundle was taken after.
+confirmations, warnings). This module turns it into an ``EvidenceState`` with
+an explicit gap register, and captures a ``Checkpoint`` bound to the
+event-log position the bundle was taken after.
 
 Nothing here changes how the bundle is built; it only derives the additive
 view. Consumers that do not opt in never call this module.
@@ -14,8 +14,8 @@ from __future__ import annotations
 from learntrace.evidence.chain import GapReason, LogGap, build_log
 from learntrace.evidence.checkpoint import Checkpoint
 from learntrace.evidence.state import EvidenceGap, EvidenceState
-from learntrace.models import EventKind
 from learntrace.reporting import ArchiveBundle
+from learntrace.reporting.pipeline import EVIDENCE_GAP_SPECS
 
 
 def build_evidence_state(bundle: ArchiveBundle) -> tuple[EvidenceState, Checkpoint]:
@@ -44,25 +44,19 @@ def _detect_gaps(bundle: ArchiveBundle) -> tuple[EvidenceGap, ...]:
     gaps: list[EvidenceGap] = []
 
     kinds = {event.kind for event in bundle.events}
-    if EventKind.TEST_LOG not in kinds:
-        gaps.append(
-            _gap(
-                key="test-evidence",
-                label="测试运行记录",
-                reason="missing_source",
-                message="没有发现测试运行记录；是否运行过测试无法从现有证据判断。",
+    for spec in EVIDENCE_GAP_SPECS:
+        if spec.required_kind not in kinds:
+            gaps.append(
+                _gap(
+                    key=spec.key,
+                    label=spec.label,
+                    reason=spec.reason,
+                    message=spec.statement,
+                )
             )
-        )
-    if EventKind.DOCUMENT not in kinds:
-        gaps.append(
-            _gap(
-                key="goal-evidence",
-                label="项目目标记录",
-                reason="missing_source",
-                message="没有明确记录项目目标；缺少可引用的任务书或要求类文档。",
-            )
-        )
     if any(not event.occurred_at for event in bundle.events):
+        # The reporting pipeline has no counterpart question for partial
+        # timestamps, so this marker keeps its own wording here.
         gaps.append(
             _gap(
                 key="timestamps",
