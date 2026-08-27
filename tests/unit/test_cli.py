@@ -541,6 +541,90 @@ def test_run_warns_when_export_produces_zero_events(
     assert "status=authorized_not_found" in captured.err
 
 
+def test_run_warns_when_opencode_zero_events_even_if_other_host_parsed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: CaptureFixture[str],
+) -> None:
+    """When OpenCode yields 0 events but a co-requested host (Claude Code)
+    parses successfully, the OpenCode zero-events warning must still appear.
+    The warning is scoped to OpenCode's own adapter status, not the merged
+    multi-host status (which would hide a silently-empty OpenCode export)."""
+    monkeypatch.setattr(
+        "learntrace.reporting.llm.default_candidate_inferencer",
+        lambda: StubCandidateInferencer(),
+    )
+    (tmp_path / "task.md").write_text(
+        "# Goal\n\nImplement the parser safely.\n",
+        encoding="utf-8",
+    )
+    # OpenCode export that is well-formed but event-free.
+    empty_export = tmp_path / "empty-session.json"
+    empty_export.write_text(
+        json.dumps({"info": {"id": "sess-empty", "version": "1.1"}, "messages": []}),
+        encoding="utf-8",
+    )
+    # A real Claude Code fixture that adapts to PARSED (3 events).
+    cc_fixture = REPO_ROOT / "tests" / "fixtures" / "claude-code" / "authorized-session.jsonl"
+
+    exit_code = main(
+        [
+            "run",
+            str(tmp_path),
+            "--no-git",
+            "--opencode-export",
+            str(empty_export),
+            "--authorize-opencode-export",
+            str(empty_export),
+            "--claude-code-export",
+            str(cc_fixture),
+            "--authorize-claude-code-export",
+            str(cc_fixture),
+        ]
+    )
+
+    assert exit_code == 0
+    captured = capsys.readouterr()
+    # OpenCode's own zero-events warning still emitted despite the other host PARSED.
+    assert "produced 0 events" in captured.err
+    assert "status=authorized_not_found" in captured.err
+
+
+def test_run_does_not_warn_when_only_non_opencode_host_requested(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: CaptureFixture[str],
+) -> None:
+    """When OpenCode is not requested at all and only a co-host (Claude Code)
+    is requested/authorized, no OpenCode zero-events warning must be emitted."""
+    monkeypatch.setattr(
+        "learntrace.reporting.llm.default_candidate_inferencer",
+        lambda: StubCandidateInferencer(),
+    )
+    (tmp_path / "task.md").write_text(
+        "# Goal\n\nImplement the parser safely.\n",
+        encoding="utf-8",
+    )
+    cc_fixture = REPO_ROOT / "tests" / "fixtures" / "claude-code" / "authorized-session.jsonl"
+
+    exit_code = main(
+        [
+            "run",
+            str(tmp_path),
+            "--no-git",
+            "--claude-code-export",
+            str(cc_fixture),
+            "--authorize-claude-code-export",
+            str(cc_fixture),
+        ]
+    )
+
+    assert exit_code == 0
+    captured = capsys.readouterr()
+    # No OpenCode export requested → no OpenCode warning.
+    assert "produced 0 events" not in captured.err
+
+
 def test_cli_rejects_confirmation_without_real_timestamp(
     tmp_path: Path,
     capsys: CaptureFixture[str],
