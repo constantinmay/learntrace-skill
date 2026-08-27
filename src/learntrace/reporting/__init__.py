@@ -1,12 +1,5 @@
 """Task 4 reporting pipeline exports."""
 
-from learntrace.reporting.llm import (
-    LLMConfig,
-    LLMInferenceError,
-    OpenAIChatCandidateInferencer,
-    default_candidate_inferencer,
-    llm_config_from_env,
-)
 from learntrace.reporting.pipeline import (
     ArchiveBundle,
     ArchiveWarning,
@@ -26,16 +19,11 @@ __all__ = [
     "ArchiveWarning",
     "CandidateDraft",
     "CandidateInferencer",
-    "LLMConfig",
-    "LLMInferenceError",
-    "OpenAIChatCandidateInferencer",
     "StubCandidateInferencer",
     "apply_confirmations",
     "archive_manifest",
     "build_archive_bundle",
     "bundle_to_dict",
-    "default_candidate_inferencer",
-    "llm_config_from_env",
     "render_markdown",
     "render_questions_markdown",
     "validate_bundle",

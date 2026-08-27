@@ -25,9 +25,9 @@ uv run --locked python -m learntrace run <project-dir> `
   --confirmations student-confirmations.json
 ```
 
-默认使用确定性候选推断器。只有同时设置
-`LEARNTRACE_LLM_ENABLED=1` 和 `LEARNTRACE_LLM_API_KEY` 时才启用远程
-LLM 候选推断；出站字段和隐私边界以 `skills/learntrace/SKILL.md` 为准。
+候选推断为本地确定性规则：CLI 不调用远程 LLM，也不读取任何 `LEARNTRACE_*`
+环境变量；语义层面的理解由宿主 Agent 承担（单 LLM 原则），隐私边界以
+`skills/learntrace/SKILL.md` 为准。
 
 ## 当前产物
 

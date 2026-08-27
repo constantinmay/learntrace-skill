@@ -15,7 +15,6 @@ from learntrace.models import (
     StudentConfirmation,
 )
 from learntrace.reporting import CandidateDraft, apply_confirmations, build_archive_bundle
-from learntrace.reporting.llm import LLMInferenceError
 from learntrace.reporting.pipeline import (
     MAX_CANDIDATES,
     StubCandidateInferencer,
@@ -210,17 +209,25 @@ def test_duplicate_candidate_drafts_merge_basis_deterministically() -> None:
     assert [warning.code for warning in first.warnings] == ["duplicate_candidates_removed"]
 
 
-def test_custom_inferencer_cannot_trigger_llm_fallback_by_string_marker() -> None:
-    class ImpostorInferencer:
+def test_custom_inferencer_failure_is_not_swallowed() -> None:
+    class FailingInferencer:
         inference_mode = "llm"
 
         def infer(self, events: tuple[ObservableEvent, ...]) -> tuple[CandidateDraft, ...]:
-            raise LLMInferenceError("custom failure")
+            raise RuntimeError("custom failure")
 
     event = _event("evt-custom", EventKind.GIT_COMMIT, "提交 a：修改实现。")
 
-    with pytest.raises(LLMInferenceError, match="custom failure"):
-        build_archive_bundle((event,), inferencer=ImpostorInferencer())
+    with pytest.raises(RuntimeError, match="custom failure"):
+        build_archive_bundle((event,), inferencer=FailingInferencer())
+
+
+def test_default_inferencer_is_stub_without_llm_environment() -> None:
+    event = _event("evt-default", EventKind.GIT_COMMIT, "提交 a：修改实现。")
+
+    bundle = build_archive_bundle((event,))
+
+    assert bundle.inference_mode == "stub"
 
 
 def test_english_commit_overview_is_recognized() -> None:

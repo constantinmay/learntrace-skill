@@ -39,7 +39,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 SCHEMA_DIR = REPO_ROOT / "src" / "learntrace" / "schemas" / "v0"
 SCENARIOS_DIR = REPO_ROOT / "tests" / "fixtures" / "golden" / "scenarios"
 SCENARIO_DIRS = tuple(sorted(path for path in SCENARIOS_DIR.iterdir() if path.is_dir()))
-DEMO_DIR = REPO_ROOT / "examples" / "task4-llm-demo"
+DEMO_DIR = REPO_ROOT / "examples" / "task4-demo"
 
 
 def _load_json(path: Path) -> Any:
