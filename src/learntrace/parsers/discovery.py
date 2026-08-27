@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import subprocess
 from collections import Counter
 from collections.abc import Iterable
 from dataclasses import dataclass
@@ -159,10 +160,52 @@ def discover_static_materials(
         return tuple(sorted(values, key=path_key))
 
     has_git = (root / ".git").exists()
+    tracked_files: tuple[str, ...] = ()
+    metadata_only_files: tuple[str, ...] = ()
+    git_marker = root / ".git"
+    # A plain directory named .git is not necessarily a repository (and is used
+    # by callers/tests as a discovery marker). Only invoke Git when its control
+    # file is present or when this is a linked worktree.
+    if has_git and ((git_marker / "HEAD").is_file() or git_marker.is_file()):
+        try:
+            from learntrace.parsers.git import run_git, validated_git_root
+            from learntrace.parsers.git_tree import read_tree_entries
+
+            git_root = validated_git_root(root)
+            head = run_git(git_root, "rev-parse", "--verify", "HEAD")
+            if head.returncode != 0 or not head.stdout.strip():
+                raise ValueError("Git history has no commits")
+            _, tracked_entries = read_tree_entries(git_root, head.stdout.strip())
+            tracked_files = tuple(
+                sorted(
+                    entry["path"] for entry in tracked_entries if isinstance(entry.get("path"), str)
+                )
+            )
+            metadata_only_files = tuple(
+                sorted(
+                    entry["path"]
+                    for entry in tracked_entries
+                    if isinstance(entry.get("path"), str) and not entry.get("available", False)
+                )
+            )
+        except (OSError, subprocess.TimeoutExpired, ValueError) as error:
+            warnings.append(
+                ParseWarning(
+                    "tracked_inventory_unavailable",
+                    ".",
+                    safe_os_error(error)
+                    if isinstance(error, OSError)
+                    else "Git tracked-file inventory timed out"
+                    if isinstance(error, subprocess.TimeoutExpired)
+                    else str(error),
+                )
+            )
     sorted_documents = sort_paths(documents)
     sorted_logs = sort_paths(test_logs)
     inventory = ProjectInventory(
         git_available=has_git,
+        tracked_files=tracked_files,
+        metadata_only_files=metadata_only_files,
         files=tuple(path.as_posix() for path in sort_paths(files)),
         source_files=tuple(path.as_posix() for path in sort_paths(source_files)),
         test_files=tuple(path.as_posix() for path in sort_paths(test_files)),

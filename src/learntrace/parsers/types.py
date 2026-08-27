@@ -32,6 +32,8 @@ class ProjectInventory:
     """材料发现阶段生成的确定性项目文件清单。"""
 
     git_available: bool
+    tracked_files: tuple[str, ...]
+    metadata_only_files: tuple[str, ...]
     files: tuple[str, ...]
     source_files: tuple[str, ...]
     test_files: tuple[str, ...]
@@ -45,6 +47,8 @@ class ProjectInventory:
     def to_dict(self) -> dict[str, Any]:
         return {
             "git_available": self.git_available,
+            "tracked_files": list(self.tracked_files),
+            "metadata_only_files": list(self.metadata_only_files),
             "files": list(self.files),
             "source_files": list(self.source_files),
             "test_files": list(self.test_files),
@@ -64,9 +68,17 @@ class ParseWarning:
     code: str
     source: str
     message: str
+    details: tuple[tuple[str, int | str | bool], ...] = ()
 
-    def to_dict(self) -> dict[str, str]:
-        return {"code": self.code, "source": self.source, "message": self.message}
+    def to_dict(self) -> dict[str, Any]:
+        data: dict[str, Any] = {
+            "code": self.code,
+            "source": self.source,
+            "message": self.message,
+        }
+        if self.details:
+            data["details"] = dict(self.details)
+        return data
 
 
 @dataclass(frozen=True, slots=True)

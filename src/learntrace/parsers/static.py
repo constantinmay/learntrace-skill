@@ -23,7 +23,7 @@ def parse_static_materials(
     document_paths: Iterable[Path],
     test_log_paths: Iterable[Path],
     include_git: bool = True,
-    max_commits: int = 50,
+    max_commits: int | None = None,
     find_copies_harder: bool = False,
     inventory_excluded_paths: Iterable[Path] = (),
 ) -> ParseResult:

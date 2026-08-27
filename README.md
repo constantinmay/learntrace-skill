@@ -70,6 +70,51 @@ learntrace run <project-dir>
 `discover` 只列出候选文档、测试日志和 Git 是否可用，不读取文件内容。宿主
 Agent 应先向学生展示该范围，确认后再运行完整解析。
 
+Task 2 只使用本地 Git，不访问或依赖远程仓库。先生成完整、逐行可检索的轻量索引：
+
+```powershell
+learntrace git-index <project-dir>
+```
+
+历史索引中的每条提交包含 `tree_id`、版本文件数、顶层目录摘要、变更文件角色，
+以及源码和测试是否在同一提交中出现的非因果关系。需要查看一个版本的完整文件
+布局时再按需读取：
+
+```powershell
+learntrace git-tree <project-dir> <revision>
+```
+
+需要理解某次关键修改时，宿主 Agent 再按需导出本地原始证据：
+
+```powershell
+learntrace git-evidence <project-dir> <commit-hash> --path src/example.py
+```
+
+需要回读准确代码行，或检查尚未提交的开发过程时使用：
+
+```powershell
+learntrace git-file <project-dir> <revision> src/example.py --lines 120:180
+learntrace git-file <project-dir> worktree src/example.py --lines 120:180
+learntrace git-worktree <project-dir>
+```
+
+`git-file` 每次最多读取 200 行，并记录 revision、路径、行号、Git object ID 和
+截断状态。`git-worktree` 记录 staged、unstaged、untracked、删除、重命名和冲突，
+但不会自动读取未跟踪文件内容；需要时仍由宿主 Agent 通过 `git-file ... worktree`
+按范围读取。LearnTrace 自己生成的 `.learntrace/` 和 `learning-record.md` 不进入
+工作区证据，避免工具输出被误当成用户开发过程。
+
+命令在 `<project-dir>/.learntrace/evidence/git/<commit-hash>/` 写入 `index.json`、
+提交 diff 和相关文件的改前/改后版本。`index.json` 同时记录 diff hunk、对应源码
+行范围和每项产物是否截断。该目录属于用户已授权的本地项目证据，不执行面向
+公开分享的脱敏；应将 `.learntrace/` 加入目标项目的忽略规则，不要提交或直接分享。
+二进制、非 UTF-8、Git LFS 指针和 submodule 不会被伪装成普通源码，索引会保留
+路径、对象、大小和不可用原因，供最终档案如实说明证据缺口。
+
+Git 历史默认完整读取，不使用任意条数上限。`--max-commits` 仅是调用方显式启用
+的侧支细节预算；first-parent 主线和所有 merge commit 始终保留，被省略内容会
+形成聚合事实和结构化统计。
+
 首次运行会生成 `learning-record.md`，并在 `<project-dir>/.learntrace/`
 写入 Task 2、Task 3、机器可读档案和待确认问题。
 

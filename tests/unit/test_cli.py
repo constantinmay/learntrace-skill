@@ -120,6 +120,36 @@ def test_run_parser_accepts_confirmation_files() -> None:
     assert args.confirmations == [Path("first.json"), Path("second.json")]
 
 
+def test_git_evidence_parser_accepts_commit_paths_and_limit() -> None:
+    args = cli_module.build_parser().parse_args(
+        [
+            "git-evidence",
+            "sample-project",
+            "a1b2c3d4",
+            "--path",
+            "src/parser.py",
+            "--path",
+            "tests/test_parser.py",
+            "--max-chars",
+            "2000000",
+        ]
+    )
+
+    assert args.project_dir == Path("sample-project")
+    assert args.commit == "a1b2c3d4"
+    assert args.path == ["src/parser.py", "tests/test_parser.py"]
+    assert args.max_chars == 2_000_000
+
+
+def test_git_index_parser_accepts_local_output() -> None:
+    args = cli_module.build_parser().parse_args(
+        ["git-index", "sample-project", "--output", ".learntrace/history.jsonl"]
+    )
+
+    assert args.project_dir == Path("sample-project")
+    assert args.output == Path(".learntrace/history.jsonl")
+
+
 def test_main_reports_missing_records_without_traceback(
     tmp_path: Path,
     capsys: CaptureFixture[str],

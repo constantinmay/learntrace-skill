@@ -43,6 +43,49 @@ learntrace run <project-dir>
 Use repeatable `--document` and `--test-log` arguments when the student approved
 only a subset. Add `--no-git` when Git history was not approved.
 
+Treat Task 2 Git events as navigation into the code evidence, not as a semantic
+description of the change. When a commit is important to the final account,
+first build the complete local navigation index, then use its full hash and
+relevant file paths to inspect the version layout and request original evidence:
+
+```powershell
+learntrace git-index <project-dir>
+learntrace git-tree <project-dir> <commit-hash>
+learntrace git-evidence <project-dir> <commit-hash> --path <repository-path>
+learntrace git-file <project-dir> <commit-hash> <repository-path> --lines <start>:<end>
+```
+
+After Task 2 is available, use these interfaces instead of raw `git log`, `git show`,
+`git diff`, or broad repository reads. Search `history.jsonl` with a narrow text query,
+then follow its structured commit, tree, path, and line locators. Native Git is only a
+declared fallback when the corresponding LearnTrace command fails; record that failure
+and the fallback in the evidence account.
+
+Search `.learntrace/evidence/git/history.jsonl` without loading it all into the
+conversation. Use its `tree_id`, top-level layout, file roles, and changed paths to
+choose evidence; do not treat them as a code summary. Read
+`.learntrace/evidence/git/<commit-hash>/index.json` first, then only the artifacts
+needed for the investigation. Check every artifact's `available`, `truncated`, and
+locator fields. Use `git-file` to continue into adjacent source or test ranges instead
+of guessing from a hunk.
+
+When uncommitted work is relevant, run:
+
+```powershell
+learntrace git-worktree <project-dir>
+learntrace git-file <project-dir> worktree <repository-path> --lines <start>:<end>
+```
+
+The worktree index does not include untracked file content. Read an authorized file
+only when needed. A `same_commit` source/test relation is navigation only and has
+`causal=false`; verify the actual assertion and implementation before describing a
+connection. Cross-check important code changes with tests, logs, and authorized Task 3
+conversation evidence before writing a conclusion. If binary, non-UTF-8, LFS, submodule,
+or truncated evidence cannot be read, preserve that gap in the final account.
+
+The export directory contains full local authorized evidence; it must not be committed
+or shared directly.
+
 ### Consume existing Task 2 / Task 3 JSON
 
 From the project root, keep the input directory unchanged and use these exact
