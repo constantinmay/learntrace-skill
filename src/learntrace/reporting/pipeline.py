@@ -5,7 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
-from collections.abc import Callable, Iterable
+from collections.abc import Callable
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from enum import Enum
@@ -30,8 +30,10 @@ ARCHIVE_VERSION = "v0"
 
 HASH_ALGORITHM = "sha256"
 MAX_CANDIDATES = 10
-_MAX_TRACE_COMMIT_GAP_SECONDS = 30 * 60
 _MAX_CROSS_SESSION_GAP_SECONDS = 24 * 60 * 60
+# Time proximity within this window still surfaces a trace/commit pair for
+# student review, but only as a question, never as a candidate.
+_PROXIMITY_QUESTION_WINDOW_SECONDS = 30 * 60
 _OPENCODE_SESSION_RE = re.compile(r"^trace://opencode/(?P<session>[^/]+)/")
 
 _CONSTRAINT_TERMS = (
@@ -48,22 +50,6 @@ _CONSTRAINT_TERMS = (
     "格式",
     "评分",
     "状态",
-)
-_LOW_SIGNAL_TRACE_TERMS = (
-    "命令类型：git add",
-    "命令类型：git log",
-    "命令类型：git status",
-    "命令类型：kill",
-    "命令类型：ls",
-    "命令类型：node",
-    "命令类型：pgrep",
-    "命令类型：pkill",
-    "命令类型：rm",
-    "命令类型：ss",
-    "工具 ls",
-    "工具 node",
-    "工具 rm",
-    "工具 todowrite",
 )
 _CHANGE_MARKERS = (
     "改",
@@ -310,12 +296,6 @@ class StubCandidateInferencer:
                 if self._revise_ai_matches(trace, commit) and precedes(trace, commit):
                     drafts.append(self._revise_ai_candidate(trace, commit))
 
-        # Minimal Task 3 traces often record only a completed tool operation.
-        # Associate those conservatively with the nearest following commit,
-        # one-to-one and within a bounded time window. This preserves trace
-        # provenance without claiming that a particular AI suggestion was used.
-        drafts.extend(self._trace_commit_follow_ups(traces, commits, drafts))
-
         # Fixes: bind the FAILING log (not an arbitrary first test log) to the
         # commit that follows it.
         for failing_log in failing_logs:
@@ -414,51 +394,6 @@ class StubCandidateInferencer:
                 "后一个会话是否延续了前一个会话中的问题？你具体推进或验证了什么？"
             ),
         )
-
-    def _trace_commit_follow_ups(
-        self,
-        traces: tuple[ObservableEvent, ...],
-        commits: tuple[ObservableEvent, ...],
-        existing_drafts: Iterable[CandidateDraft],
-    ) -> tuple[CandidateDraft, ...]:
-        used_event_ids = {
-            event_id
-            for draft in existing_drafts
-            if draft.node_type == NodeType.REVISE_AI_SUGGESTION
-            for event_id in draft.basis_event_ids
-        }
-        available = [
-            trace
-            for trace in traces
-            if trace.id not in used_event_ids
-            and not _is_low_signal_trace(trace)
-            and _has_trace_learning_signal(trace)
-        ]
-        follow_ups: list[CandidateDraft] = []
-        for commit in commits:
-            if commit.id in used_event_ids:
-                continue
-            preceding: list[tuple[float, ObservableEvent, int]] = []
-            for trace in available:
-                gap_seconds = _trace_commit_gap_seconds(trace, commit)
-                relevance = _topic_match_score(trace.summary, commit.summary)
-                if (
-                    gap_seconds is not None
-                    and gap_seconds <= _MAX_TRACE_COMMIT_GAP_SECONDS
-                    and relevance > 0
-                ):
-                    preceding.append((gap_seconds, trace, relevance))
-            if not preceding:
-                continue
-            _, trace, relevance = min(
-                preceding,
-                key=lambda item: (-item[2], item[0], item[1].id),
-            )
-            available.remove(trace)
-            follow_ups.append(
-                self._trace_commit_follow_up_candidate(trace, commit, relevance=relevance)
-            )
-        return tuple(follow_ups)
 
     @staticmethod
     def _adjust_constraints_match_score(
@@ -638,24 +573,6 @@ class StubCandidateInferencer:
             question_to_student="后续追问是否让你形成了新的理解？",
         )
 
-    @staticmethod
-    def _trace_commit_follow_up_candidate(
-        trace: ObservableEvent,
-        commit: ObservableEvent,
-        *,
-        relevance: int,
-    ) -> CandidateDraft:
-        return CandidateDraft(
-            node_type=NodeType.FOLLOW_UP,
-            statement="学生可能在使用编码助手完成一项工具操作后继续推进，并形成了后续代码提交。",
-            basis_event_ids=(trace.id, commit.id),
-            uncertainty=(
-                f"高：轨迹与提交具有主题关联（相关性得分 {relevance}）且时间邻近，"
-                "但工具操作目的、提交内容与学习收获仍需学生确认。"
-            ),
-            question_to_student="这次工具操作是否帮助你推进了后续提交？你从中形成了什么新理解？",
-        )
-
     def _adjust_constraints_candidate(
         self,
         document: ObservableEvent,
@@ -791,11 +708,6 @@ def _opencode_session_ids(event: ObservableEvent) -> frozenset[str]:
         if match is not None:
             sessions.add(match.group("session"))
     return frozenset(sessions)
-
-
-def _is_low_signal_trace(trace: ObservableEvent) -> bool:
-    lowered = trace.summary.casefold()
-    return any(term.casefold() in lowered for term in _LOW_SIGNAL_TRACE_TERMS)
 
 
 def _has_trace_learning_signal(trace: ObservableEvent) -> bool:
@@ -1384,6 +1296,54 @@ def fallback_reflection_questions(bundle: ArchiveBundle) -> tuple[dict[str, obje
     return tuple(questions)
 
 
+def time_proximity_reflection_questions(bundle: ArchiveBundle) -> tuple[dict[str, object], ...]:
+    """Return reflection prompts for trace/commit pairs that are merely near.
+
+    Time proximity plus topical overlap no longer materializes a candidate:
+    it only produces a question for the student to confirm or dismiss. These
+    prompts are deliberately *not* learning-node candidates and cannot be
+    confirmed or denied through the student confirmation flow.
+    """
+
+    questions: dict[str, dict[str, object]] = {}
+    for event in bundle.events:
+        if event.kind != EventKind.TRACE_RECORD or event.occurred_at is None:
+            continue
+        if not _has_trace_learning_signal(event):
+            continue
+        for other in bundle.events:
+            # Only commit overviews qualify: file-level change events share
+            # the same timestamp and would duplicate the question.
+            if (
+                other.kind != EventKind.GIT_COMMIT
+                or other.occurred_at is None
+                or not _is_commit_overview(other.summary)
+            ):
+                continue
+            gap_seconds = _trace_commit_gap_seconds(event, other)
+            if gap_seconds is None or gap_seconds > _PROXIMITY_QUESTION_WINDOW_SECONDS:
+                continue
+            if not _topics_related(event.summary, other.summary):
+                continue
+            question_id = f"proximity-{event.id}-{other.id}"
+            questions[question_id] = {
+                "question_id": question_id,
+                "question_type": "time_proximity_review",
+                "candidate_id": None,
+                "node_type": None,
+                "question_to_student": (
+                    f"在轨迹记录 {event.id} 与代码提交 {other.id} 附近，观察到两次记录"
+                    "时间接近且主题相近。它们是否属于同一次工作？当时是什么情况？"
+                    "（不回答将记录为“未确认”）"
+                ),
+                "basis_event_ids": [event.id, other.id],
+                "uncertainty": (
+                    "高：时间接近与主题重合不能证明因果关系；是否构成同一工作环节需学生确认。"
+                ),
+            }
+    return tuple(questions[key] for key in sorted(questions))
+
+
 def _source_index(bundle: ArchiveBundle) -> list[dict[str, object]]:
 
     candidate_ids_by_event = {
@@ -1504,6 +1464,7 @@ def bundle_to_dict(
         if candidate.status == CandidateStatus.PROPOSED
     ]
     pending_questions.extend(fallback_reflection_questions(bundle))
+    pending_questions.extend(time_proximity_reflection_questions(bundle))
 
     missing_info_count = _missing_info_count(bundle)
 
