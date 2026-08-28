@@ -22,8 +22,16 @@ from learntrace.archive import main as archive_main
 from learntrace.archive import write_learning_record_result
 from learntrace.models import ObservableEvent
 from learntrace.parsers import discover_static_materials, parse_static_materials, write_parse_result
+from learntrace.reporting import (
+    load_archive,
+    load_payload,
+    render_narrative_markdown,
+    verify_payload,
+)
 
-_COMMANDS = frozenset({"adapt", "archive", "discover", "parse", "run"})
+_COMMANDS = frozenset(
+    {"adapt", "archive", "discover", "parse", "render-narrative", "run", "verify-narrative"}
+)
 _MAX_TOTAL_TRACE_EVENTS = 10_000
 _TRACE_EXPORT_ADAPTERS = {
     "opencode": adapt_opencode_exports,
@@ -84,6 +92,31 @@ def build_parser() -> argparse.ArgumentParser:
         help="Authorize one exact export path (repeat for multiple sessions).",
     )
     adapt_parser.add_argument("-o", "--output", type=Path)
+
+    verify_parser = subparsers.add_parser(
+        "verify-narrative",
+        help="Check a narrative payload against its archive (three red lines).",
+    )
+    verify_parser.add_argument("payload_path", type=Path, help="Narrative payload JSON file.")
+    verify_parser.add_argument(
+        "archive_path", type=Path, help="archive-records.json produced by the archive step."
+    )
+
+    render_parser = subparsers.add_parser(
+        "render-narrative",
+        help="Render a verified narrative payload to Markdown (working or submitted).",
+    )
+    render_parser.add_argument("payload_path", type=Path, help="Narrative payload JSON file.")
+    render_parser.add_argument(
+        "archive_path", type=Path, help="archive-records.json produced by the archive step."
+    )
+    render_parser.add_argument("-o", "--output", type=Path)
+    render_parser.add_argument(
+        "--variant",
+        choices=("working", "submitted"),
+        default=None,
+        help="Override the payload's own variant (default: payload.variant).",
+    )
 
     run_parser = subparsers.add_parser("run", help="Run the local parse-to-archive pipeline.")
     _add_parse_options(run_parser)
@@ -314,6 +347,36 @@ def _run_command(args: argparse.Namespace, parser: argparse.ArgumentParser) -> i
                 f"(status={result.status}, events={len(result.events)}, "
                 f"warnings={len(result.warnings)})"
             )
+            return 0
+        if args.command in ("verify-narrative", "render-narrative"):
+            payload = load_payload(args.payload_path)
+            archive = load_archive(args.archive_path)
+            violations = verify_payload(payload, archive)
+            if violations:
+                print(
+                    json.dumps(
+                        {"valid": False, "violations": violations},
+                        ensure_ascii=False,
+                        indent=2,
+                    )
+                )
+                return 1
+            if args.command == "verify-narrative":
+                print(
+                    json.dumps(
+                        {"valid": True, "violations": []},
+                        ensure_ascii=False,
+                        indent=2,
+                    )
+                )
+                return 0
+            markdown = render_narrative_markdown(payload, archive, variant=args.variant)
+            if args.output is not None:
+                args.output.parent.mkdir(parents=True, exist_ok=True)
+                args.output.write_text(markdown, encoding="utf-8")
+                print(f"Wrote narrative render: {args.output}")
+            else:
+                print(markdown, end="")
             return 0
 
         root = args.project_dir.resolve()

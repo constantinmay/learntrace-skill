@@ -87,6 +87,11 @@ def _render_safe_text(value: str) -> str:
     return _ABSOLUTE_PATH_RE.sub("[absolute-path]", text)
 
 
+def render_safe_text(value: str) -> str:
+    """Public redaction boundary for narrative renders (same rules as reports)."""
+    return _render_safe_text(value)
+
+
 def _render_text(value: TextOrMissing) -> str:
     if isinstance(value, MissingInfo):
         return "未记录"
