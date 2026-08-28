@@ -247,15 +247,21 @@ def _looks_like_learntrace_container(data: JsonObject) -> bool:
 
 
 def _looks_like_generated_archive_json(data: JsonObject) -> bool:
-    return (
-        data.get(_LEARNTRACE_BUNDLE_MARKER) is True
-        and "archive_manifest" in data
-        and "record_counts" in data
-        and "quality_checks" in data
-        and "risk_flags" in data
-        and "source_index" in data
-        and "candidate_links" in data
+    # Recognize both the current (marker-tagged) archive and older snapshots
+    # produced before ``learntrace_bundle`` existed. Older snapshots lack the
+    # marker but still carry the archive-only shape (``archive_manifest``,
+    # ``record_counts``, ``archive_version``) that a Task2 ``parse-result.json``
+    # or a teacher-authored foreign JSON never has. Treating both as generated
+    # keeps a stale ``out/archive-records.json`` from being re-ingested as input
+    # and colliding with the authoritative parse-result events.
+    has_archive_shape = (
+        "archive_manifest" in data and "record_counts" in data and "archive_version" in data
     )
+    if not has_archive_shape:
+        return False
+    if data.get(_LEARNTRACE_BUNDLE_MARKER) is True:
+        return True
+    return "events" in data and "candidates" in data
 
 
 def _looks_like_learntrace_json(data: JsonObject) -> bool:
