@@ -141,6 +141,14 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Fail on unrelated JSON files instead of skipping them.",
     )
+    parser.add_argument(
+        "--evidence-layer",
+        action="store_true",
+        help=(
+            "Opt into the additive evidence-state frontend. Off by default; "
+            "leaving it off preserves the classic archive output unchanged."
+        ),
+    )
     parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     return parser
 
@@ -753,6 +761,7 @@ def write_learning_record_result(
     strict_inputs: bool = False,
     confirmation_paths: Iterable[Path] = (),
     snapshot_path: Path | None = None,
+    evidence_layer: bool = False,
 ) -> LearningRecordWriteResult:
     contract_validator = validator if validator is not None else ContractValidator()
     explicit_confirmations = tuple(
@@ -803,12 +812,33 @@ def write_learning_record_result(
         _write_text(records_output_path, f"{archive_json}\n")
     if questions_output_path is not None:
         _write_text(questions_output_path, render_questions_markdown(bundle))
+    if evidence_layer:
+        _write_evidence_state(bundle, project_dir.resolve())
     return LearningRecordWriteResult(
         output_path=destination,
         records_output_path=records_output_path,
         questions_output_path=questions_output_path,
         archive=archive,
     )
+
+
+def _write_evidence_state(bundle: ArchiveBundle, project_dir: Path) -> None:
+    """Persist the additive evidence-state frontend beside the archive.
+
+    This writes a separate ``.learntrace/evidence-state.json``; it never alters
+    the archive JSON or the Markdown projection. It is only called when the
+    caller explicitly opts in with ``evidence_layer=True``.
+    """
+    from learntrace.evidence.frontend import build_evidence_state
+
+    state, snapshot = build_evidence_state(bundle)
+    payload = {
+        "learntrace_evidence_state": True,
+        "snapshot": snapshot.to_dict(),
+        "state": state.to_dict(),
+    }
+    destination = project_dir / ".learntrace" / "evidence-state.json"
+    _write_text(destination, json.dumps(payload, ensure_ascii=False, indent=2) + "\n")
 
 
 def write_learning_record(
@@ -822,6 +852,7 @@ def write_learning_record(
     strict_inputs: bool = False,
     confirmation_paths: Iterable[Path] = (),
     snapshot_path: Path | None = None,
+    evidence_layer: bool = False,
 ) -> Path:
     result = write_learning_record_result(
         project_dir,
@@ -833,6 +864,7 @@ def write_learning_record(
         strict_inputs=strict_inputs,
         confirmation_paths=confirmation_paths,
         snapshot_path=snapshot_path,
+        evidence_layer=evidence_layer,
     )
     return result.output_path
 
@@ -876,6 +908,7 @@ def main(argv: list[str] | tuple[str, ...] | None = None) -> int:
             strict_inputs=args.strict_inputs,
             confirmation_paths=tuple(args.confirmations),
             snapshot_path=args.snapshot,
+            evidence_layer=args.evidence_layer,
         )
     except (FileNotFoundError, LLMInferenceError, ValueError) as exc:
         parser.exit(1, f"{parser.prog}: error: {exc}\n")
