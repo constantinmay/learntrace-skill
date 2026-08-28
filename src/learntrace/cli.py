@@ -16,10 +16,17 @@ from learntrace.adapters import (
     adapt_claude_code_exports,
     adapt_codex_exports,
     adapt_opencode_exports,
+    events_conflict,
     write_trace_result,
 )
 from learntrace.archive import main as archive_main
 from learntrace.archive import write_learning_record_result
+from learntrace.evidence import (
+    export_git_commit,
+    export_project_file,
+    export_session_evidence,
+    load_evidence_index,
+)
 from learntrace.models import ObservableEvent
 from learntrace.parsers import discover_static_materials, parse_static_materials, write_parse_result
 from learntrace.reporting import (
@@ -30,7 +37,16 @@ from learntrace.reporting import (
 )
 
 _COMMANDS = frozenset(
-    {"adapt", "archive", "discover", "parse", "render-narrative", "run", "verify-narrative"}
+    {
+        "adapt",
+        "archive",
+        "discover",
+        "export-evidence",
+        "parse",
+        "render-narrative",
+        "run",
+        "verify-narrative",
+    }
 )
 _MAX_TOTAL_TRACE_EVENTS = 10_000
 _TRACE_EXPORT_ADAPTERS = {
@@ -47,6 +63,17 @@ def _add_parse_options(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--no-git", action="store_true", help="Do not read local Git history.")
     parser.add_argument("--max-commits", type=int, default=None, help="Default: 50.")
     parser.add_argument("--find-copies-harder", action="store_true")
+    parser.add_argument(
+        "--author",
+        type=str,
+        default=None,
+        help=(
+            "Multi-author repositories: keep only this author's commits (matched "
+            "literally, case-insensitively, against the author name or email). "
+            "Other authors' commits are filtered at the parse layer and reported "
+            "as an explicit collaboration boundary, not hidden."
+        ),
+    )
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -101,6 +128,46 @@ def build_parser() -> argparse.ArgumentParser:
     verify_parser.add_argument(
         "archive_path", type=Path, help="archive-records.json produced by the archive step."
     )
+
+    export_parser = subparsers.add_parser(
+        "export-evidence",
+        help="On-demand evidence read-back into .learntrace/evidence/ (not pre-generated).",
+    )
+    export_parser.add_argument("project_dir", type=Path)
+    export_parser.add_argument(
+        "--git-commit",
+        type=str,
+        default=None,
+        help="Export one commit (message + diff) to evidence/git/.",
+    )
+    export_parser.add_argument(
+        "--file",
+        type=str,
+        default=None,
+        help="Export one project-relative file (redacted) to evidence/files/.",
+    )
+    export_parser.add_argument(
+        "--session-export",
+        type=Path,
+        default=None,
+        help="Export one authorized session slice to evidence/sessions/.",
+    )
+    export_parser.add_argument(
+        "--source",
+        choices=tuple(_TRACE_EXPORT_ADAPTERS),
+        default="opencode",
+        help="Host for --session-export (default: opencode).",
+    )
+    export_parser.add_argument(
+        "--authorization",
+        choices=("minimal", "full"),
+        default="minimal",
+        help=(
+            "Session slice retention level: minimal = only the five v0 event "
+            "fields; full = the raw file (requires full-read authorization)."
+        ),
+    )
+    export_parser.add_argument("--list", action="store_true", help="Print the evidence index.")
 
     render_parser = subparsers.add_parser(
         "render-narrative",
@@ -195,6 +262,7 @@ def _parse_project(
         max_commits=args.max_commits if args.max_commits is not None else 50,
         find_copies_harder=args.find_copies_harder,
         inventory_excluded_paths=excluded_documents,
+        git_author=args.author,
     )
     write_parse_result(result, output_path)
     return len(result.events), len(result.warnings)
@@ -264,7 +332,7 @@ def _merge_trace_results(
             existing = events_by_id.get(event.id)
             if existing is None:
                 events_by_id[event.id] = event
-            elif existing.to_dict() != event.to_dict():
+            elif events_conflict(existing, event):
                 raise ValueError("多个轨迹来源包含 ID 相同但内容冲突的工具记录。")
 
     events = sorted(events_by_id.values(), key=_trace_event_sort_key)
@@ -302,18 +370,54 @@ def _run_command(args: argparse.Namespace, parser: argparse.ArgumentParser) -> i
         if args.command == "discover":
             discovered = discover_static_materials(args.project_dir.resolve())
             inventory = discovered.inventory
+            payload: dict[str, object] = {
+                "git_available": discovered.has_git,
+                "documents": [path.as_posix() for path in discovered.documents],
+                "test_logs": [path.as_posix() for path in discovered.test_logs],
+                "inventory_counts": {
+                    "files": len(inventory.files),
+                    "source_files": len(inventory.source_files),
+                    "test_files": len(inventory.test_files),
+                },
+                "warnings": [warning.to_dict() for warning in discovered.warnings],
+            }
+            if discovered.git_authors:
+                payload["git_authors"] = [
+                    {"name": item.name, "email": item.email, "commits": item.commits}
+                    for item in discovered.git_authors
+                ]
+            print(json.dumps(payload, ensure_ascii=False, indent=2))
+            return 0
+        if args.command == "export-evidence":
+            root = args.project_dir.resolve()
+            if args.list:
+                entries = load_evidence_index(root)
+                print(json.dumps([entry for entry in entries], ensure_ascii=False, indent=2))
+                return 0
+            exported: list[dict[str, object]] = []
+            if args.git_commit is not None:
+                entry = export_git_commit(root, args.git_commit)
+                exported.append(entry.to_dict())
+            if args.file is not None:
+                entry = export_project_file(root, args.file)
+                exported.append(entry.to_dict())
+            if args.session_export is not None:
+                entry = export_session_evidence(
+                    root,
+                    args.session_export,
+                    source=args.source,
+                    authorization=args.authorization,
+                )
+                exported.append(entry.to_dict())
+            if not exported:
+                raise ValueError(
+                    "export-evidence needs one of --git-commit, --file, --session-export, or --list"
+                )
             print(
                 json.dumps(
                     {
-                        "git_available": discovered.has_git,
-                        "documents": [path.as_posix() for path in discovered.documents],
-                        "test_logs": [path.as_posix() for path in discovered.test_logs],
-                        "inventory_counts": {
-                            "files": len(inventory.files),
-                            "source_files": len(inventory.source_files),
-                            "test_files": len(inventory.test_files),
-                        },
-                        "warnings": [warning.to_dict() for warning in discovered.warnings],
+                        "evidence_dir": (root / ".learntrace" / "evidence").as_posix(),
+                        "exported": exported,
                     },
                     ensure_ascii=False,
                     indent=2,
@@ -396,6 +500,8 @@ def _run_command(args: argparse.Namespace, parser: argparse.ArgumentParser) -> i
                 conflicting_options.append("--max-commits")
             if args.find_copies_harder:
                 conflicting_options.append("--find-copies-harder")
+            if args.author is not None:
+                conflicting_options.append("--author")
             if args.opencode_export:
                 conflicting_options.append("--opencode-export")
             if args.authorized:

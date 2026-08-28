@@ -17,6 +17,7 @@ from learntrace.adapters.types import (
     TraceInputStatus,
     TraceParseIssue,
     UnsupportedOpenCodeFormatError,
+    events_conflict,
 )
 from learntrace.models import (
     ContractValidator,
@@ -369,6 +370,11 @@ def adapt_opencode_export(
                         ref=source_ref,
                         note="opencode",
                     ),
+                    SourceRef(
+                        type=SourceType.FILE,
+                        ref=export_path.resolve().as_posix(),
+                        note="session-export",
+                    ),
                 ),
                 occurred_at=_occurred_at(
                     state,
@@ -447,7 +453,7 @@ def adapt_opencode_exports(
             if existing is None:
                 events_by_id[event.id] = event
                 continue
-            if existing.to_dict() != event.to_dict():
+            if events_conflict(existing, event):
                 raise UnsupportedOpenCodeFormatError(
                     "多个 OpenCode 导出包含 ID 相同但内容冲突的工具记录。"
                 )

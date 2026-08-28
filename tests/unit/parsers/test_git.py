@@ -10,7 +10,7 @@ import pytest
 
 from learntrace.models import ContractValidator, SourceType
 from learntrace.parsers import git as git_module
-from learntrace.parsers import parse_git_history
+from learntrace.parsers import list_git_authors, parse_git_history, read_git_commit_text
 
 
 class _MonkeyPatch(Protocol):
@@ -373,3 +373,177 @@ def test_reports_commit_diff_timeout(tmp_path: Path, monkeypatch: _MonkeyPatch) 
 def test_rejects_non_positive_commit_limit(tmp_path: Path) -> None:
     with pytest.raises(ValueError, match="max_commits must be at least 1"):
         parse_git_history(tmp_path, max_commits=0)
+
+
+def _commit_as(root: Path, message: str, *, author: str, email: str, when: str) -> None:
+    env = dict(os.environ)
+    env["GIT_AUTHOR_NAME"] = author
+    env["GIT_AUTHOR_EMAIL"] = email
+    env["GIT_AUTHOR_DATE"] = when
+    env["GIT_COMMITTER_DATE"] = when
+    _git(root, "commit", "-q", "--allow-empty", "-m", message, env=env)
+
+
+def _make_two_author_repository(root: Path) -> None:
+    """两个作者的仓库：学生 2 个提交，协作方 1 个提交（最新）。"""
+    repository = root / "repository"
+    _make_repository(repository)
+    _commit_as(
+        repository,
+        "add feature",
+        author="Student One",
+        email="student@example.invalid",
+        when="2026-07-21T11:00:00+08:00",
+    )
+    _commit_as(
+        repository,
+        "review fix",
+        author="Teammate",
+        email="teammate@example.invalid",
+        when="2026-07-22T12:00:00+08:00",
+    )
+
+
+def test_author_filter_keeps_only_matching_author_commits(tmp_path: Path) -> None:
+    _make_two_author_repository(tmp_path)
+
+    result = parse_git_history(tmp_path / "repository", author="Student One")
+
+    assert len(result.warnings) == 1
+    warning = result.warnings[0]
+    assert warning.code == "git_author_filtered"
+    assert warning.source == "."
+    # 初始提交（Fixture User）与协作方提交都被过滤，只剩学生本人的 1 个
+    assert "2 个不属于作者" in warning.message
+    assert "Student One" in warning.message
+    commit_summaries = [event.summary for event in result.events if event.id.startswith("evt-git-")]
+    assert len(commit_summaries) == 1
+    assert "add feature" in commit_summaries[0]
+    assert all("review fix" not in summary for summary in commit_summaries)
+
+
+def test_author_filter_matches_email_and_is_case_insensitive(tmp_path: Path) -> None:
+    _make_two_author_repository(tmp_path)
+
+    by_email = parse_git_history(tmp_path / "repository", author="student@example.invalid")
+    assert any(warning.code == "git_author_filtered" for warning in by_email.warnings)
+    summaries = [event.summary for event in by_email.events if event.id.startswith("evt-git-")]
+    assert any("add feature" in summary for summary in summaries)
+    assert not any("review fix" in summary for summary in summaries)
+
+    by_case = parse_git_history(tmp_path / "repository", author="STUDENT ONE")
+    assert [warning.code for warning in by_case.warnings] == ["git_author_filtered"]
+    commit_summaries = [
+        event.summary for event in by_case.events if event.id.startswith("evt-git-")
+    ]
+    assert any("add feature" in summary for summary in commit_summaries)
+    assert not any("review fix" in summary for summary in commit_summaries)
+
+
+def test_author_filter_without_matches_reports_boundary_and_empty_events(tmp_path: Path) -> None:
+    _make_two_author_repository(tmp_path)
+
+    result = parse_git_history(tmp_path / "repository", author="Nobody Else")
+
+    assert result.events == ()
+    assert len(result.warnings) == 1
+    warning = result.warnings[0]
+    assert warning.code == "git_author_filtered"
+    assert "3 个不属于作者" in warning.message
+    assert "Nobody Else" in warning.message
+
+
+def test_author_filter_uses_full_history_before_window_truncation(tmp_path: Path) -> None:
+    """作者过滤作用于全部历史，早期本人提交不会被最新的协作方提交挤出窗口。"""
+    repository = tmp_path / "repository"
+    repository.mkdir()
+    _git(repository, "init", "-q")
+    _git(repository, "config", "user.name", "Fixture User")
+    _git(repository, "config", "user.email", "fixture@example.invalid")
+    _commit_as(
+        repository,
+        "first",
+        author="Student One",
+        email="student@example.invalid",
+        when="2026-07-20T10:00:00+08:00",
+    )
+    _commit_as(
+        repository,
+        "second",
+        author="Student One",
+        email="student@example.invalid",
+        when="2026-07-21T11:00:00+08:00",
+    )
+    _commit_as(
+        repository,
+        "team fix",
+        author="Teammate",
+        email="teammate@example.invalid",
+        when="2026-07-22T12:00:00+08:00",
+    )
+    _commit_as(
+        repository,
+        "team fix 2",
+        author="Teammate",
+        email="teammate@example.invalid",
+        when="2026-07-23T13:00:00+08:00",
+    )
+
+    result = parse_git_history(repository, author="Student One", max_commits=1)
+
+    commit_summaries = [event.summary for event in result.events if event.id.startswith("evt-git-")]
+    # 若先窗口后过滤，max_commits=1 只会看到最新的协作方提交而返回空；
+    # 正确语义是先按作者过滤全历史，再截断窗口
+    assert len(commit_summaries) == 1
+    assert "second" in commit_summaries[0]
+    assert [warning.code for warning in result.warnings] == [
+        "git_author_filtered",
+        "git_history_truncated",
+    ]
+    assert "2 个不属于作者" in result.warnings[0].message
+
+
+def test_list_git_authors_aggregates_counts_and_orders_by_commit_count(tmp_path: Path) -> None:
+    _make_two_author_repository(tmp_path)
+
+    authors = list_git_authors(tmp_path / "repository")
+
+    assert [(item.name, item.email, item.commits) for item in authors] == [
+        ("Fixture User", "fixture@example.invalid", 1),
+        ("Student One", "student@example.invalid", 1),
+        ("Teammate", "teammate@example.invalid", 1),
+    ]
+    # 数量相同时按名称排序：让 Student One 多一个提交后应排到最前
+    _commit_as(
+        tmp_path / "repository",
+        "one more",
+        author="Student One",
+        email="student@example.invalid",
+        when="2026-07-23T13:00:00+08:00",
+    )
+    ranked = list_git_authors(tmp_path / "repository")
+    assert (ranked[0].name, ranked[0].commits) == ("Student One", 2)
+
+
+def test_list_git_authors_is_empty_outside_a_repository(tmp_path: Path) -> None:
+    assert list_git_authors(tmp_path) == ()
+
+
+def test_read_git_commit_text_returns_message_and_diff(tmp_path: Path) -> None:
+    repository = tmp_path / "repository"
+    commit_id = _make_repository(repository)
+
+    text = read_git_commit_text(repository, commit_id)
+
+    assert "add parser module" in text
+    assert commit_id in text
+    assert "src/parser.py" in text
+    assert "+VALUE = 1" in text
+
+
+def test_read_git_commit_text_raises_on_unknown_commit(tmp_path: Path) -> None:
+    repository = tmp_path / "repository"
+    _make_repository(repository)
+
+    with pytest.raises(ValueError, match="bad object"):
+        read_git_commit_text(repository, "0" * 40)
