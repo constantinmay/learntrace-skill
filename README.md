@@ -94,19 +94,24 @@ learntrace git-evidence <project-dir> <commit-hash> --path src/example.py
 
 ```powershell
 learntrace git-file <project-dir> <revision> src/example.py --lines 120:180
+learntrace git-file <project-dir> <revision> src/generated.txt --bytes 0:65535
+learntrace git-file <project-dir> index src/example.py --lines 120:180
 learntrace git-file <project-dir> worktree src/example.py --lines 120:180
 learntrace git-worktree <project-dir>
 ```
 
-`git-file` 每次最多读取 200 行，并记录 revision、路径、行号、Git object ID 和
-截断状态。`git-worktree` 记录 staged、unstaged、untracked、删除、重命名和冲突，
+`git-file` 每次最多读取 200 行或 1,000,000 字节，并记录 revision、路径、Git
+object ID、实际范围、`reached_eof` 和下一页 continuation。限制的是单次返回量，
+不是文件可访问范围；超长单行可改用 `--bytes` 继续读取。`index` 读取暂存区版本，
+`worktree` 读取当前工作区版本。`git-worktree` 记录 staged、unstaged、untracked、删除、重命名和冲突，
 但不会自动读取未跟踪文件内容；需要时仍由宿主 Agent 通过 `git-file ... worktree`
 按范围读取。LearnTrace 自己生成的 `.learntrace/` 和 `learning-record.md` 不进入
 工作区证据，避免工具输出被误当成用户开发过程。
 
-命令在 `<project-dir>/.learntrace/evidence/git/<commit-hash>/` 写入 `index.json`、
-提交 diff 和相关文件的改前/改后版本。`index.json` 同时记录 diff hunk、对应源码
-行范围和每项产物是否截断。该目录属于用户已授权的本地项目证据，不执行面向
+命令在 `<project-dir>/.learntrace/evidence/git/<commit-hash>/` 写入 `index.json`
+和有界 diff 预览。`index.json` 完整记录变更文件、对象 ID、diff hunk、前后 revision
+和回读命令；源码正文由 `git-file` 按需读取，不再为每个文件复制完整前后版本。
+该目录属于用户已授权的本地项目证据，不执行面向
 公开分享的脱敏；应将 `.learntrace/` 加入目标项目的忽略规则，不要提交或直接分享。
 二进制、非 UTF-8、Git LFS 指针和 submodule 不会被伪装成普通源码，索引会保留
 路径、对象、大小和不可用原因，供最终档案如实说明证据缺口。
@@ -114,6 +119,8 @@ learntrace git-worktree <project-dir>
 Git 历史默认完整读取，不使用任意条数上限。`--max-commits` 仅是调用方显式启用
 的侧支细节预算；first-parent 主线和所有 merge commit 始终保留，被省略内容会
 形成聚合事实和结构化统计。
+完整历史会随仓库提交数量增加运行时间和本地 `history.jsonl` 体积，但不会要求
+Agent 一次读入全部内容；Agent 应先检索索引，再按提交和文件分页回读。
 
 首次运行会生成 `learning-record.md`，并在 `<project-dir>/.learntrace/`
 写入 Task 2、Task 3、机器可读档案和待确认问题。

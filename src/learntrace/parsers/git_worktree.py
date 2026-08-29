@@ -2,13 +2,19 @@
 
 from __future__ import annotations
 
-import hashlib
+import json
 import subprocess
 from pathlib import Path
 from typing import Any
 
+from learntrace.artifacts import EvidencePathPolicy, register_generated_artifacts
 from learntrace.parsers._common import compact_text, safe_os_error
-from learntrace.parsers.git import DEFAULT_EVIDENCE_MAX_CHARS, run_git, validated_git_root
+from learntrace.parsers.git import (
+    DEFAULT_EVIDENCE_MAX_CHARS,
+    run_git,
+    stream_git_text_preview,
+    validated_git_root,
+)
 from learntrace.parsers.git_navigation import (
     GitNavigationResult,
     file_roles,
@@ -17,13 +23,24 @@ from learntrace.parsers.git_navigation import (
     write_navigation_json,
 )
 
-_LOCAL_EVIDENCE_PATHS = (
+_BUILTIN_EVIDENCE_PATHS = (
     "--",
     ".",
     ":(exclude).learntrace",
     ":(exclude).learntrace/**",
     ":(exclude)learning-record.md",
+    ":(glob,exclude)**/learning-record.md",
+    ":(glob,exclude)**/learning-questions.md",
 )
+
+
+def _evidence_paths(policy: EvidencePathPolicy) -> tuple[str, ...]:
+    custom = tuple(
+        f":(exclude,literal){path}"
+        for path in sorted(policy.generated_paths)
+        if policy.reason(path) == "learntrace_generated_artifact"
+    )
+    return (*_BUILTIN_EVIDENCE_PATHS, *custom)
 
 
 def _parse_porcelain_z(value: str) -> list[dict[str, Any]]:
@@ -78,22 +95,18 @@ def _parse_porcelain_z(value: str) -> list[dict[str, Any]]:
     return entries
 
 
-def _bounded_diff(root: Path, *arguments: str, max_chars: int) -> dict[str, Any]:
-    result = run_git(root, *arguments, *_LOCAL_EVIDENCE_PATHS)
-    if result.returncode != 0:
-        return {
-            "available": False,
-            "unavailable_reason": compact_text(result.stderr) or "Git diff failed",
-            "truncated": False,
-        }
-    return {
-        "available": True,
-        "content": result.stdout[:max_chars],
-        "sha256": hashlib.sha256(result.stdout.encode("utf-8")).hexdigest(),
-        "source_chars": len(result.stdout),
-        "written_chars": min(len(result.stdout), max_chars),
-        "truncated": len(result.stdout) > max_chars,
-    }
+def _bounded_diff(
+    root: Path,
+    policy: EvidencePathPolicy,
+    *arguments: str,
+    max_chars: int,
+) -> dict[str, Any]:
+    return stream_git_text_preview(
+        root,
+        *arguments,
+        *_evidence_paths(policy),
+        max_chars=max_chars,
+    )
 
 
 def _write_git_worktree(
@@ -105,32 +118,51 @@ def _write_git_worktree(
     if max_chars < 1:
         raise ValueError("max_chars must be at least 1")
     root = validated_git_root(project_root)
+    policy = EvidencePathPolicy.load(root)
     status = run_git(
         root,
+        "-c",
+        "core.fsmonitor=false",
         "status",
         "--porcelain=v1",
         "-z",
         "--untracked-files=all",
-        *_LOCAL_EVIDENCE_PATHS,
+        "--",
+        ".",
     )
     if status.returncode != 0:
         raise ValueError(compact_text(status.stderr) or "could not read Git worktree status")
-    entries = _parse_porcelain_z(status.stdout)
+    parsed_entries = _parse_porcelain_z(status.stdout)
+    excluded_paths: set[str] = set()
+    for entry in parsed_entries:
+        for key in ("path", "previous_path"):
+            value = entry.get(key)
+            if isinstance(value, str) and policy.reason(value) == "learntrace_generated_artifact":
+                excluded_paths.add(value)
+    excluded = sorted(excluded_paths)
+    entries = [
+        entry
+        for entry in parsed_entries
+        if all(
+            not isinstance(entry.get(key), str) or policy.allows(str(entry[key]))
+            for key in ("path", "previous_path")
+        )
+    ]
     head = run_git(root, "rev-parse", "--verify", "HEAD")
     head_id = head.stdout.strip() if head.returncode == 0 else None
     staged_diff = _bounded_diff(
         root,
+        policy,
         "diff",
         "--cached",
-        "--binary",
         "--no-ext-diff",
         "--no-textconv",
         max_chars=max_chars,
     )
     unstaged_diff = _bounded_diff(
         root,
+        policy,
         "diff",
-        "--binary",
         "--no-ext-diff",
         "--no-textconv",
         max_chars=max_chars,
@@ -138,7 +170,7 @@ def _write_git_worktree(
     record_id = stable_navigation_id(
         "git-worktree",
         head_id or "no-head",
-        status.stdout,
+        json.dumps(entries, ensure_ascii=False, sort_keys=True),
         str(staged_diff.get("sha256", staged_diff.get("unavailable_reason", ""))),
         str(unstaged_diff.get("sha256", unstaged_diff.get("unavailable_reason", ""))),
     )
@@ -161,6 +193,11 @@ def _write_git_worktree(
             "command": "learntrace git-file <project> worktree <path> --lines <start>:<end>",
             "content_included": False,
         },
+        "staged_readback": {
+            "command": "learntrace git-file <project> index <path> --lines <start>:<end>",
+            "content_included": False,
+        },
+        "excluded_generated_artifacts": {"count": len(excluded), "paths": excluded},
     }
     destination = local_navigation_output(
         root,
@@ -168,6 +205,7 @@ def _write_git_worktree(
         root / ".learntrace" / "evidence" / "git" / "worktree.json",
     )
     write_navigation_json(destination, payload)
+    register_generated_artifacts(root, (destination,))
     return GitNavigationResult(destination, record_id, len(entries))
 
 

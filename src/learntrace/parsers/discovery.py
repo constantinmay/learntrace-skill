@@ -9,6 +9,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
 
+from learntrace.artifacts import EvidencePathPolicy
 from learntrace.parsers._common import project_reference, repo_root, safe_os_error
 from learntrace.parsers.types import ParseWarning, ProjectInventory
 
@@ -88,6 +89,7 @@ def discover_static_materials(
 ) -> DiscoveredMaterials:
     """发现候选文件；调用方必须确认后再传给具体解析函数。"""
     root = repo_root(project_root)
+    path_policy = EvidencePathPolicy.load(root, additional_generated=excluded_paths)
     excluded_references: set[str] = set()
     for requested in excluded_paths:
         candidate = requested if requested.is_absolute() else root / requested
@@ -105,6 +107,7 @@ def discover_static_materials(
     design_documents: list[Path] = []
     warnings: list[ParseWarning] = []
     extensions: Counter[str] = Counter()
+    excluded_generated: set[str] = set(path_policy.generated_paths)
 
     def record_walk_error(error: OSError) -> None:
         filename = error.filename
@@ -125,6 +128,7 @@ def discover_static_materials(
             if not name.startswith(".")
             and name not in _EXCLUDED_DIRS
             and not (current / name).is_symlink()
+            and path_policy.allows((current / name).relative_to(root))
         )
         for filename in sorted(filenames):
             if filename.startswith("."):
@@ -133,6 +137,12 @@ def discover_static_materials(
             if path.is_symlink():
                 continue
             relative = path.relative_to(root)
+            reason = path_policy.reason(relative)
+            if reason == "learntrace_generated_artifact":
+                excluded_generated.add(relative.as_posix())
+                continue
+            if reason is not None:
+                continue
             if relative.as_posix() in excluded_references:
                 continue
             files.append(relative)
@@ -215,6 +225,7 @@ def discover_static_materials(
         report_documents=tuple(path.as_posix() for path in sort_paths(report_documents)),
         design_documents=tuple(path.as_posix() for path in sort_paths(design_documents)),
         extension_counts=tuple(sorted(extensions.items())),
+        excluded_generated_artifacts=tuple(sorted(excluded_generated)),
     )
     return DiscoveredMaterials(
         documents=sorted_documents,

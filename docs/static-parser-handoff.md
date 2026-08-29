@@ -108,13 +108,18 @@ CLI/Skill 应先调用
 - Git 来源只包含本地 commit hash 和文件路径，不依赖远程仓库。Task4 宿主 Agent
   可调用 `export_git_evidence()` 或 `learntrace git-evidence` 回读指定提交的 diff 与
   前后源码，而无需在首次解析时把所有源码写入事件；
-- `learntrace git-tree` 提供指定版本的完整目录；`learntrace git-file` 提供历史或
-  worktree 的指定代码范围；`learntrace git-worktree` 提供未提交状态和 diff。
+- `learntrace git-tree` 提供指定版本的完整目录；`learntrace git-file` 通过行范围或
+  字节范围分页读取历史、index 或 worktree 的真实内容；`learntrace git-worktree`
+  提供未提交状态和有界 diff 预览。
   三者都输出结构化本地定位信息，不生成远程链接；
 - 历史索引包含 `tree_id`、文件数量、顶层布局、文件角色，以及仅用于导航的
   `same_commit`/`causal=false` 源码—测试关系；
-- 二进制、非 UTF-8、LFS 和 submodule 保留路径、对象及不可用原因。截断证据可以
-  通过 `git-file` 的相邻行范围继续读取，不能把缺失部分写成已验证结论；
+- 每个 `git-file` 页面包含 object ID、实际范围、`reached_eof` 和 continuation；
+  `reached_eof=false` 只表示本页结束，不表示文件其余内容不可用；
+- 二进制、非 UTF-8、LFS 和 submodule 保留路径、对象及不可用原因。非 UTF-8
+  文本页保留 base64 原始字节；LFS pointer 只报告对象 ID 与声明大小；
+- 浅克隆保留本地可见提交并明确 `history_complete=false` 和浅边界；聚合事件省略的
+  提交仍可从完整 `history.jsonl` 定位，不能把本地边界描述成项目初始化；
 - merge commit 固定相对第一父提交比较，避免多父提交产生重复文件事实；
 - 默认使用轻量的 `-M -C`；只有调用方设置 `find_copies_harder=True` 时才扫描未修改文件寻找复制源。强复制检测可能让大型提交超时，普通分析不应默认开启；
 - `document`：Markdown 按章节和完整段落/代码块分块，TXT 按段落生成事件；

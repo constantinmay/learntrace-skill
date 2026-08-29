@@ -50,6 +50,7 @@ def parse_static_materials(
                 root,
                 max_commits=max_commits,
                 find_copies_harder=find_copies_harder,
+                excluded_paths=excluded,
             )
         )
     combined = result.merged(

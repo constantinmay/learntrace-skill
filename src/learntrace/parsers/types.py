@@ -43,6 +43,7 @@ class ProjectInventory:
     report_documents: tuple[str, ...]
     design_documents: tuple[str, ...]
     extension_counts: tuple[tuple[str, int], ...]
+    excluded_generated_artifacts: tuple[str, ...] = ()
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -58,6 +59,10 @@ class ProjectInventory:
             "report_documents": list(self.report_documents),
             "design_documents": list(self.design_documents),
             "extension_counts": dict(self.extension_counts),
+            "excluded_generated_artifacts": {
+                "count": len(self.excluded_generated_artifacts),
+                "paths": list(self.excluded_generated_artifacts),
+            },
         }
 
 

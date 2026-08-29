@@ -3,13 +3,16 @@
 from __future__ import annotations
 
 import errno
+import hashlib
 import json
 import os
 import re
 import subprocess
+import time
 from dataclasses import dataclass
 from pathlib import Path
 
+from learntrace.artifacts import EvidencePathPolicy, register_generated_artifacts
 from learntrace.models import EventKind, ObservableEvent, SourceRef, SourceType
 from learntrace.parsers._common import compact_text, repo_root, safe_os_error, stable_event_id
 from learntrace.parsers.types import ParseResult, ParseWarning
@@ -22,6 +25,7 @@ _DIFF_HUNK_RE = re.compile(
     r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@",
     re.MULTILINE,
 )
+_LS_TREE_ENTRY_RE = re.compile(rb"^([0-9]{6}) ([a-z]+) ([0-9a-f]+)\t")
 
 
 @dataclass(frozen=True, slots=True)
@@ -58,6 +62,12 @@ class GitHistoryIndexResult:
     output_path: Path
     total_commits: int
     complete: bool
+
+
+@dataclass(frozen=True, slots=True)
+class _RepositoryHistoryState:
+    shallow: bool
+    shallow_boundaries: tuple[str, ...]
 
 
 def _is_within(path: Path, root: Path) -> bool:
@@ -294,11 +304,56 @@ def _first_parent_ids(root: Path) -> tuple[set[str], str | None]:
     return {line.strip() for line in result.stdout.splitlines() if line.strip()}, None
 
 
+def _repository_history_state(root: Path) -> _RepositoryHistoryState:
+    result = _git(root, "rev-parse", "--is-shallow-repository")
+    if result.returncode != 0 or result.stdout.strip() not in {"true", "false"}:
+        raise ValueError(compact_text(result.stderr) or "could not determine shallow state")
+    shallow = result.stdout.strip() == "true"
+    boundaries: tuple[str, ...] = ()
+    if shallow:
+        shallow_path = _git(root, "rev-parse", "--git-path", "shallow")
+        if shallow_path.returncode == 0 and shallow_path.stdout.strip():
+            candidate = Path(shallow_path.stdout.strip())
+            candidate = candidate if candidate.is_absolute() else root / candidate
+            try:
+                values = candidate.read_text(encoding="ascii").splitlines()
+            except (OSError, UnicodeError):
+                values = []
+            boundaries = tuple(
+                value for value in values if re.fullmatch(r"[0-9a-fA-F]{40,64}", value)
+            )
+    return _RepositoryHistoryState(shallow=shallow, shallow_boundaries=boundaries)
+
+
+def _filter_evidence_changes(
+    policy: EvidencePathPolicy,
+    changes: list[_GitFileChange],
+) -> tuple[list[_GitFileChange], list[str]]:
+    eligible: list[_GitFileChange] = []
+    excluded: set[str] = set()
+    for change in changes:
+        paths = tuple(path for path in (change.previous_path, change.path) if path is not None)
+        reasons = {path: policy.reason(path) for path in paths}
+        if any(reason is not None for reason in reasons.values()):
+            excluded.update(
+                path
+                for path, reason in reasons.items()
+                if reason == "learntrace_generated_artifact"
+            )
+            continue
+        eligible.append(change)
+    return eligible, sorted(excluded)
+
+
 def _select_history(
     entries: list[_GitHistoryEntry],
     first_parent_ids: set[str],
     max_commits: int | None,
-) -> tuple[list[_GitHistoryEntry], list[_GitHistoryEntry], tuple[tuple[str, int | bool], ...]]:
+) -> tuple[
+    list[_GitHistoryEntry],
+    list[_GitHistoryEntry],
+    tuple[tuple[str, int | str | bool], ...],
+]:
     """Apply a soft detail budget without discarding mainline or merge boundaries."""
     if max_commits is None:
         return entries, [], ()
@@ -317,7 +372,7 @@ def _select_history(
 
     selected = [entry for entry in entries if entry.commit_id in selected_ids]
     omitted = [entry for entry in entries if entry.commit_id not in selected_ids]
-    details: tuple[tuple[str, int | bool], ...] = (
+    details: tuple[tuple[str, int | str | bool], ...] = (
         ("total_commits", len(entries)),
         ("requested_budget", max_commits),
         ("retained_commits", len(selected)),
@@ -330,6 +385,10 @@ def _select_history(
         ("omitted_commits", len(omitted)),
         ("omitted_side_branch", sum(entry.commit_id not in first_parent_ids for entry in omitted)),
         ("budget_exceeded_for_boundaries", len(selected) > max_commits),
+        ("omitted_first_commit_id", omitted[0].commit_id if omitted else ""),
+        ("omitted_last_commit_id", omitted[-1].commit_id if omitted else ""),
+        ("selection_strategy", "first_parent_and_merge_boundaries"),
+        ("history_index", ".learntrace/evidence/git/history.jsonl"),
     )
     return selected, omitted, details
 
@@ -351,8 +410,18 @@ def _history_placeholder(
     summary = f"Git 历史另有 {len(omitted)} 条侧支提交因细节预算未逐条展开。"
     if example_text:
         summary += f"代表性提交信息：{example_text}。"
-    sampled = omitted[:3]
-    source_refs = tuple(_commit_source_ref(entry.commit_id) for entry in sampled)
+    source_refs = (
+        SourceRef(
+            type=SourceType.GIT_COMMIT,
+            ref=omitted[0].commit_id,
+            note="省略范围在拓扑顺序中的起点",
+        ),
+        SourceRef(
+            type=SourceType.GIT_COMMIT,
+            ref=omitted[-1].commit_id,
+            note="省略范围在拓扑顺序中的终点",
+        ),
+    )
     return ObservableEvent(
         id=stable_event_id(
             "git-history-omitted",
@@ -426,93 +495,186 @@ def _write_text_artifact(
     }
 
 
-def _diff_hunks(content: str, repository_path: str) -> list[dict[str, int | str]]:
-    hunks: list[dict[str, int | str]] = []
-    for match in _DIFF_HUNK_RE.finditer(content):
-        hunks.append(
-            {
-                "repository_path": repository_path,
-                "old_start": int(match.group(1)),
-                "old_lines": int(match.group(2) or "1"),
-                "new_start": int(match.group(3)),
-                "new_lines": int(match.group(4) or "1"),
-            }
-        )
-    return hunks
-
-
-def _hunk_ranges(
-    hunks: list[dict[str, int | str]],
-    *,
-    side: str,
-    artifact_path: str,
-) -> list[dict[str, int | str]]:
-    start_key = f"{side}_start"
-    lines_key = f"{side}_lines"
-    ranges: list[dict[str, int | str]] = []
-    for hunk in hunks:
-        start = hunk[start_key]
-        line_count = hunk[lines_key]
-        if not isinstance(start, int) or not isinstance(line_count, int) or line_count <= 0:
-            continue
-        end = start + line_count - 1
-        ranges.append(
-            {
-                "start": start,
-                "end": end,
-                "lines": line_count,
-                "ref": f"{artifact_path}:{start}-{end}",
-            }
-        )
-    return ranges
-
-
-def _read_commit_diff(
+def _stream_commit_diff(
     root: Path,
     commit_id: str,
     parent_id: str | None,
     paths: tuple[str, ...],
-) -> str:
+    *,
+    repository_path: str,
+    preview_chars: int,
+) -> tuple[str, list[dict[str, int | str]], int, bool, str | None]:
     path_arguments = ("--", *paths) if paths else ()
     if parent_id is None:
-        result = _git(
-            root,
+        arguments = (
             "show",
             "--format=",
             "--root",
-            "--binary",
+            "-M",
+            "--unified=0",
             "--no-ext-diff",
             "--no-textconv",
             commit_id,
             *path_arguments,
         )
     else:
-        result = _git(
-            root,
+        arguments = (
             "diff",
-            "--binary",
+            "-M",
+            "--unified=0",
             "--no-ext-diff",
             "--no-textconv",
             parent_id,
             commit_id,
             *path_arguments,
         )
-    if result.returncode != 0:
-        message = compact_text(result.stderr) or "could not export commit diff"
-        raise ValueError(message)
-    return result.stdout
-
-
-def _read_blob(root: Path, revision: str, path: str) -> tuple[str | None, str | None]:
-    result = _git_bytes(root, "show", f"{revision}:{path}")
-    if result.returncode != 0:
-        return None, "not_present"
-    if b"\0" in result.stdout:
-        return None, "binary"
+    process = subprocess.Popen(  # noqa: S603 - hardened absolute Git command
+        _git_command(root, *arguments),
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        shell=False,
+    )
+    if process.stdout is None or process.stderr is None:
+        process.kill()
+        return "", [], 0, False, "Git diff stream was unavailable"
+    deadline = time.monotonic() + _GIT_TIMEOUT_SECONDS
+    preview_parts: list[str] = []
+    retained = 0
+    source_chars = 0
+    hunks: list[dict[str, int | str]] = []
+    complete = True
+    error: str | None = None
     try:
-        return result.stdout.decode("utf-8"), None
-    except UnicodeDecodeError:
-        return None, "non_utf8"
+        while True:
+            if time.monotonic() > deadline:
+                complete = False
+                error = "Git diff stream timed out"
+                process.terminate()
+                break
+            raw_line = process.stdout.readline(64 * 1024)
+            if not raw_line:
+                break
+            line = raw_line.decode("utf-8", errors="replace")
+            source_chars += len(line)
+            if retained < preview_chars:
+                part = line[: preview_chars - retained]
+                preview_parts.append(part)
+                retained += len(part)
+            match = _DIFF_HUNK_RE.match(line)
+            if match is not None:
+                hunks.append(
+                    {
+                        "repository_path": repository_path,
+                        "old_start": int(match.group(1)),
+                        "old_lines": int(match.group(2) or "1"),
+                        "new_start": int(match.group(3)),
+                        "new_lines": int(match.group(4) or "1"),
+                    }
+                )
+        if process.poll() is None:
+            process.wait(timeout=1)
+        if complete and process.returncode != 0:
+            complete = False
+            error = compact_text(process.stderr.read().decode("utf-8", errors="replace"))
+            error = error or "could not export commit diff"
+    except subprocess.TimeoutExpired:
+        complete = False
+        error = "Git diff stream timed out"
+        process.kill()
+    finally:
+        process.stdout.close()
+        process.stderr.close()
+        if process.poll() is None:
+            process.kill()
+        process.wait()
+    return "".join(preview_parts), hunks, source_chars, complete, error
+
+
+def _blob_metadata(root: Path, revision: str | None, path: str) -> dict[str, object]:
+    result: dict[str, object] = {
+        "revision": revision,
+        "path": path,
+        "available": False,
+    }
+    if revision is None:
+        result["unavailable_reason"] = "no_parent_commit"
+        return result
+    object_result = _git(
+        root,
+        "rev-parse",
+        "--verify",
+        "--end-of-options",
+        f"{revision}:{path}",
+    )
+    if object_result.returncode != 0 or not object_result.stdout.strip():
+        result["unavailable_reason"] = "not_present"
+        return result
+    object_id = object_result.stdout.strip()
+    result["object_id"] = object_id
+    tree_result = _git_bytes(root, "ls-tree", "-z", revision, "--", path)
+    if tree_result.returncode == 0 and tree_result.stdout:
+        tree_entry = tree_result.stdout.split(b"\0", maxsplit=1)[0]
+        tree_match = _LS_TREE_ENTRY_RE.match(tree_entry)
+        if tree_match is not None:
+            mode, object_type, tree_object_id = tree_match.groups()
+            if tree_object_id.decode("ascii") == object_id:
+                result["git_mode"] = mode.decode("ascii")
+                result["object_type"] = object_type.decode("ascii")
+    type_result = _git(root, "cat-file", "-t", object_id)
+    if type_result.returncode != 0 or type_result.stdout.strip() != "blob":
+        result["unavailable_reason"] = "not_a_blob"
+        return result
+    size_result = _git(root, "cat-file", "-s", object_id)
+    if size_result.returncode != 0 or not size_result.stdout.strip().isdigit():
+        result["unavailable_reason"] = "blob_size_unavailable"
+        return result
+    result.update(
+        available=True,
+        size_bytes=int(size_result.stdout.strip()),
+        readback=(f"learntrace git-file <project> {revision} {path} --lines <start>:<end>"),
+    )
+    return result
+
+
+def _hunk_manifest(
+    hunk: dict[str, int | str],
+    *,
+    parent_id: str | None,
+    commit_id: str,
+    before_path: str,
+    after_path: str,
+) -> dict[str, object]:
+    old_start = int(hunk["old_start"])
+    old_lines = int(hunk["old_lines"])
+    new_start = int(hunk["new_start"])
+    new_lines = int(hunk["new_lines"])
+    old_end = old_start + old_lines - 1 if old_lines else None
+    new_end = new_start + new_lines - 1 if new_lines else None
+    return {
+        "old": {
+            "start": old_start,
+            "end": old_end,
+            "lines": old_lines,
+            "readback": (
+                f"learntrace git-file <project> {parent_id} {before_path} "
+                f"--lines {old_start}:{old_end}"
+                if parent_id is not None and old_end is not None
+                else None
+            ),
+        },
+        "new": {
+            "start": new_start,
+            "end": new_end,
+            "lines": new_lines,
+            "readback": (
+                f"learntrace git-file <project> {commit_id} {after_path} "
+                f"--lines {new_start}:{new_end}"
+                if new_end is not None
+                else None
+            ),
+        },
+    }
 
 
 def _validated_git_root(project_root: Path) -> Path:
@@ -538,6 +700,101 @@ def run_git(root: Path, *arguments: str) -> subprocess.CompletedProcess[str]:
 
 def run_git_bytes(root: Path, *arguments: str) -> subprocess.CompletedProcess[bytes]:
     return _git_bytes(root, *arguments)
+
+
+def git_command(root: Path, *arguments: str) -> list[str]:
+    """Return the same hardened absolute Git command used by parser calls."""
+    return _git_command(root, *arguments)
+
+
+def git_timeout_seconds() -> int:
+    return _GIT_TIMEOUT_SECONDS
+
+
+def stream_git_text_preview(
+    root: Path,
+    *arguments: str,
+    max_chars: int,
+) -> dict[str, object]:
+    """Stream a Git command, retaining only a bounded UTF-8 preview.
+
+    The complete stream is still consumed so its digest and source size refer
+    to the real output, not merely the preview.  Callers must retain separate
+    navigation facts because a preview is never the authoritative evidence.
+    """
+    if max_chars < 1:
+        raise ValueError("max_chars must be at least 1")
+    process = subprocess.Popen(  # noqa: S603 - hardened absolute Git command
+        _git_command(root, *arguments),
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        shell=False,
+    )
+    if process.stdout is None or process.stderr is None:
+        process.kill()
+        return {
+            "available": False,
+            "complete": False,
+            "unavailable_reason": "Git output stream was unavailable",
+            "truncated": False,
+        }
+    preview = bytearray()
+    digest = hashlib.sha256()
+    source_bytes = 0
+    deadline = time.monotonic() + _GIT_TIMEOUT_SECONDS
+    complete = True
+    error: str | None = None
+    try:
+        while True:
+            if time.monotonic() > deadline:
+                complete = False
+                error = "Git output stream timed out"
+                process.terminate()
+                break
+            chunk = process.stdout.read(64 * 1024)
+            if not chunk:
+                break
+            digest.update(chunk)
+            source_bytes += len(chunk)
+            if len(preview) < max_chars:
+                preview.extend(chunk[: max_chars - len(preview)])
+        if process.poll() is None:
+            process.wait(timeout=1)
+        if complete and process.returncode != 0:
+            complete = False
+            error = compact_text(process.stderr.read().decode("utf-8", errors="replace"))
+            error = error or "Git command failed"
+    except subprocess.TimeoutExpired:
+        complete = False
+        error = "Git output stream timed out"
+        process.kill()
+    finally:
+        process.stdout.close()
+        process.stderr.close()
+        if process.poll() is None:
+            process.kill()
+        process.wait()
+    if not complete:
+        return {
+            "available": False,
+            "complete": False,
+            "unavailable_reason": error or "Git command did not complete",
+            "preview": preview.decode("utf-8", errors="replace"),
+            "preview_bytes": len(preview),
+            "source_bytes_read": source_bytes,
+            "truncated": True,
+        }
+    content = preview.decode("utf-8", errors="replace")
+    return {
+        "available": True,
+        "complete": True,
+        "content": content,
+        "sha256": digest.hexdigest(),
+        "source_bytes": source_bytes,
+        "written_bytes": len(preview),
+        "truncated": source_bytes > len(preview),
+    }
 
 
 def path_is_within(path: Path, root: Path) -> bool:
@@ -578,12 +835,21 @@ def _export_git_evidence(
     if change_error is not None:
         raise ValueError(change_error)
 
+    path_policy = EvidencePathPolicy.load(
+        root,
+        additional_generated=(output_dir,) if output_dir is not None else (),
+    )
+    changes, excluded_generated = _filter_evidence_changes(path_policy, changes)
     changes_by_path: dict[str, _GitFileChange] = {}
     for change in changes:
         changes_by_path[change.path] = change
         if change.previous_path is not None:
             changes_by_path[change.previous_path] = change
     requested_paths = tuple(dict.fromkeys(_safe_repository_path(path) for path in paths))
+    for requested_path in requested_paths:
+        rejection = path_policy.reason(requested_path)
+        if rejection is not None:
+            raise ValueError(f"evidence path rejected: {rejection}")
     if requested_paths:
         unknown = [path for path in requested_paths if path not in changes_by_path]
         if unknown:
@@ -592,15 +858,6 @@ def _export_git_evidence(
         selected_changes = list(dict.fromkeys(changes_by_path[path] for path in requested_paths))
     else:
         selected_changes = changes
-    diff_paths = tuple(
-        dict.fromkeys(
-            path
-            for change in selected_changes
-            for path in (change.previous_path, change.path)
-            if path is not None
-        )
-    )
-
     destination = output_dir or root / ".learntrace" / "evidence" / "git" / commit_id
     destination = destination if destination.is_absolute() else root / destination
     resolved_destination = destination.resolve(strict=False)
@@ -609,20 +866,111 @@ def _export_git_evidence(
     destination.mkdir(parents=True, exist_ok=True)
 
     artifacts: list[dict[str, object]] = []
-    diff_content = _read_commit_diff(root, commit_id, parent_id, diff_paths)
-    hunks_by_path = {
-        change.path: _diff_hunks(
-            _read_commit_diff(
-                root,
-                commit_id,
-                parent_id,
-                tuple(path for path in (change.previous_path, change.path) if path is not None),
-            ),
-            change.path,
+    change_records: list[dict[str, object]] = []
+    preview_parts: list[str] = []
+    preview_length = 0
+    source_chars = 0
+    manifest_complete = True
+    diff_errors: list[dict[str, str]] = []
+    all_hunks: list[dict[str, int | str]] = []
+    for change in selected_changes:
+        before_path = change.previous_path or change.path
+        diff_paths = tuple(path for path in (change.previous_path, change.path) if path is not None)
+        preview, raw_hunks, path_source_chars, complete, diff_error = _stream_commit_diff(
+            root,
+            commit_id,
+            parent_id,
+            diff_paths,
+            repository_path=change.path,
+            preview_chars=max(max_chars - preview_length, 0),
         )
-        for change in selected_changes
-    }
-    hunks = [hunk for path_hunks in hunks_by_path.values() for hunk in path_hunks]
+        preview_parts.append(preview)
+        preview_length += len(preview)
+        source_chars += path_source_chars
+        all_hunks.extend(raw_hunks)
+        if not complete:
+            manifest_complete = False
+        if diff_error is not None:
+            diff_errors.append({"path": change.path, "message": diff_error})
+        before = (
+            _blob_metadata(root, parent_id, before_path)
+            if change.status != "A"
+            else {
+                "revision": parent_id,
+                "path": before_path,
+                "available": False,
+                "unavailable_reason": "file_added",
+            }
+        )
+        after = (
+            _blob_metadata(root, commit_id, change.path)
+            if change.status != "D"
+            else {
+                "revision": commit_id,
+                "path": change.path,
+                "available": False,
+                "unavailable_reason": "file_deleted",
+            }
+        )
+        manifest_hunks = [
+            _hunk_manifest(
+                hunk,
+                parent_id=parent_id,
+                commit_id=commit_id,
+                before_path=before_path,
+                after_path=change.path,
+            )
+            for hunk in raw_hunks
+        ]
+        before_object = before.get("object_id")
+        after_object = after.get("object_id")
+        before_mode = before.get("git_mode")
+        after_mode = after.get("git_mode")
+        mode_only = (
+            change.status == "M"
+            and isinstance(before_object, str)
+            and before_object == after_object
+            and isinstance(before_mode, str)
+            and isinstance(after_mode, str)
+            and before_mode != after_mode
+        )
+        change_records.append(
+            {
+                "status": change.status,
+                "path": change.path,
+                "previous_path": change.previous_path,
+                "additions": change.additions,
+                "deletions": change.deletions,
+                "before": before,
+                "after": after,
+                "before_mode": before_mode,
+                "after_mode": after_mode,
+                "mode_only": mode_only,
+                "hunks": manifest_hunks,
+                "hunk_manifest_complete": complete,
+                "hunk_error": diff_error,
+            }
+        )
+        artifacts.extend(
+            (
+                {
+                    "kind": "before",
+                    "repository_path": before_path,
+                    "content_included": False,
+                    "truncated": False,
+                    **before,
+                },
+                {
+                    "kind": "after",
+                    "repository_path": change.path,
+                    "content_included": False,
+                    "truncated": False,
+                    **after,
+                },
+            )
+        )
+
+    diff_content = "".join(preview_parts)
     diff_metadata = _write_text_artifact(
         destination,
         "diff.patch",
@@ -634,102 +982,16 @@ def _export_git_evidence(
             "kind": "diff",
             "source_revision": commit_id,
             "base_revision": parent_id,
-            "repository_paths": list(diff_paths),
-            "hunks": hunks,
+            "repository_paths": [change.path for change in selected_changes],
+            "hunks": all_hunks,
+            "source_chars": source_chars,
+            "written_chars": len(diff_content),
+            "truncated": source_chars > len(diff_content) or not manifest_complete,
+            "hunk_manifest_complete": manifest_complete,
+            "errors": diff_errors,
         }
     )
-    artifacts.append(diff_metadata)
-
-    for change in selected_changes:
-        artifact: dict[str, object]
-        change_hunks = hunks_by_path[change.path]
-        before_path = change.previous_path or change.path
-        if parent_id is not None and change.status != "A":
-            before, reason = _read_blob(root, parent_id, before_path)
-            if before is not None:
-                before_artifact_path = f"before/{before_path}"
-                artifact = _write_text_artifact(
-                    destination,
-                    before_artifact_path,
-                    before,
-                    max_chars=max_chars,
-                )
-                artifact.update(
-                    {
-                        "kind": "before",
-                        "source_revision": parent_id,
-                        "repository_path": before_path,
-                        "relevant_ranges": _hunk_ranges(
-                            change_hunks,
-                            side="old",
-                            artifact_path=before_artifact_path,
-                        ),
-                    }
-                )
-            else:
-                artifact = {
-                    "kind": "before",
-                    "source_revision": parent_id,
-                    "repository_path": before_path,
-                    "available": False,
-                    "reason": reason,
-                    "truncated": False,
-                }
-            artifacts.append(artifact)
-        else:
-            artifacts.append(
-                {
-                    "kind": "before",
-                    "source_revision": parent_id,
-                    "repository_path": before_path,
-                    "available": False,
-                    "reason": "file_added" if change.status == "A" else "no_parent_commit",
-                    "truncated": False,
-                }
-            )
-        if change.status != "D":
-            after, reason = _read_blob(root, commit_id, change.path)
-            if after is not None:
-                after_artifact_path = f"after/{change.path}"
-                artifact = _write_text_artifact(
-                    destination,
-                    after_artifact_path,
-                    after,
-                    max_chars=max_chars,
-                )
-                artifact.update(
-                    {
-                        "kind": "after",
-                        "source_revision": commit_id,
-                        "repository_path": change.path,
-                        "relevant_ranges": _hunk_ranges(
-                            change_hunks,
-                            side="new",
-                            artifact_path=after_artifact_path,
-                        ),
-                    }
-                )
-            else:
-                artifact = {
-                    "kind": "after",
-                    "source_revision": commit_id,
-                    "repository_path": change.path,
-                    "available": False,
-                    "reason": reason,
-                    "truncated": False,
-                }
-            artifacts.append(artifact)
-        else:
-            artifacts.append(
-                {
-                    "kind": "after",
-                    "source_revision": commit_id,
-                    "repository_path": change.path,
-                    "available": False,
-                    "reason": "file_deleted",
-                    "truncated": False,
-                }
-            )
+    artifacts.insert(0, diff_metadata)
 
     index = {
         "schema_version": "v0",
@@ -741,12 +1003,19 @@ def _export_git_evidence(
         "evidence_scope": "local_authorized_project",
         "redaction_applied": False,
         "max_chars_per_artifact": max_chars,
+        "changes": change_records,
+        "hunk_manifest_complete": manifest_complete,
+        "excluded_generated_artifacts": {
+            "count": len(excluded_generated),
+            "paths": excluded_generated,
+        },
         "artifacts": artifacts,
     }
     index_path = _artifact_target(destination, "index.json")
     from learntrace.parsers.git_navigation import atomic_write_text
 
     atomic_write_text(index_path, json.dumps(index, ensure_ascii=False, indent=2) + "\n")
+    register_generated_artifacts(root, (index_path, destination / "diff.patch"))
     return GitEvidenceExportResult(
         commit_id=commit_id,
         output_dir=destination,
@@ -789,6 +1058,11 @@ def _write_git_history_index(
     first_parent_ids, first_parent_error = _first_parent_ids(root)
     if first_parent_error is not None:
         raise ValueError(first_parent_error)
+    history_state = _repository_history_state(root)
+    path_policy = EvidencePathPolicy.load(
+        root,
+        additional_generated=(output_path,) if output_path else (),
+    )
 
     # Imported lazily so the navigation module can reuse the hardened Git runner
     # without creating an import cycle during module initialization.
@@ -798,6 +1072,7 @@ def _write_git_history_index(
     commit_records: list[dict[str, object]] = []
     errors: list[dict[str, str]] = []
     tree_cache: dict[str, tuple[str, int, dict[str, int]]] = {}
+    excluded_generated: set[str] = set()
     for entry in entries:
         first_parent = entry.parent_ids[0] if entry.parent_ids else None
         try:
@@ -810,6 +1085,8 @@ def _write_git_history_index(
             changes, change_error = [], "Git file-change read timed out"
         except OSError as error:
             changes, change_error = [], safe_os_error(error)
+        changes, excluded = _filter_evidence_changes(path_policy, changes)
+        excluded_generated.update(excluded)
         files = [
             {
                 "status": change.status,
@@ -866,6 +1143,11 @@ def _write_git_history_index(
             "files_available": change_error is None,
             "files": files,
             "relations": relations,
+            "evidence_eligible": bool(changes),
+            "excluded_generated_artifacts": {
+                "count": len(excluded),
+                "paths": excluded,
+            },
         }
         if change_error is not None:
             record["file_error"] = change_error
@@ -879,22 +1161,34 @@ def _write_git_history_index(
     resolved_destination = destination.resolve(strict=False)
     if not _is_within(resolved_destination, root):
         raise ValueError("Git history index must stay inside the project root")
+    records_complete = not errors
+    history_complete = not history_state.shallow
     metadata = {
         "record_type": "history_metadata",
         "head": entries[0].commit_id if entries else None,
         "total_commits": len(entries),
-        "complete": not errors,
+        "repository_shallow": history_state.shallow,
+        "shallow_boundary_commits": list(history_state.shallow_boundaries),
+        "history_complete": history_complete,
+        "records_complete": records_complete,
+        "details_truncated": False,
+        "complete": history_complete and records_complete,
         "ordering": "topological_newest_first",
         "errors": errors,
+        "excluded_generated_artifacts": {
+            "count": len(excluded_generated),
+            "paths": sorted(excluded_generated),
+        },
     }
     lines = [json.dumps(metadata, ensure_ascii=False)]
     lines.extend(json.dumps(record, ensure_ascii=False) for record in commit_records)
     target = _artifact_target(destination.parent, destination.name)
     atomic_write_text(target, "\n".join(lines) + "\n")
+    register_generated_artifacts(root, (target,))
     return GitHistoryIndexResult(
         output_path=target,
         total_commits=len(entries),
-        complete=not errors,
+        complete=history_complete and records_complete,
     )
 
 
@@ -916,6 +1210,7 @@ def parse_git_history(
     *,
     max_commits: int | None = None,
     find_copies_harder: bool = False,
+    excluded_paths: tuple[Path, ...] = (),
 ) -> ParseResult:
     """读取 Git 历史；细节预算不会丢弃 first-parent 主线或 merge 边界。"""
     root = repo_root(project_root)
@@ -957,6 +1252,7 @@ def parse_git_history(
             return _warning("git_no_commits", root, "Git history has no commits")
         history_entries, history_error = _read_history_index(root)
         first_parent_ids, first_parent_error = _first_parent_ids(root)
+        history_state = _repository_history_state(root)
     except OSError as error:
         return _warning("git_read_error", root, safe_os_error(error))
     except subprocess.TimeoutExpired:
@@ -970,6 +1266,28 @@ def parse_git_history(
 
     events: list[ObservableEvent] = []
     warnings: list[ParseWarning] = []
+    path_policy = EvidencePathPolicy.load(root, additional_generated=excluded_paths)
+    excluded_generated: set[str] = set()
+    if history_state.shallow:
+        warnings.append(
+            ParseWarning(
+                "git_history_shallow",
+                ".",
+                (
+                    "Local Git history is shallow; the earliest visible commit is a local "
+                    "boundary, not a verified project beginning"
+                ),
+                (
+                    ("repository_shallow", True),
+                    ("history_complete", False),
+                    ("shallow_boundary_count", len(history_state.shallow_boundaries)),
+                    (
+                        "shallow_boundary_commits",
+                        ",".join(history_state.shallow_boundaries),
+                    ),
+                ),
+            )
+        )
     selected, omitted, truncation_details = _select_history(
         history_entries,
         first_parent_ids,
@@ -1028,6 +1346,10 @@ def parse_git_history(
         if change_error is not None:
             warnings.append(ParseWarning("git_commit_read_error", commit_id, change_error))
             continue
+        changes, excluded = _filter_evidence_changes(path_policy, changes)
+        excluded_generated.update(excluded)
+        if not changes:
+            continue
         subject_text = compact_text(subject) or "（提交信息未记录）"
         summary = (
             f"提交 {full_hash[:7]} 的提交信息为“{subject_text}”，"
@@ -1074,4 +1396,16 @@ def parse_git_history(
             )
     if omitted:
         events.append(_history_placeholder(head.stdout.strip(), omitted))
+    if excluded_generated:
+        warnings.append(
+            ParseWarning(
+                "git_generated_artifacts_excluded",
+                ".",
+                "LearnTrace-generated files were excluded from Git evidence",
+                (
+                    ("count", len(excluded_generated)),
+                    ("paths", ",".join(sorted(excluded_generated))),
+                ),
+            )
+        )
     return ParseResult(events=tuple(events), warnings=tuple(warnings))

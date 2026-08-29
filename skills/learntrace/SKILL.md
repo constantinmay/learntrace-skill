@@ -53,6 +53,7 @@ learntrace git-index <project-dir>
 learntrace git-tree <project-dir> <commit-hash>
 learntrace git-evidence <project-dir> <commit-hash> --path <repository-path>
 learntrace git-file <project-dir> <commit-hash> <repository-path> --lines <start>:<end>
+learntrace git-file <project-dir> <commit-hash> <repository-path> --bytes <start>:<end>
 ```
 
 After Task 2 is available, use these interfaces instead of raw `git log`, `git show`,
@@ -65,14 +66,17 @@ Search `.learntrace/evidence/git/history.jsonl` without loading it all into the
 conversation. Use its `tree_id`, top-level layout, file roles, and changed paths to
 choose evidence; do not treat them as a code summary. Read
 `.learntrace/evidence/git/<commit-hash>/index.json` first, then only the artifacts
-needed for the investigation. Check every artifact's `available`, `truncated`, and
-locator fields. Use `git-file` to continue into adjacent source or test ranges instead
-of guessing from a hunk.
+needed for the investigation. Check every artifact's `available`, `reached_eof`,
+`continuation`, and locator fields. Use the hunk manifest to request before/after lines
+with `git-file`; follow `next_line` or `next_byte` until the required evidence is read.
+Only `reached_eof=true` proves that a file was read to its end. Use byte paging for a
+very long single line or when an exact byte sequence matters.
 
 When uncommitted work is relevant, run:
 
 ```powershell
 learntrace git-worktree <project-dir>
+learntrace git-file <project-dir> index <repository-path> --lines <start>:<end>
 learntrace git-file <project-dir> worktree <repository-path> --lines <start>:<end>
 ```
 
@@ -82,9 +86,14 @@ only when needed. A `same_commit` source/test relation is navigation only and ha
 connection. Cross-check important code changes with tests, logs, and authorized Task 3
 conversation evidence before writing a conclusion. If binary, non-UTF-8, LFS, submodule,
 or truncated evidence cannot be read, preserve that gap in the final account.
+If history metadata reports `repository_shallow=true` or `history_complete=false`, call
+the oldest record only the local visible boundary; do not describe it as initialization.
+When aggregate events omit side-branch detail, search the complete
+`.learntrace/evidence/git/history.jsonl` index and continue from the selected commit.
 
-The export directory contains full local authorized evidence; it must not be committed
-or shared directly.
+The export directory contains local evidence locators, a complete hunk manifest, and
+bounded previews. Source bodies remain in Git and are read through `git-file`; the
+directory must not be committed or shared directly.
 
 ### Consume existing Task 2 / Task 3 JSON
 

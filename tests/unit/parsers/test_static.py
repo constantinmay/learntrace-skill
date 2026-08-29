@@ -95,8 +95,10 @@ def test_forwards_expensive_copy_detection_option(
         *,
         max_commits: int,
         find_copies_harder: bool,
+        excluded_paths: tuple[Path, ...],
     ) -> ParseResult:
         assert root == tmp_path.resolve()
+        assert excluded_paths == ()
         received.append((max_commits, find_copies_harder))
         return ParseResult()
 

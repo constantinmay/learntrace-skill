@@ -15,6 +15,7 @@ from typing import Any, cast
 import jsonschema
 
 from learntrace import __version__
+from learntrace.artifacts import register_generated_artifacts
 from learntrace.models import (
     SCHEMA_VERSION,
     CandidateStatus,
@@ -747,6 +748,7 @@ def write_learning_record_result(
     strict_inputs: bool = False,
     confirmation_paths: Iterable[Path] = (),
     snapshot_path: Path | None = None,
+    artifact_registry_root: Path | None = None,
 ) -> LearningRecordWriteResult:
     contract_validator = validator if validator is not None else ContractValidator()
     explicit_confirmations = tuple(
@@ -797,6 +799,15 @@ def write_learning_record_result(
         _write_text(records_output_path, f"{archive_json}\n")
     if questions_output_path is not None:
         _write_text(questions_output_path, render_questions_markdown(bundle))
+    if artifact_registry_root is not None:
+        register_generated_artifacts(
+            artifact_registry_root,
+            tuple(
+                path
+                for path in (destination, records_output_path, questions_output_path)
+                if path is not None
+            ),
+        )
     return LearningRecordWriteResult(
         output_path=destination,
         records_output_path=records_output_path,

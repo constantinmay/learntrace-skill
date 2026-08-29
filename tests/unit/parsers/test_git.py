@@ -11,7 +11,13 @@ import pytest
 
 from learntrace.cli import main
 from learntrace.models import ContractValidator, SourceType
-from learntrace.parsers import export_git_evidence, parse_git_history, write_git_history_index
+from learntrace.parsers import (
+    export_git_evidence,
+    parse_git_history,
+    write_git_file,
+    write_git_history_index,
+    write_git_tree,
+)
 from learntrace.parsers import git as git_module
 
 
@@ -239,6 +245,10 @@ def test_reports_merge_changes_relative_to_first_parent(tmp_path: Path) -> None:
     assert details["retained_merges"] == 1
     assert details["omitted_side_branch"] == 1
     assert details["budget_exceeded_for_boundaries"] is True
+    assert details["omitted_first_commit_id"]
+    assert details["omitted_last_commit_id"]
+    assert details["history_index"] == ".learntrace/evidence/git/history.jsonl"
+    assert len(placeholder.source_refs) == 2
     assert result.to_dict()["warnings"][0]["details"]["omitted_side_branch"] == 1
 
     complete_result = parse_git_history(repository)
@@ -301,8 +311,17 @@ def test_exports_full_local_diff_and_before_after_source_on_demand(tmp_path: Pat
     assert index["evidence_scope"] == "local_authorized_project"
     assert index["redaction_applied"] is False
     diff = (exported.output_dir / "diff.patch").read_text(encoding="utf-8")
-    before = (exported.output_dir / "before/src/parser.py").read_text(encoding="utf-8")
-    after = (exported.output_dir / "after/src/parser.py").read_text(encoding="utf-8")
+    change = index["changes"][0]
+    before = json.loads(
+        write_git_file(repository, parent_id, "src/parser.py").output_path.read_text(
+            encoding="utf-8"
+        )
+    )["content"]
+    after = json.loads(
+        write_git_file(repository, commit_id, "src/parser.py").output_path.read_text(
+            encoding="utf-8"
+        )
+    )["content"]
     assert secret in diff
     assert secret in after
     assert before == "VALUE = 1\n"
@@ -317,17 +336,28 @@ def test_exports_full_local_diff_and_before_after_source_on_demand(tmp_path: Pat
             "new_lines": 2,
         }
     ]
-    after_artifact = next(
-        artifact for artifact in index["artifacts"] if artifact["kind"] == "after"
-    )
-    assert after_artifact["relevant_ranges"] == [
+    assert change["hunks"] == [
         {
-            "start": 1,
-            "end": 2,
-            "lines": 2,
-            "ref": "after/src/parser.py:1-2",
+            "old": {
+                "start": 1,
+                "end": 1,
+                "lines": 1,
+                "readback": (
+                    f"learntrace git-file <project> {parent_id} src/parser.py --lines 1:1"
+                ),
+            },
+            "new": {
+                "start": 1,
+                "end": 2,
+                "lines": 2,
+                "readback": (
+                    f"learntrace git-file <project> {commit_id} src/parser.py --lines 1:2"
+                ),
+            },
         }
     ]
+    assert change["before"]["object_id"]
+    assert change["after"]["object_id"]
 
 
 def test_git_evidence_index_records_artifact_truncation(tmp_path: Path) -> None:
@@ -349,6 +379,102 @@ def test_git_evidence_index_records_artifact_truncation(tmp_path: Path) -> None:
     assert len((exported.output_dir / "diff.patch").read_text(encoding="utf-8")) == 20
 
 
+def test_git_evidence_handles_crlf_pure_rename_mode_only_and_binary(
+    tmp_path: Path,
+) -> None:
+    repository = tmp_path / "repository"
+    _make_repository(repository)
+    _git(repository, "config", "core.autocrlf", "false")
+    (repository / "crlf.txt").write_bytes(b"one\r\ntwo\r\n")
+    (repository / "rename-me.txt").write_bytes(b"same content\n")
+    (repository / "script.sh").write_bytes(b"echo ok\n")
+    (repository / "asset.bin").write_bytes(b"\x00\x01\x02\x00\x03")
+    _git(repository, "add", ".")
+    _git(repository, "commit", "-q", "-m", "add edge files")
+
+    (repository / "crlf.txt").write_bytes(b"one\r\nchanged\r\nthree\r\n")
+    _git(repository, "add", "crlf.txt")
+    _git(repository, "commit", "-q", "-m", "modify CRLF")
+    crlf_commit = _head(repository)
+    crlf_export = export_git_evidence(repository, crlf_commit, paths=("crlf.txt",))
+    crlf_index = json.loads(crlf_export.index_path.read_text())
+    crlf_file = json.loads(
+        write_git_file(
+            repository, crlf_commit, "crlf.txt", start_line=1, end_line=3
+        ).output_path.read_text()
+    )
+    assert len(crlf_index["changes"][0]["hunks"]) == 1
+    assert crlf_file["content"] == "one\r\nchanged\r\nthree\r\n"
+    assert crlf_file["reached_eof"] is True
+
+    _git(repository, "mv", "rename-me.txt", "renamed.txt")
+    _git(repository, "commit", "-q", "-m", "pure rename")
+    rename_commit = _head(repository)
+    rename_export = export_git_evidence(repository, rename_commit, paths=("renamed.txt",))
+    rename_index = json.loads(rename_export.index_path.read_text())
+    rename_change = rename_index["changes"][0]
+    assert rename_change["status"] == "R"
+    assert rename_change["previous_path"] == "rename-me.txt"
+    assert rename_change["before"]["object_id"] == rename_change["after"]["object_id"]
+    assert rename_change["hunks"] == []
+    assert "similarity index 100%" in (rename_export.output_dir / "diff.patch").read_text()
+
+    _git(repository, "update-index", "--chmod=+x", "script.sh")
+    _git(repository, "commit", "-q", "-m", "mode only")
+    mode_commit = _head(repository)
+    mode_export = export_git_evidence(repository, mode_commit, paths=("script.sh",))
+    mode_change = json.loads(mode_export.index_path.read_text())["changes"][0]
+    assert mode_change["mode_only"] is True
+    assert mode_change["before_mode"] == "100644"
+    assert mode_change["after_mode"] == "100755"
+    assert mode_change["before"]["object_id"] == mode_change["after"]["object_id"]
+    assert mode_change["hunks"] == []
+
+    (repository / "asset.bin").write_bytes(b"\x00\x09\x08\x00\x07\x06")
+    _git(repository, "add", "asset.bin")
+    _git(repository, "commit", "-q", "-m", "binary change")
+    binary_commit = _head(repository)
+    binary_export = export_git_evidence(repository, binary_commit, paths=("asset.bin",))
+    binary_change = json.loads(binary_export.index_path.read_text())["changes"][0]
+    assert binary_change["hunks"] == []
+    assert binary_change["before"]["size_bytes"] == 5
+    assert binary_change["after"]["size_bytes"] == 6
+    assert "Binary files" in (binary_export.output_dir / "diff.patch").read_text()
+
+
+def test_octopus_merge_is_retained_and_compared_with_first_parent(tmp_path: Path) -> None:
+    repository = tmp_path / "repository"
+    base = _make_repository(repository)
+    main_branch = subprocess.run(
+        ["git", "-C", str(repository), "branch", "--show-current"],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    branches = ("edge-a", "edge-b", "edge-c")
+    for branch in branches:
+        _git(repository, "checkout", "-q", "-b", branch, base)
+        (repository / f"{branch}.txt").write_text(f"{branch}\n", encoding="utf-8")
+        _git(repository, "add", f"{branch}.txt")
+        _git(repository, "commit", "-q", "-m", f"add {branch}")
+    _git(repository, "checkout", "-q", main_branch)
+    _git(repository, "merge", "-q", "--no-ff", *branches, "-m", "octopus merge")
+    merge_commit = _head(repository)
+
+    result = write_git_history_index(repository)
+    records = [json.loads(line) for line in result.output_path.read_text().splitlines()]
+    record = next(item for item in records if item.get("commit_id") == merge_commit)
+
+    assert len(record["parents"]) == 4
+    assert record["is_merge"] is True
+    assert record["evidence_eligible"] is True
+    assert {file["path"] for file in record["files"]} == {
+        "edge-a.txt",
+        "edge-b.txt",
+        "edge-c.txt",
+    }
+
+
 def test_writes_complete_searchable_git_history_index(tmp_path: Path) -> None:
     repository = tmp_path / "repository"
     first_commit = _make_repository(repository)
@@ -362,14 +488,16 @@ def test_writes_complete_searchable_git_history_index(tmp_path: Path) -> None:
     records = [
         json.loads(line) for line in result.output_path.read_text(encoding="utf-8").splitlines()
     ]
-    assert records[0] == {
-        "record_type": "history_metadata",
-        "head": second_commit,
-        "total_commits": 2,
-        "complete": True,
-        "ordering": "topological_newest_first",
-        "errors": [],
-    }
+    assert records[0]["record_type"] == "history_metadata"
+    assert records[0]["head"] == second_commit
+    assert records[0]["total_commits"] == 2
+    assert records[0]["repository_shallow"] is False
+    assert records[0]["history_complete"] is True
+    assert records[0]["records_complete"] is True
+    assert records[0]["details_truncated"] is False
+    assert records[0]["complete"] is True
+    assert records[0]["ordering"] == "topological_newest_first"
+    assert records[0]["errors"] == []
     assert [record["commit_id"] for record in records[1:]] == [second_commit, first_commit]
     assert records[1]["files"] == [
         {
@@ -384,6 +512,67 @@ def test_writes_complete_searchable_git_history_index(tmp_path: Path) -> None:
     assert isinstance(records[1]["tree_id"], str)
     assert records[1]["file_count"] == 1
     assert records[1]["top_level_counts"] == {"src": 1}
+
+
+def test_generated_only_commit_stays_in_topology_but_not_project_evidence(
+    tmp_path: Path,
+) -> None:
+    repository = tmp_path / "repository"
+    _make_repository(repository)
+    (repository / "nested").mkdir()
+    generated = repository / "nested" / "learning-record.md"
+    generated.write_text("generated report\n", encoding="utf-8")
+    _git(repository, "add", "nested/learning-record.md")
+    _git(repository, "commit", "-q", "-m", "store generated report")
+    generated_commit = _head(repository)
+
+    parsed = parse_git_history(repository)
+    index_result = write_git_history_index(repository)
+    records = [json.loads(line) for line in index_result.output_path.read_text().splitlines()]
+    commit = next(record for record in records if record.get("commit_id") == generated_commit)
+    tree = json.loads(write_git_tree(repository, generated_commit).output_path.read_text())
+
+    assert not any(event.id == f"evt-git-{generated_commit}" for event in parsed.events)
+    assert commit["evidence_eligible"] is False
+    assert commit["files"] == []
+    assert commit["excluded_generated_artifacts"] == {
+        "count": 1,
+        "paths": ["nested/learning-record.md"],
+    }
+    assert records[0]["total_commits"] == 2
+    assert "nested/learning-record.md" not in {entry["path"] for entry in tree["entries"]}
+    assert tree["excluded_generated_artifacts"]["paths"] == ["nested/learning-record.md"]
+
+
+def test_shallow_history_preserves_visible_commits_but_reports_the_boundary(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "source"
+    first_commit = _make_repository(source)
+    (source / "src" / "parser.py").write_text("VALUE = 2\n", encoding="utf-8")
+    _git(source, "add", "src/parser.py")
+    _git(source, "commit", "-q", "-m", "second visible tip")
+    tip = _head(source)
+    clone = tmp_path / "clone"
+    subprocess.run(
+        ["git", "clone", "-q", "--depth=1", source.as_uri(), str(clone)],
+        check=True,
+        capture_output=True,
+    )
+
+    parsed = parse_git_history(clone)
+    result = write_git_history_index(clone)
+    records = [json.loads(line) for line in result.output_path.read_text().splitlines()]
+    metadata = records[0]
+
+    assert first_commit not in result.output_path.read_text()
+    assert metadata["head"] == tip
+    assert metadata["repository_shallow"] is True
+    assert metadata["history_complete"] is False
+    assert metadata["records_complete"] is True
+    assert metadata["complete"] is False
+    assert metadata["shallow_boundary_commits"] == [tip]
+    assert any(warning.code == "git_history_shallow" for warning in parsed.warnings)
 
 
 def test_git_evidence_rejects_path_not_changed_by_commit(tmp_path: Path) -> None:

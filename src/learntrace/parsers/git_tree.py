@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import base64
 import re
 import subprocess
 from pathlib import Path
 from typing import Any
 
+from learntrace.artifacts import EvidencePathPolicy, register_generated_artifacts
 from learntrace.parsers._common import compact_text, safe_os_error
 from learntrace.parsers.git import run_git, run_git_bytes, validated_git_root
 from learntrace.parsers.git_navigation import (
@@ -22,29 +24,23 @@ from learntrace.parsers.git_navigation import (
 _TREE_ENTRY_RE = re.compile(rb"^([0-9]{6}) ([a-z]+) ([0-9a-f]+) +(-|[0-9]+)\t(.*)$")
 
 
-def _lfs_paths(root: Path, commit_id: str) -> set[str]:
-    result = run_git(
-        root,
-        "grep",
-        "-l",
-        "-z",
-        "--full-name",
-        "-e",
-        "^version https://git-lfs.github.com/spec/v1$",
-        commit_id,
-        "--",
-    )
-    if result.returncode not in {0, 1}:
-        return set()
-    prefix = f"{commit_id}:"
-    return {
-        token[len(prefix) :] if token.startswith(prefix) else token
-        for token in result.stdout.split("\0")
-        if token
-    }
+def _decode_path(raw_path: bytes) -> tuple[str, dict[str, str]]:
+    try:
+        return raw_path.decode("utf-8"), {}
+    except UnicodeDecodeError:
+        return (
+            raw_path.decode("utf-8", errors="backslashreplace"),
+            {
+                "path_encoding": "non_utf8",
+                "path_bytes_base64": base64.b64encode(raw_path).decode("ascii"),
+            },
+        )
 
 
-def read_tree_entries(root: Path, commit_id: str) -> tuple[str, list[dict[str, Any]]]:
+def _read_tree_entries(
+    root: Path,
+    commit_id: str,
+) -> tuple[str, list[dict[str, Any]], list[str]]:
     tree_result = run_git(root, "show", "-s", "--format=%T", commit_id)
     if tree_result.returncode != 0 or not tree_result.stdout.strip():
         raise ValueError(compact_text(tree_result.stderr) or "could not read commit tree")
@@ -53,42 +49,61 @@ def read_tree_entries(root: Path, commit_id: str) -> tuple[str, list[dict[str, A
     if result.returncode != 0:
         message = result.stderr.decode("utf-8", errors="replace")
         raise ValueError(compact_text(message) or "could not read Git tree")
-    lfs_paths = _lfs_paths(root, commit_id)
+    policy = EvidencePathPolicy.load(root)
     entries: list[dict[str, Any]] = []
+    excluded: list[str] = []
     for raw_entry in result.stdout.split(b"\0"):
         if not raw_entry:
             continue
         match = _TREE_ENTRY_RE.fullmatch(raw_entry)
         if match is None:
+            path, path_metadata = _decode_path(raw_entry)
             entries.append(
                 {
-                    "path": raw_entry.decode("utf-8", errors="replace"),
+                    "path": path,
+                    **path_metadata,
                     "available": False,
                     "unavailable_reason": "malformed_git_tree_entry",
                 }
             )
             continue
         mode, object_type, object_id, raw_size, raw_path = match.groups()
-        path = raw_path.decode("utf-8", errors="replace")
+        path, path_metadata = _decode_path(raw_path)
+        reason = policy.reason(path)
+        if reason == "learntrace_generated_artifact":
+            excluded.append(path)
+            continue
+        if reason is not None:
+            continue
         type_text = object_type.decode("ascii")
-        kind, available, reason = classify_content_kind(path, type_text)
+        if path_metadata:
+            kind, available, unavailable_reason = (
+                "unknown",
+                False,
+                "non_utf8_repository_path",
+            )
+        else:
+            kind, available, unavailable_reason = classify_content_kind(path, type_text)
         entry: dict[str, Any] = {
             "path": path,
+            **path_metadata,
             "mode": mode.decode("ascii"),
             "object_type": type_text,
             "object_id": object_id.decode("ascii"),
             "size": None if raw_size == b"-" else int(raw_size),
             "content_kind": kind,
-            "roles": file_roles(path),
+            "roles": [] if path_metadata else file_roles(path),
             "available": available,
         }
-        if path in lfs_paths:
-            entry["content_kind"] = "git_lfs_pointer"
-            entry["available"] = False
-            reason = "git_lfs_object_not_loaded"
-        if reason is not None:
-            entry["unavailable_reason"] = reason
+        if unavailable_reason is not None:
+            entry["unavailable_reason"] = unavailable_reason
         entries.append(entry)
+    return tree_id, entries, excluded
+
+
+def read_tree_entries(root: Path, commit_id: str) -> tuple[str, list[dict[str, Any]]]:
+    """Return evidence-eligible entries without scanning blob contents."""
+    tree_id, entries, _ = _read_tree_entries(root, commit_id)
     return tree_id, entries
 
 
@@ -106,7 +121,7 @@ def tree_summary(
     tree_id = tree_id_result.stdout.strip()
     if cache is not None and tree_id in cache:
         return cache[tree_id]
-    actual_tree_id, entries = read_tree_entries(root, commit_id)
+    actual_tree_id, entries, _ = _read_tree_entries(root, commit_id)
     top_level: dict[str, int] = {}
     for entry in entries:
         path = entry.get("path")
@@ -127,7 +142,7 @@ def _write_git_tree(
 ) -> GitNavigationResult:
     root = validated_git_root(project_root)
     commit_id = resolve_revision(root, revision)
-    tree_id, entries = read_tree_entries(root, commit_id)
+    tree_id, entries, excluded = _read_tree_entries(root, commit_id)
     record_id = stable_navigation_id("git-tree", commit_id, tree_id)
     top_level: dict[str, int] = {}
     for entry in entries:
@@ -144,6 +159,10 @@ def _write_git_tree(
         "file_count": len(entries),
         "top_level_counts": dict(sorted(top_level.items())),
         "entries": entries,
+        "excluded_generated_artifacts": {
+            "count": len(excluded),
+            "paths": sorted(excluded),
+        },
     }
     destination = local_navigation_output(
         root,
@@ -151,6 +170,7 @@ def _write_git_tree(
         root / ".learntrace" / "evidence" / "git" / "trees" / f"{tree_id}.json",
     )
     write_navigation_json(destination, payload)
+    register_generated_artifacts(root, (destination,))
     return GitNavigationResult(destination, record_id, len(entries))
 
 
