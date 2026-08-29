@@ -50,9 +50,10 @@ learntrace --version
 不应读取这些内容。若需要使用 OpenCode 会话导出，还必须单独提供文件并明确
 授权。
 
-OpenCode 使用的模型负责遵循 Skill 和调用本地 CLI；LearnTrace 用来生成学习
-候选的远程 LLM 是另一条、默认关闭的可选路径。使用 `$learntrace` 不会自动
-启用远程候选推断，也不会自动授权上传 OpenCode 轨迹。
+OpenCode 使用的模型负责遵循 Skill 和调用本地 CLI。CLI 只使用本地确定性规则，
+不调用远程模型，也不读取任何 `LEARNTRACE_*` 环境变量；更深入的语义理解由
+宿主 Agent 承担（单 LLM 原则）。使用 `$learntrace` 不会自动授权上传
+OpenCode 轨迹。
 
 Skill 是宿主 Agent 的工作流约束，不是操作系统沙箱。实际联调已验证授权前
 停止、单次归档和归档后优先提问；宿主模型仍可能产生多余的元数据查询，最终

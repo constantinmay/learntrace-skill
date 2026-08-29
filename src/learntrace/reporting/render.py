@@ -285,6 +285,12 @@ def _inference_mode_lines(bundle: ArchiveBundle) -> list[str]:
             "- 本次候选由本地确定性规则生成。",
             "- 候选仍保持在 `candidate_inference` 层，不会自动写成 `observable_fact`。",
         ]
+    if bundle.inference_mode in ("llm", "llm_stub_fallback"):
+        return [
+            f"- 历史记录：该档案生成于早期版本（候选模式：`{bundle.inference_mode}`）。",
+            "- 当前 CLI 只使用本地确定性规则，重新渲染不会重新发起任何远程调用。",
+            "- 无论历史推断器来源如何，候选都不会自动上升为事实记录。",
+        ]
     return [
         f"- 本次候选由自定义推断器生成（模式：`{bundle.inference_mode}`）。",
         "- 无论推断器来源如何，候选都不会自动上升为事实记录。",
