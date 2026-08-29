@@ -31,9 +31,6 @@ ARCHIVE_VERSION = "v0"
 HASH_ALGORITHM = "sha256"
 MAX_CANDIDATES = 10
 _MAX_CROSS_SESSION_GAP_SECONDS = 24 * 60 * 60
-# Time proximity within this window still surfaces a trace/commit pair for
-# student review, but only as a question, never as a candidate.
-_PROXIMITY_QUESTION_WINDOW_SECONDS = 30 * 60
 _OPENCODE_SESSION_RE = re.compile(r"^trace://opencode/(?P<session>[^/]+)/")
 
 _CONSTRAINT_TERMS = (
@@ -288,13 +285,15 @@ class StubCandidateInferencer:
         # semantic project topic. Generic repeated tool names are insufficient.
         drafts.extend(self._cross_session_follow_ups(traces))
 
-        # Revising AI suggestions: an authorized trace followed by a commit.
-        # Bind only to the matching summary pair, and only when the trace
-        # does not provably succeed the commit.
-        for trace in traces:
-            for commit in commits:
-                if self._revise_ai_matches(trace, commit) and precedes(trace, commit):
-                    drafts.append(self._revise_ai_candidate(trace, commit))
+        # Note: an AI-suggestion trace followed by a commit is NOT materialized
+        # here. Word similarity plus time proximity is not a legitimate
+        # trace-to-commit correspondence; such a link requires a structured
+        # checkpoint, a semantic judgment made from a fully authorized
+        # conversation, or the student's own confirmation. The deterministic
+        # stub has none of those, so it never emits REVISE_AI_SUGGESTION.
+        # (A host-agent inferencer with full authorization over the
+        # conversation may still propose one; the CLI itself performs no
+        # such inference.)
 
         # Fixes: bind the FAILING log (not an arbitrary first test log) to the
         # commit that follows it.
@@ -407,72 +406,6 @@ class StubCandidateInferencer:
             return len(shared_terms) * 10
 
         return 0
-
-    def _revise_ai_matches(self, trace: ObservableEvent, commit: ObservableEvent) -> bool:
-        """Whether a trace/commit pair is a topical AI-suggestion revision.
-
-        The temporal ordering is applied by the caller (``precedes``); here we
-        only check that the summaries actually correspond, so unrelated nearby
-        commits are not turned into a revision claim.
-        """
-        trace_lowered = trace.summary.casefold()
-        has_explicit_suggestion = any(
-            _marker_present(trace_lowered, term) for term in _AI_SUGGESTION_TERMS
-        )
-        return (
-            has_explicit_suggestion
-            and _topics_related(trace.summary, commit.summary)
-            and _contains_change_marker(_commit_intent_text(commit.summary))
-        )
-
-    def _revise_ai_candidate(
-        self,
-        trace: ObservableEvent,
-        commit: ObservableEvent,
-    ) -> CandidateDraft:
-
-        plausible = _plausibility_is_plausible(_temporally_plausible(trace, commit))
-
-        shared_topics = _semantic_topics(trace.summary) & _semantic_topics(commit.summary)
-        if "parsing" in shared_topics:
-            return CandidateDraft(
-                node_type=NodeType.REVISE_AI_SUGGESTION,
-                statement="学生可能没有直接采用 AI 的数据解析建议，而是选择了另一种解析策略。",
-                basis_event_ids=(trace.id, commit.id),
-                uncertainty=(
-                    "中：AI 建议与代码提交是两条独立记录，系统不预设二者相关；"
-                    "是否参考及修改动机均需学生确认。"
-                    if plausible
-                    else "高：时间顺序无法验证，AI 建议与代码修改的关联性存疑。"
-                ),
-                question_to_student="这次数据解析实现是否参考并调整了 AI 的建议？",
-            )
-
-        if "validation" in shared_topics:
-            return CandidateDraft(
-                node_type=NodeType.REVISE_AI_SUGGESTION,
-                statement="学生可能调整了 AI 建议的输入校验方法，并采用了不同实现。",
-                basis_event_ids=(trace.id, commit.id),
-                uncertainty=(
-                    "中：AI 建议与代码提交是两条独立记录，系统不预设二者相关；"
-                    "两种实现语义相近，是否参考需学生确认。"
-                    if plausible
-                    else "高：时间顺序无法验证，语义近似的修改可能来自其他原因。"
-                ),
-                question_to_student="这次输入校验实现是否参考并调整了 AI 的建议？",
-            )
-
-        return CandidateDraft(
-            node_type=NodeType.REVISE_AI_SUGGESTION,
-            statement="学生可能调整了 AI 给出的实现建议，并采用了不同的落地方案。",
-            basis_event_ids=(trace.id, commit.id),
-            uncertainty=(
-                "中：轨迹建议与代码结果相邻，但系统不能把二者直接当作同一决策链。"
-                if plausible
-                else "高：时间顺序无法验证，轨迹与代码修改之间的因果关系不明。"
-            ),
-            question_to_student="这次实现是否参考并修改了 AI 给出的建议？",
-        )
 
     def _fix_failed_candidate(
         self,
@@ -1296,54 +1229,6 @@ def fallback_reflection_questions(bundle: ArchiveBundle) -> tuple[dict[str, obje
     return tuple(questions)
 
 
-def time_proximity_reflection_questions(bundle: ArchiveBundle) -> tuple[dict[str, object], ...]:
-    """Return reflection prompts for trace/commit pairs that are merely near.
-
-    Time proximity plus topical overlap no longer materializes a candidate:
-    it only produces a question for the student to confirm or dismiss. These
-    prompts are deliberately *not* learning-node candidates and cannot be
-    confirmed or denied through the student confirmation flow.
-    """
-
-    questions: dict[str, dict[str, object]] = {}
-    for event in bundle.events:
-        if event.kind != EventKind.TRACE_RECORD or event.occurred_at is None:
-            continue
-        if not _has_trace_learning_signal(event):
-            continue
-        for other in bundle.events:
-            # Only commit overviews qualify: file-level change events share
-            # the same timestamp and would duplicate the question.
-            if (
-                other.kind != EventKind.GIT_COMMIT
-                or other.occurred_at is None
-                or not _is_commit_overview(other.summary)
-            ):
-                continue
-            gap_seconds = _trace_commit_gap_seconds(event, other)
-            if gap_seconds is None or gap_seconds > _PROXIMITY_QUESTION_WINDOW_SECONDS:
-                continue
-            if not _topics_related(event.summary, other.summary):
-                continue
-            question_id = f"proximity-{event.id}-{other.id}"
-            questions[question_id] = {
-                "question_id": question_id,
-                "question_type": "time_proximity_review",
-                "candidate_id": None,
-                "node_type": None,
-                "question_to_student": (
-                    f"在轨迹记录 {event.id} 与代码提交 {other.id} 附近，观察到两次记录"
-                    "时间接近且主题相近。它们是否属于同一次工作？当时是什么情况？"
-                    "（不回答将记录为“未确认”）"
-                ),
-                "basis_event_ids": [event.id, other.id],
-                "uncertainty": (
-                    "高：时间接近与主题重合不能证明因果关系；是否构成同一工作环节需学生确认。"
-                ),
-            }
-    return tuple(questions[key] for key in sorted(questions))
-
-
 def _source_index(bundle: ArchiveBundle) -> list[dict[str, object]]:
 
     candidate_ids_by_event = {
@@ -1464,7 +1349,6 @@ def bundle_to_dict(
         if candidate.status == CandidateStatus.PROPOSED
     ]
     pending_questions.extend(fallback_reflection_questions(bundle))
-    pending_questions.extend(time_proximity_reflection_questions(bundle))
 
     missing_info_count = _missing_info_count(bundle)
 

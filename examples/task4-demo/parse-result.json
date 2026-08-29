@@ -30,7 +30,7 @@
       "id": "evt-demo-test-failure",
       "evidence_level": "observable_fact",
       "kind": "test_log",
-      "summary": "Existing pytest log: tests/test_roster_import.py::test_import_player_with_quoted_comma failed because the regex parser split the player name \"Smith, Jr.\" into two columns.",
+      "summary": "Existing pytest log: tests/test_roster_import.py::test_import_player_with_quoted_comma reported an error: the regex parser split the player name \"Smith, Jr.\" into two columns.",
       "occurred_at": "2026-07-20T10:04:00+08:00",
       "source_refs": [
         {

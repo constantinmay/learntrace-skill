@@ -1,8 +1,9 @@
 # Task 4 Demo
 
 This demo feeds Task 4 a small, hand-authored `ObservableEvent` bundle that has
-enough evidence for the local deterministic inferencer to propose a learning-node
-candidate.
+enough evidence for the local deterministic inferencer to propose a
+`fix_failed_approach` candidate: the failing pytest log is bound to the later
+commit that fixes the same parser.
 
 LearnTrace is single-LLM: the CLI never calls a remote model. Candidate
 inference here is fully deterministic and offline — the same input always
@@ -20,6 +21,15 @@ The bundle includes:
 - `test_log`: an existing pytest failure showing quoted comma fields break parsing.
 - `document`: a design note requiring CSV-compatible roster imports.
 - `git_commit`: a later implementation change replacing the regex with a state-machine parser and adding edge-case tests.
+
+The AI-suggestion trace and the commit are deliberately **not** paired
+automatically: word similarity and time proximity are not a legitimate
+trace-to-commit link, and the deterministic inferencer therefore emits no
+`revise_ai_suggestion` candidate for them. The single candidate comes from the
+verifiable failing-log → fixing-commit link instead. (Establishing the AI
+suggestion → commit link belongs to a fully authorized host-agent
+conversation or the student's own confirmation, not to deterministic
+inference.)
 
 Run:
 

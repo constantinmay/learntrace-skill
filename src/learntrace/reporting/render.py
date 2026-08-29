@@ -18,7 +18,6 @@ from learntrace.reporting.pipeline import (
     ArchiveBundle,
     archive_manifest,
     fallback_reflection_questions,
-    time_proximity_reflection_questions,
 )
 
 _NODE_LABELS: dict[NodeType, str] = {
@@ -120,11 +119,7 @@ def _pending_question_count(bundle: ArchiveBundle) -> int:
     candidate_questions = sum(
         candidate.status.value == "proposed" for candidate in bundle.candidates
     )
-    return (
-        candidate_questions
-        + len(fallback_reflection_questions(bundle))
-        + len(time_proximity_reflection_questions(bundle))
-    )
+    return candidate_questions + len(fallback_reflection_questions(bundle))
 
 
 def _source_dir_label(source_dir: Path | None) -> str:
@@ -359,10 +354,7 @@ def render_markdown(bundle: ArchiveBundle, *, source_dir: Path | None = None) ->
     lines.append("")
 
     lines.append("## 后续学习")
-    reflection_questions = (
-        *fallback_reflection_questions(bundle),
-        *time_proximity_reflection_questions(bundle),
-    )
+    reflection_questions = fallback_reflection_questions(bundle)
     next_steps: list[str] = []
     for candidate in bundle.candidates:
         confirmation = confirmations_by_candidate.get(candidate.id)
@@ -485,10 +477,7 @@ def render_markdown(bundle: ArchiveBundle, *, source_dir: Path | None = None) ->
 
 def render_questions_markdown(bundle: ArchiveBundle) -> str:
     pending = [candidate for candidate in bundle.candidates if candidate.status.value == "proposed"]
-    fallback = (
-        *fallback_reflection_questions(bundle),
-        *time_proximity_reflection_questions(bundle),
-    )
+    fallback = fallback_reflection_questions(bundle)
     lines: list[str] = ["# 学生复盘与确认问题", ""]
     if not pending and not fallback:
         lines.extend(["- 无待确认问题。", ""])

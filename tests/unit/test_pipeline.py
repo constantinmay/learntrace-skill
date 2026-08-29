@@ -18,7 +18,6 @@ from learntrace.reporting import (
     CandidateDraft,
     apply_confirmations,
     build_archive_bundle,
-    render_questions_markdown,
 )
 from learntrace.reporting.pipeline import (
     MAX_CANDIDATES,
@@ -26,9 +25,7 @@ from learntrace.reporting.pipeline import (
     TemporalPlausibility,
     _temporally_plausible,
     archive_manifest,
-    bundle_to_dict,
     stable_candidate_id,
-    time_proximity_reflection_questions,
 )
 
 
@@ -768,19 +765,34 @@ def test_stub_rejects_low_signal_and_topically_unrelated_nearby_traces() -> None
         ),
     ],
 )
-def test_revision_heuristic_accepts_synonymous_wording(
+def test_word_similarity_and_time_proximity_alone_create_no_candidate(
     trace_summary: str,
     commit_summary: str,
 ) -> None:
+    """An AI-suggestion trace and a topically similar nearby commit are NOT
+    linked by the deterministic stub: wording similarity plus time proximity
+    is not a legitimate trace-to-commit correspondence. Such a link requires
+    a structured checkpoint, a semantic judgment made from a fully authorized
+    conversation, or the student's own confirmation — none of which the stub
+    has. So no REVISE_AI_SUGGESTION candidate is materialized here."""
     events = (
-        _event("evt-trace", EventKind.TRACE_RECORD, trace_summary),
-        _event("evt-commit", EventKind.GIT_COMMIT, commit_summary),
+        _event(
+            "evt-trace",
+            EventKind.TRACE_RECORD,
+            trace_summary,
+            occurred_at="2026-08-10T09:40:00Z",
+        ),
+        _event(
+            "evt-commit",
+            EventKind.GIT_COMMIT,
+            commit_summary,
+            occurred_at="2026-08-10T09:45:00Z",
+        ),
     )
 
     bundle = build_archive_bundle(events, inferencer=StubCandidateInferencer())
 
-    assert len(bundle.candidates) == 1
-    assert bundle.candidates[0].node_type == NodeType.REVISE_AI_SUGGESTION
+    assert bundle.candidates == ()
 
 
 class ManyCandidateInferencer:
@@ -809,9 +821,14 @@ def test_build_archive_bundle_enforces_candidate_limit() -> None:
 
 
 def test_time_proximity_nearby_trace_commit_no_longer_creates_candidate() -> None:
-    """Issue #29: a learning-signal trace within 30 min of a topical commit
-    must not be materialized as a follow_up candidate; the pair may only
-    surface as a student reflection question."""
+    """Issue #29 + review: a learning-signal trace within 30 min of a topical
+    commit is NOT materialized as any candidate by the deterministic stub.
+    Time proximity plus wording similarity is not a legitimate
+    trace-to-commit correspondence; such a link requires a structured
+    checkpoint, a semantic judgment made from a fully authorized conversation,
+    or the student's own confirmation — none of which the stub has. (The
+    former proximity reflection question is removed; that question type can
+    only be re-introduced once #28's question/answer model is defined.)"""
     events = (
         _event(
             "evt-trace-parse",
@@ -830,42 +847,3 @@ def test_time_proximity_nearby_trace_commit_no_longer_creates_candidate() -> Non
     bundle = build_archive_bundle(events, inferencer=StubCandidateInferencer())
 
     assert bundle.candidates == ()
-
-    archive = bundle_to_dict(bundle)
-    pending = cast(list[dict[str, object]], archive["pending_questions"])
-    proximity = [
-        question for question in pending if question["question_type"] == "time_proximity_review"
-    ]
-    assert len(proximity) == 1
-    assert proximity[0]["candidate_id"] is None
-    assert proximity[0]["basis_event_ids"] == ["evt-trace-parse", "evt-commit-parse"]
-    assert "proximity-evt-trace-parse-evt-commit-parse" in render_questions_markdown(bundle)
-    assert "未确认" in render_questions_markdown(bundle)
-
-
-def test_generic_nearby_trace_commit_produces_no_proximity_question() -> None:
-    """A trace without a learning signal stays invisible: neither a candidate
-    nor a proximity question."""
-    events = (
-        _event(
-            "evt-trace-write",
-            EventKind.TRACE_RECORD,
-            "OpenCode 工具 write 已完成。路径：parser.py。",
-            occurred_at="2026-08-10T09:40:00Z",
-        ),
-        _event(
-            "evt-commit-parse",
-            EventKind.GIT_COMMIT,
-            '提交 a1b2c3d 的提交信息为"调整解析逻辑"，记录 1 个文件变更（1 个修改）。',
-            occurred_at="2026-08-10T09:45:00Z",
-        ),
-    )
-
-    bundle = build_archive_bundle(events, inferencer=StubCandidateInferencer())
-
-    assert bundle.candidates == ()
-    assert time_proximity_reflection_questions(bundle) == ()
-    archive = bundle_to_dict(bundle)
-    pending = cast(list[dict[str, object]], archive["pending_questions"])
-    assert all(question["question_type"] != "time_proximity_review" for question in pending)
-    assert "proximity-" not in render_questions_markdown(bundle)
