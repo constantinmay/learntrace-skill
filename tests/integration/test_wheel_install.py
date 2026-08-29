@@ -194,6 +194,7 @@ def test_cli_entry_point_runs_from_installed_wheel(tmp_path: Path) -> None:
     )
     result = _run([str(cli_bin), "--help"], cwd=tmp_path)
     assert result.returncode == 0, result.stderr
+    assert "usage:" in result.stdout, result.stdout
     assert "Parse local evidence" in result.stdout, result.stdout
     assert "git-file" in result.stdout, result.stdout
     assert "run" in result.stdout, result.stdout

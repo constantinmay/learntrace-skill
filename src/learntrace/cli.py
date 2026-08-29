@@ -206,9 +206,6 @@ def build_parser() -> argparse.ArgumentParser:
     )
     adapt_parser.add_argument("-o", "--output", type=Path)
 
-    archive_parser = subparsers.add_parser("archive", help="Build Task 4 archive outputs.")
-    archive_parser.add_argument("args", nargs=argparse.REMAINDER)
-
     run_parser = subparsers.add_parser("run", help="Run the local parse-to-archive pipeline.")
     _add_parse_options(run_parser)
     run_parser.add_argument("--opencode-export", action="append", type=Path, default=[])
@@ -581,15 +578,16 @@ def _run_command(args: argparse.Namespace, parser: argparse.ArgumentParser) -> i
         authorized_paths = (
             export_paths if args.authorized else tuple(args.authorize_opencode_export)
         )
+        opencode_result = adapt_opencode_exports(
+            export_paths,
+            authorized_paths=authorized_paths,
+            project_root=root,
+        )
         trace_result = _merge_trace_results(
             (
                 (
                     "opencode",
-                    adapt_opencode_exports(
-                        export_paths,
-                        authorized_paths=authorized_paths,
-                        project_root=root,
-                    ),
+                    opencode_result,
                 ),
                 (
                     "claude-code",
@@ -609,6 +607,16 @@ def _run_command(args: argparse.Namespace, parser: argparse.ArgumentParser) -> i
                 ),
             )
         )
+        if (args.opencode_export or args.authorize_opencode_export or args.authorized) and (
+            opencode_result.status != TraceInputStatus.PARSED
+        ):
+            print(
+                f"warning: requested OpenCode export(s) produced 0 events "
+                f"(status={opencode_result.status.value}); the trace archive has no "
+                "traces to adapt. If this is unexpected, check that each export "
+                "path exists and is authorized.",
+                file=sys.stderr,
+            )
         work_dir.mkdir(parents=True, exist_ok=True)
         write_trace_result(trace_result, work_dir / "task3-result.json")
         archive_result = write_learning_record_result(
