@@ -20,7 +20,7 @@
 | 2 · 后端 REST API | 书籍/分类 CRUD、搜索与筛选 |
 | 3 · 前端脚手架与数据接入 | Vite + React + TS 脚手架与 /api 代理;类型定义与 API 客户端 |
 | 4 · 前端功能界面 | 书籍列表页;表单、详情与删除确认;分类管理与样式 |
-| 5 · 修复与文档收尾 | 统一 created_at 时间格式;完善 README |
+| 5 · 文档收尾 | README 收尾 |
 
 ## 阶段详情
 
@@ -88,33 +88,21 @@
 - `33e8a11` feat(frontend): 分类管理面板与整体样式打磨
 </details>
 
-### 阶段 5 · 修复与文档收尾
+### 阶段 5 · 文档收尾
 
-> 目标:修正接口行为差异,补齐项目文档。
-
-**Fixed**
-- 新建书籍接口的 `created_at` 与列表接口的时间格式不一致,统一为一致的 Go 时间格式[^c-3eac321]。
+> 目标:完善项目文档。
 
 **Changed**
 - 完善 README:功能说明、运行说明、接口文档[^c-40601e5]。
 
-<details><summary>原始提交(2 条)</summary>
+<details><summary>原始提交(1 条)</summary>
 
-- `3eac321` fix(backend): 新建书籍时 created_at 使用与列表一致的 Go 时间
 - `40601e5` docs: 完善项目 README(功能、运行说明、接口文档)
 </details>
 
 ## 关键转折
 
-```mermaid
-flowchart LR
-    A["阶段 4 完成:前端功能界面"] --> B["运行与接口检查"]
-    B --> C["修复 created_at 格式(commit 3eac321)"]
-    B -. "推断:此窗口内观察到了格式差异" .-> D["问题最初表现:未记录"]
-```
-
-- 功能界面阶段完成到修复提交之间没有新提交;同一时期授权轨迹记录了后端/前端的多次运行与接口检查(`go`、`node`、`curl`)[^t-debug]。**仅据此不能断言因果关系**:轨迹操作与提交之间的对应关系未经确认。
-- 修复内容本身有提交记录支撑(证据强度:高);**问题的最初表现与修复后的验证方式均无记录**(证据强度:不可估计)。
+未记录;当前档案未产生经确认或补充的系统推断。
 
 ## AI 协作
 
@@ -146,7 +134,7 @@ flowchart LR
 ## 证据边界
 
 > ⚠️ **证据缺口 1**:未发现测试日志与运行输出 → 无法确认各功能是否经过验证及验证方式。
-> ⚠️ **证据缺口 2**:修复前调试窗口中观察到的具体问题未记录 → 无法确认 created_at 修复的触发原因与最初表现。
+> ⚠️ **证据缺口 2**:调试窗口中观察到的具体问题未记录 → 无法确认调试期间针对的具体问题与验证方式。
 
 ## 附录
 
@@ -182,7 +170,6 @@ flowchart LR
 [^c-26af0db]: commit `26af0db`(archive 事件 `evt-git-26af0db283e5ec8985860b5a3923acc124c34561`)
 [^c-425f643]: commit `425f643`(archive 事件 `evt-git-425f643c0b5ffaaf00f16cde3c5077f252760b1d`)
 [^c-33e8a11]: commit `33e8a11`(archive 事件 `evt-git-33e8a1150ff01b5513344c19cf4130bc334ff6ba`)
-[^c-3eac321]: commit `3eac321`(archive 事件 `evt-git-3eac32114182bb9bca32ce8f13527d8ed04e45ae`)
 [^c-40601e5]: commit `40601e5`(archive 事件 `evt-git-40601e52098fdf155725f2fc5581844b2e4514ef`)
 [^t-question]: archive 事件 `evt-trace-e4ae6591a8636db6`
 [^t-writes]: 例:archive 事件 `evt-trace-ec0526f401fc177f`、`evt-trace-b729286dc0a2751b`、`evt-trace-ac15850717458bff`;完整清单见 archive `events[]`。

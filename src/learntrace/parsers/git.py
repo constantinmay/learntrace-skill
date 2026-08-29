@@ -208,9 +208,13 @@ def _change_counts(changes: list[_GitFileChange]) -> str:
 
 
 def _author_matches(author: str, author_name: str, author_email: str) -> bool:
-    """按字面、大小写不敏感匹配作者名称或邮箱（不使用 Git 的 regex 匹配）。"""
+    """按作者名称或邮箱做整体、大小写不敏感匹配（不用 Git regex，不做子串匹配）。
+
+    用整体匹配而非子串，避免选 ``Alice`` 时误中 ``Malice`` / ``xAlice`` 等
+    他人提交混入个人档案。
+    """
     needle = author.strip().casefold()
-    return bool(needle) and (needle in author_name.casefold() or needle in author_email.casefold())
+    return bool(needle) and (needle == author_name.casefold() or needle == author_email.casefold())
 
 
 def _history_commit_authors(
@@ -301,8 +305,8 @@ def parse_git_history(
 ) -> ParseResult:
     """读取最近 Git 提交；不运行钩子、diff 驱动或用户项目命令。
 
-    传入 ``author`` 时（多作者仓库协作边界），按字面、大小写不敏感匹配作者
-    名称或邮箱，仅解析该作者名下的提交，其余提交在解析层过滤并显式告警。
+    传入 ``author`` 时（多作者仓库协作边界），按作者名称或邮箱整体、大小写
+    不敏感匹配，仅解析该作者名下的提交，其余提交在解析层过滤并显式告警。
     """
     root = repo_root(project_root)
     if max_commits < 1:
@@ -382,7 +386,7 @@ def parse_git_history(
                     "git_author_filtered",
                     ".",
                     f"多作者协作边界：最近提交中有 {filtered_count} 个不属于作者"
-                    f"“{author.strip()}”（按名称或邮箱字面、大小写不敏感匹配），"
+                    f"“{author.strip()}”（按名称或邮箱整体、大小写不敏感匹配），"
                     "已在解析层过滤，不进入报告。",
                 )
             )

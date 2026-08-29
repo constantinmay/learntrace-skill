@@ -210,8 +210,10 @@ def verify_payload(payload: NarrativeDict, archive: ArchiveDict) -> list[str]:
 
     三条红线:
     1. payload 中的引用必须解析到档案内的可观察事件;
-    2. 被本人否认候选的 basis 事件不得被 confirmed/supplemented 转折引用
-       (denied 线索只允许留在附录槽);submitted 版不得保留 denied 槽;
+    2. 被本人否认候选的 basis 事件不得出现在任何正文引用位置
+       (overview/stages/key_changes/merge_anchor/转折/AI 插曲);
+       denied 线索只允许留在 denied_kept_in_appendix 槽的引用里
+       (渲染时仅进附录);submitted 版不得保留 denied 槽;
     3. 必需字段不缺:meta 计数与档案一致,working 版反思必须为 null,
        submitted 版必须由本人填写开篇/AI 声明/收获与反思。
     另先做 schema 校验(纯新增的 ``narrative_payload`` 记录类型)。
@@ -243,27 +245,29 @@ def verify_payload(payload: NarrativeDict, archive: ArchiveDict) -> list[str]:
     # 红线 2:被否认线索不入正文。
     denied = _denied_basis_event_ids(archive)
     variant = payload.get("variant")
+    allowed: list[str] = []
     for index, turning_raw in enumerate(payload.get("turning_points") or []):
         turning = _as_dict(turning_raw)
         if turning is None:
             continue
         status = turning.get("status")
-        if status in _CONFIRMED_OR_SUPPLEMENTED:
-            for citation in _list_field(turning, "citations"):
-                try:
-                    event_id = _citation_event_id(citation)
-                except ValueError:
-                    continue
-                if event_id in denied:
-                    title = turning.get("title", "<未命名>")
-                    violations.append(
-                        f"红线2:turning_points[{index}]({title}): "
-                        f"引用了被本人否认线索的 basis 事件 {event_id}"
-                    )
-        elif status == "denied_kept_in_appendix" and variant == "submitted":
-            violations.append(
-                f"红线2:turning_points[{index}]:submitted 版不得保留 denied_kept_in_appendix 槽"
-            )
+        if status == "denied_kept_in_appendix":
+            # denied 槽的 citations 是唯一体外例外:线索留在附录备查,不算正文引用。
+            for c_index in range(len(_list_field(turning, "citations"))):
+                allowed.append(f"turning_points[{index}].citations[{c_index}]")
+            if variant == "submitted":
+                violations.append(
+                    f"红线2:turning_points[{index}]:submitted 版不得保留 denied_kept_in_appendix 槽"
+                )
+    for location, citation in _iter_citation_locations(payload):
+        if location in allowed:
+            continue
+        try:
+            event_id = _citation_event_id(citation)
+        except ValueError:
+            continue  # 格式问题已由红线 1 报告
+        if event_id in denied:
+            violations.append(f"红线2:{location}: 引用了被本人否认线索的 basis 事件 {event_id}")
 
     # 红线 3:必需字段不缺、计数一致、反思层归属学生。
     meta = _as_dict(payload.get("meta"))

@@ -20,7 +20,7 @@
 | 2 · 后端 REST API | 书籍/分类 CRUD、搜索与筛选 |
 | 3 · 前端脚手架与数据接入 | Vite + React + TS 脚手架与 /api 代理;类型定义与 API 客户端 |
 | 4 · 前端功能界面 | 书籍列表页;表单、详情与删除确认;分类管理与样式 |
-| 5 · 修复与文档收尾 | 统一 created_at 时间格式;完善 README |
+| 5 · 文档收尾 | README 收尾 |
 
 ## 阶段详情
 
@@ -88,19 +88,15 @@
 - `33e8a11` feat(frontend): 分类管理面板与整体样式打磨
 </details>
 
-### 阶段 5 · 修复与文档收尾
+### 阶段 5 · 文档收尾
 
-> 目标:修正接口行为差异,补齐项目文档。
-
-**Fixed**
-- 新建书籍接口的 `created_at` 与列表接口的时间格式不一致,统一为一致的 Go 时间格式[^c-3eac321]。
+> 目标:完善项目文档。
 
 **Changed**
 - 完善 README:功能说明、运行说明、接口文档[^c-40601e5]。
 
-<details><summary>原始提交(2 条)</summary>
+<details><summary>原始提交(1 条)</summary>
 
-- `3eac321` fix(backend): 新建书籍时 created_at 使用与列表一致的 Go 时间
 - `40601e5` docs: 完善项目 README(功能、运行说明、接口文档)
 </details>
 

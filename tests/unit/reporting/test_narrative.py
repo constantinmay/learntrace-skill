@@ -9,6 +9,7 @@ from __future__ import annotations
 import copy
 import json
 import re
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any, cast
 
@@ -418,6 +419,62 @@ def test_red_line_2_denied_basis_cited_by_body_turning_point(
     assert any("红线2" in violation for violation in violations)
 
 
+def _inject_overview(bad: dict[str, Any]) -> None:
+    bad["overview"]["citations"].append(_DENIED_BASIS_EVENT)
+
+
+def _inject_stage(bad: dict[str, Any]) -> None:
+    bad["stages"][0]["citations"].append(_DENIED_BASIS_EVENT)
+
+
+def _inject_key_change(bad: dict[str, Any]) -> None:
+    bad["stages"][0]["key_changes"][0] = {
+        "kind": "Note",
+        "text": "坏改动",
+        "citations": [_DENIED_BASIS_EVENT],
+    }
+
+
+def _inject_ai_episode(bad: dict[str, Any]) -> None:
+    bad["ai_collaboration"]["episodes"][0]["citations"].append(_DENIED_BASIS_EVENT)
+
+
+@pytest.mark.parametrize(
+    ("inject", "expected_location"),
+    [
+        (_inject_overview, "overview.citations"),
+        (_inject_stage, "stages[0].citations"),
+        (_inject_key_change, "stages[0].key_changes[0].citations"),
+        (_inject_ai_episode, "ai_collaboration.episodes[0].citations"),
+    ],
+    ids=["overview", "stages", "key_changes", "ai_episodes"],
+)
+def test_red_line_2_denied_basis_cited_in_any_body_position(
+    golden_sample: tuple[str, dict[str, Any], dict[str, Any]],
+    inject: Callable[[dict[str, Any]], None],
+    expected_location: str,
+) -> None:
+    """被否认线索只能留在附录槽:任何正文位置引用其 basis 事件,verify 必须失败。"""
+    _, payload, archive = golden_sample
+    bad = copy.deepcopy(payload)
+    inject(bad)
+    violations = verify_payload(bad, archive)
+    assert any(
+        "红线2" in violation and expected_location in violation and _DENIED_BASIS_EVENT in violation
+        for violation in violations
+    )
+
+
+def test_red_line_2_denied_slot_citations_are_exempt(
+    golden_sample: tuple[str, dict[str, Any], dict[str, Any]],
+) -> None:
+    """denied 槽自带的 basis 引用是附录例外,不触发红线 2(golden working 版直接通过)。"""
+    _, payload, archive = golden_sample
+    assert not any(
+        "红线2" in violation for violation in verify_payload(copy.deepcopy(payload), archive)
+    )
+
+
 def test_red_line_2_denied_slot_not_allowed_in_submitted() -> None:
     payload = load_payload(GOLDEN_DIR / "book-manager" / "narrative-payload.golden.json")
     archive = _synthesize_archive(payload)
@@ -505,6 +562,20 @@ def _write_pair(
     return payload_path, archive_path
 
 
+def _to_submitted(payload: dict[str, Any]) -> dict[str, Any]:
+    """把 golden working payload 变成一个合法 submitted payload(补本人必填项、去掉 denied 槽)。"""
+    sub = copy.deepcopy(payload)
+    sub["variant"] = "submitted"
+    sub["intro_note"] = "这是我课程大作业的过程复盘。"
+    sub["ai_statement"] = "本项目使用了 AI 编程助手,全部经本人复核。"
+    sub["takeaways"] = ["收获一"]
+    sub["reflection"]["text"] = "本人反思。"
+    sub["turning_points"] = [
+        tp for tp in sub["turning_points"] if tp.get("status") != "denied_kept_in_appendix"
+    ]
+    return sub
+
+
 def test_cli_verify_narrative_pass_and_fail(
     tmp_path: Path, golden_sample: tuple[str, dict[str, Any], dict[str, Any]]
 ) -> None:
@@ -546,6 +617,82 @@ def test_cli_render_narrative_rejects_unverified_payload(
         == 1
     )
     assert not output_path.exists()
+
+
+def test_cli_render_variant_override_rechecks_submitted_red_lines(
+    tmp_path: Path, golden_sample: tuple[str, dict[str, Any], dict[str, Any]]
+) -> None:
+    """working payload + --variant submitted 必须失败:按最终版本重新过红线,不绕过版本边界。"""
+    _, payload, archive = golden_sample
+    payload_path, archive_path = _write_pair(tmp_path, payload, archive)
+    output_path = tmp_path / "submitted.md"
+    assert (
+        cli_main(
+            [
+                "render-narrative",
+                str(payload_path),
+                str(archive_path),
+                "-o",
+                str(output_path),
+                "--variant",
+                "submitted",
+            ]
+        )
+        == 1
+    )
+    assert not output_path.exists()
+
+
+def test_cli_render_variant_override_rechecks_working_red_lines(
+    tmp_path: Path, golden_sample: tuple[str, dict[str, Any], dict[str, Any]]
+) -> None:
+    """submitted payload + --variant working 不能绕过版本边界:
+    最终 payload 按 working 版校验,reflection.text 非空即违规。"""
+    _, payload, archive = golden_sample
+    payload_path, archive_path = _write_pair(tmp_path, _to_submitted(payload), archive)
+    output_path = tmp_path / "working.md"
+    assert (
+        cli_main(
+            [
+                "render-narrative",
+                str(payload_path),
+                str(archive_path),
+                "-o",
+                str(output_path),
+                "--variant",
+                "working",
+            ]
+        )
+        == 1
+    )
+    assert not output_path.exists()
+
+
+def test_cli_render_variant_override_passes_when_final_variant_verified(
+    tmp_path: Path, golden_sample: tuple[str, dict[str, Any], dict[str, Any]]
+) -> None:
+    """合法 submitted payload + --variant submitted:最终版本通过红线,渲染成功。"""
+    _, payload, archive = golden_sample
+    submitted = _to_submitted(payload)
+    payload_path, archive_path = _write_pair(tmp_path, submitted, archive)
+    output_path = tmp_path / "out" / "record.md"
+    assert (
+        cli_main(
+            [
+                "render-narrative",
+                str(payload_path),
+                str(archive_path),
+                "-o",
+                str(output_path),
+                "--variant",
+                "submitted",
+            ]
+        )
+        == 0
+    )
+    assert output_path.read_text(encoding="utf-8") == render_narrative_markdown(
+        submitted, archive, variant="submitted"
+    )
 
 
 def test_loaders_reject_non_object_json(tmp_path: Path) -> None:

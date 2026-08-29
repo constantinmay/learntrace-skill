@@ -127,12 +127,17 @@ def test_opencode_minimal_session_export_keeps_only_the_five_field_events(
     raw = (evidence_dir(tmp_path) / entry.path).read_text(encoding="utf-8")
     lines = [json.loads(line) for line in raw.strip().splitlines()]
     assert len(lines) == 3
+    # 每行只有五类字段（时间/宿主/工具/相对路径/命令摘要），无完整事件、无来源引用
     for event in lines:
-        assert event["kind"] == "trace_record"
-        assert "occurred_at" in event
-        session_refs = [ref for ref in event["source_refs"] if ref["note"] == "session-export"]
-        assert session_refs[0]["type"] == "file"
-        assert session_refs[0]["ref"] == OPENCODE_FIXTURE.resolve().as_posix()
+        assert set(event) == {"time", "host", "tool", "path", "command"}
+        assert event["host"] == "opencode"
+    by_tool = {(event["tool"], event["path"], event["command"]) for event in lines}
+    # read 事件：路径被归一化——项目外绝对路径落为不可识别占位符，无命令
+    assert ("read", "[outside-project]", None) in by_tool
+    # bash 事件：只有命令类型，无路径、无参数（TOKEN/命令尾巴全部不落盘）
+    assert ("bash", None, "git status") in by_tool
+    # 无参数工具（task）：工具名保留，路径/命令均为空
+    assert ("task", None, None) in by_tool
     # 工具输出/聊天/任务正文一律不进入最小保留导出
     for marker in (
         "FORBIDDEN_CHAT_TEXT",
@@ -142,8 +147,15 @@ def test_opencode_minimal_session_export_keeps_only_the_five_field_events(
         "FORBIDDEN_TOKEN",
         "FORBIDDEN_COMMAND_TAIL",
         "FORBIDDEN_TASK_PROMPT",
+        "workdir",
     ):
         assert marker not in raw
+    # 绝对路径/用户名/home 不进入最小保留导出（fixture 里的 D:\repo、C:\Users、\repo\ 都不得出现）
+    for marker in ("D:\\repo", "D:/repo", "C:\\Users", "C:/Users", "Fixture Person", "\\repo\\"):
+        assert marker not in raw
+    # 导出文件自身路径（含仓库绝对路径）不得出现在导出内容里
+    assert str(OPENCODE_FIXTURE.resolve()).replace("\\", "/") not in raw
+    assert OPENCODE_FIXTURE.resolve().as_posix() not in raw
 
 
 def test_codex_minimal_session_export_names_the_file_by_session_id(tmp_path: Path) -> None:
@@ -155,8 +167,14 @@ def test_codex_minimal_session_export_names_the_file_by_session_id(tmp_path: Pat
     raw = (evidence_dir(tmp_path) / entry.path).read_text(encoding="utf-8")
     assert entry.coverage == "minimal retention: 1 v0 events (time/host/tool/path/command only)"
     (event,) = (json.loads(line) for line in raw.strip().splitlines())
-    assert event["occurred_at"] == "2026-08-20T10:00:01Z"
-    assert "Codex 工具 shell" in event["summary"]
+    assert event == {
+        "time": "2026-08-20T10:00:01Z",
+        "host": "codex",
+        "tool": "shell",
+        "path": None,
+        # 命令摘要=可执行名（summarize_command 语义；bash 包装命令不穿透取子命令）
+        "command": "bash",
+    }
     assert "TOOL_OUTPUT_MUST_NOT_LEAK" not in raw
 
 
@@ -240,6 +258,27 @@ def test_project_file_export_rejects_paths_outside_the_root(tmp_path: Path) -> N
         export_project_file(tmp_path, "../outside.md")
     with pytest.raises(FileNotFoundError, match="project file not found"):
         export_project_file(tmp_path, "missing.md")
+
+
+@pytest.mark.parametrize(
+    "blocked",
+    [
+        "learning-record.md",
+        ".learntrace/archive-records.json",
+        ".learntrace/learning-questions.md",
+        ".git/config",
+        "docs/.git/packed-refs",
+        "subdir/learning-questions.md",
+    ],
+)
+def test_project_file_export_rejects_reserved_outputs(tmp_path: Path, blocked: str) -> None:
+    """版本库元数据与系统产物不是原始证据，禁止经证据回读通道外发。"""
+    candidate = tmp_path / blocked
+    candidate.parent.mkdir(parents=True, exist_ok=True)
+    candidate.write_text("sensitive\n", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="reserved learntrace output"):
+        export_project_file(tmp_path, blocked)
 
 
 def test_index_deduplicates_by_path_and_stays_sorted(tmp_path: Path) -> None:

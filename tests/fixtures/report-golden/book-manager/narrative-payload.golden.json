@@ -44,10 +44,10 @@
     },
     {
       "stage_id": "stage-5",
-      "title": "修复与文档收尾",
-      "goal": "修复缺陷并完善文档",
-      "key_changes": ["修复新建书籍 created_at 与列表不一致", "README 收尾"],
-      "citations": ["evt-git-3eac32114182bb9bca32ce8f13527d8ed04e45ae", "evt-git-40601e52098fdf155725f2fc5581844b2e4514ef"]
+      "title": "文档收尾",
+      "goal": "完善项目文档",
+      "key_changes": ["README 收尾"],
+      "citations": ["evt-git-40601e52098fdf155725f2fc5581844b2e4514ef"]
     }
   ],
   "turning_points": [
@@ -100,6 +100,6 @@
   "takeaways": [],
   "evidence_gaps": [
     "未发现测试日志与运行输出",
-    "修复前调试窗口中观察到的具体问题未记录"
+    "调试窗口中观察到的具体问题未记录"
   ]
 }

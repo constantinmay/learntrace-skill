@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import copy
 import json
 import sys
 from collections.abc import Sequence
@@ -455,7 +456,14 @@ def _run_command(args: argparse.Namespace, parser: argparse.ArgumentParser) -> i
         if args.command in ("verify-narrative", "render-narrative"):
             payload = load_payload(args.payload_path)
             archive = load_archive(args.archive_path)
-            violations = verify_payload(payload, archive)
+            # --variant 先落到 payload 副本上,再对最终 payload 执行 verify:
+            # 渲染哪一版就必须通过哪一版的红线,不能用另一版的验证结果
+            # 绕过版本边界(如 working 版未经 submitted 必填项检查直接上交)。
+            final_payload = payload
+            if args.command == "render-narrative" and args.variant is not None:
+                final_payload = copy.deepcopy(payload)
+                final_payload["variant"] = args.variant
+            violations = verify_payload(final_payload, archive)
             if violations:
                 print(
                     json.dumps(
@@ -474,7 +482,7 @@ def _run_command(args: argparse.Namespace, parser: argparse.ArgumentParser) -> i
                     )
                 )
                 return 0
-            markdown = render_narrative_markdown(payload, archive, variant=args.variant)
+            markdown = render_narrative_markdown(final_payload, archive)
             if args.output is not None:
                 args.output.parent.mkdir(parents=True, exist_ok=True)
                 args.output.write_text(markdown, encoding="utf-8")

@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import shutil
 import subprocess
+from collections.abc import Callable
 from pathlib import Path
 from typing import Protocol, cast
 
@@ -500,6 +501,76 @@ def test_author_filter_uses_full_history_before_window_truncation(tmp_path: Path
         "git_author_filtered",
         "git_history_truncated",
     ]
+    assert "2 个不属于作者" in result.warnings[0].message
+
+
+@pytest.mark.parametrize(
+    ("needle", "name", "email", "expected"),
+    [
+        # 整体匹配：大小写不同仍命中（名称、邮箱两条路径）
+        ("alice", "Alice", "alice@example.invalid", True),
+        ("ALICE", "Alice", "alice@example.invalid", True),
+        ("alice@example.invalid", "Alice", "alice@example.invalid", True),
+        ("Alice", "Alice", "other@example.invalid", True),
+        # 子串不再命中：Alice 不得误中 Malice / xAlice（他人提交不得混入个人档案）
+        ("Alice", "Malice", "malice@example.invalid", False),
+        ("Alice", "xAlice", "xa@example.invalid", False),
+        # 邮箱子串同样不得命中（名称不相同时，邮箱按整体比较）
+        ("alice", "Bob", "malalice@example.invalid", False),
+        # 空字符串（含纯空白）不匹配任何人
+        ("", "Alice", "alice@example.invalid", False),
+        ("   ", "Alice", "alice@example.invalid", False),
+        # 首尾空白按整体匹配前归一
+        ("  alice  ", "Alice", "alice@example.invalid", True),
+    ],
+)
+def test_author_matches_is_whole_and_case_insensitive(
+    needle: str, name: str, email: str, expected: bool
+) -> None:
+    matches = cast(
+        Callable[[str, str, str], bool],
+        vars(git_module)["_author_matches"],
+    )
+    assert matches(needle, name, email) is expected
+
+
+def test_author_filter_rejects_substring_names_in_real_history(tmp_path: Path) -> None:
+    """真实 git 历史：选 Alice 时 Malice / xAlice 的提交不得进入个人档案。"""
+    repository = tmp_path / "repository"
+    repository.mkdir()
+    _git(repository, "init", "-q")
+    _git(repository, "config", "user.name", "Alice")
+    _git(repository, "config", "user.email", "alice@example.invalid")
+    _commit_as(
+        repository,
+        "alice work",
+        author="Alice",
+        email="alice@example.invalid",
+        when="2026-07-20T10:00:00+08:00",
+    )
+    _commit_as(
+        repository,
+        "malice work",
+        author="Malice",
+        email="malice@example.invalid",
+        when="2026-07-21T11:00:00+08:00",
+    )
+    _commit_as(
+        repository,
+        "xa work",
+        author="xAlice",
+        email="xa@example.invalid",
+        when="2026-07-22T12:00:00+08:00",
+    )
+
+    result = parse_git_history(repository, author="Alice")
+
+    commit_summaries = [event.summary for event in result.events if event.id.startswith("evt-git-")]
+    assert len(commit_summaries) == 1
+    assert "alice work" in commit_summaries[0]
+    assert all("malice work" not in summary for summary in commit_summaries)
+    assert all("xa work" not in summary for summary in commit_summaries)
+    assert [warning.code for warning in result.warnings] == ["git_author_filtered"]
     assert "2 个不属于作者" in result.warnings[0].message
 
 

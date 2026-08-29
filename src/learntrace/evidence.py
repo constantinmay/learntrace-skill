@@ -28,6 +28,7 @@ from learntrace.adapters import (
     adapt_codex_exports,
     adapt_opencode_exports,
 )
+from learntrace.models.records import ObservableEvent
 from learntrace.parsers import read_git_commit_text
 from learntrace.parsers._common import repo_root
 from learntrace.privacy import redact_sensitive_text
@@ -44,6 +45,59 @@ _SESSION_EXPORT_ADAPTERS = {
     "claude-code": adapt_claude_code_exports,
     "codex": adapt_codex_exports,
 }
+
+# 最小保留导出的五类字段（时间/宿主/工具/相对路径/命令摘要）解析边界：
+# 适配层 summary 固定形如「<宿主> 工具 <tool> <状态句>。 [命令类型：X。][ 路径：Y。]」，
+# 宿主名与工具名均不含空格，按字面标记切分是确定性的。
+_TOOL_MARK = " 工具 "
+_COMMAND_MARK = " 命令类型："
+_PATH_MARK = " 路径："
+_STATUS_MARKS = ("已完成。", "以错误结束。", "在消息错误结束时未完成。", "结束（状态未知）。")
+
+# 项目内文件导出的禁区：版本库元数据与系统产物（档案/复盘/待答问题）
+# 本身就是派生结论，不能作为「原始证据」被回读，避免自我引用与越权外发。
+_PROJECT_FILE_BLOCKED = (".git", ".learntrace")
+_PROJECT_FILE_BLOCKED_NAMES = frozenset({"learning-record.md", "learning-questions.md"})
+
+
+def _minimal_event_record(event: ObservableEvent, source: str) -> dict[str, str | None]:
+    """把 v0 事件投影成最小保留的五个字段。
+
+    只保留时间/宿主/工具/相对路径/命令摘要。宿主一律用授权来源名
+    （opencode/codex/claude-code，不含主机用户名/路径信息）；路径与
+    命令由适配层在构造 summary 前归一化（相对路径或不可识别占位符、
+    仅可执行名），此处只做确定性切分，不引入新的解析面。
+    """
+    summary = str(event.summary)
+    tool: str | None = None
+    command: str | None = None
+    path: str | None = None
+    tool_span = summary.split(_TOOL_MARK, maxsplit=1)
+    if len(tool_span) == 2:
+        remainder = tool_span[1]
+        command_index = remainder.find(_COMMAND_MARK)
+        path_index = remainder.find(_PATH_MARK)
+        cut = min((i for i in (command_index, path_index) if i != -1), default=len(remainder))
+        # 工具名 = 状态句（如「已完成。」）之前的部分；工具名由适配层限定为
+        # 安全字符集，不可能包含状态句，按标记切分是确定性的。
+        head = remainder[:cut].rstrip()
+        for status in _STATUS_MARKS:
+            status_index = head.find(status)
+            if status_index != -1:
+                head = head[:status_index]
+                break
+        tool = head.rstrip()
+        if command_index != -1:
+            command = remainder[command_index + len(_COMMAND_MARK) :].removesuffix("。")
+        if path_index != -1:
+            path = remainder[path_index + len(_PATH_MARK) :].removesuffix("。")
+    return {
+        "time": event.occurred_at,
+        "host": source,
+        "tool": tool,
+        "path": path,
+        "command": command,
+    }
 
 
 @dataclass(frozen=True, slots=True)
@@ -213,7 +267,10 @@ def export_session_evidence(
             f"(status={result.status.value}); nothing to export"
         )
         raise ValueError(msg)
-    lines = [json.dumps(event.to_dict(), ensure_ascii=False) for event in result.events]
+    lines = [
+        json.dumps(_minimal_event_record(event, source), ensure_ascii=False)
+        for event in result.events
+    ]
     session_id = export_path.stem
     for event in result.events:
         match = _SESSION_ID_RE.match(event.source_refs[0].ref)
@@ -237,6 +294,12 @@ def export_session_evidence(
 def export_project_file(project_root: Path, relative_path: str) -> EvidenceIndexEntry:
     """导出一个项目内文件（脱敏）到 evidence/files/，用于测试日志/文档回读。"""
     root = repo_root(project_root)
+    parts = tuple(part.casefold() for part in Path(relative_path).parts)
+    if any(part in _PROJECT_FILE_BLOCKED for part in parts) or (
+        parts and parts[-1] in _PROJECT_FILE_BLOCKED_NAMES
+    ):
+        msg = f"file is reserved learntrace output and cannot be exported: {relative_path}"
+        raise ValueError(msg)
     candidate = (root / relative_path).resolve()
     try:
         candidate.relative_to(root)
