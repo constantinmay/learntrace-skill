@@ -1,5 +1,7 @@
 """AI coding-agent trace adapters."""
 
+from learntrace.adapters.claude_code import adapt_claude_code_export, adapt_claude_code_exports
+from learntrace.adapters.codex import adapt_codex_export, adapt_codex_exports
 from learntrace.adapters.opencode import adapt_opencode_export, adapt_opencode_exports
 from learntrace.adapters.serialization import write_trace_result
 from learntrace.adapters.types import (
@@ -7,6 +9,8 @@ from learntrace.adapters.types import (
     TraceInputStatus,
     TraceParseIssue,
     UnsupportedOpenCodeFormatError,
+    UnsupportedTraceFormatError,
+    events_conflict,
 )
 
 __all__ = [
@@ -14,7 +18,13 @@ __all__ = [
     "TraceInputStatus",
     "TraceParseIssue",
     "UnsupportedOpenCodeFormatError",
+    "UnsupportedTraceFormatError",
+    "adapt_claude_code_export",
+    "adapt_claude_code_exports",
+    "adapt_codex_export",
+    "adapt_codex_exports",
     "adapt_opencode_export",
     "adapt_opencode_exports",
+    "events_conflict",
     "write_trace_result",
 ]

@@ -39,7 +39,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 SCHEMA_DIR = REPO_ROOT / "src" / "learntrace" / "schemas" / "v0"
 SCENARIOS_DIR = REPO_ROOT / "tests" / "fixtures" / "golden" / "scenarios"
 SCENARIO_DIRS = tuple(sorted(path for path in SCENARIOS_DIR.iterdir() if path.is_dir()))
-DEMO_DIR = REPO_ROOT / "examples" / "task4-llm-demo"
+DEMO_DIR = REPO_ROOT / "examples" / "task4-demo"
 
 
 def _load_json(path: Path) -> Any:
@@ -65,6 +65,9 @@ def test_archive_snapshot_rejects_records_that_do_not_match_fingerprint(
 
 def test_public_demo_runs_both_analysis_and_snapshot_confirmation(tmp_path: Path) -> None:
     snapshot = tmp_path / "archive-records.json"
+    # No inferencer override: the stub itself must derive the single
+    # fix_failed_approach candidate from the failing-log → fixing-commit link.
+    # (The AI-suggestion trace and the commit are deliberately not paired.)
     first = write_learning_record_result(
         DEMO_DIR,
         output_path=tmp_path / "learning-record.md",
@@ -103,12 +106,73 @@ def _expected_confirmations(scenario_dir: Path) -> list[dict[str, Any]]:
     ]
 
 
+class _SeededCandidateInferencer:
+    """Replay pre-authorized candidate drafts that an authorized source
+    (host agent over a fully authorized conversation) would have produced.
+
+    The deterministic stub no longer materializes REVISE_AI_SUGGESTION from
+    wording similarity plus time proximity alone (that auto-association was
+    removed per review). These golden scenarios predate that change, so their
+    revise_ai_suggestion candidates are supplied as if already authorized —
+    the stub still covers every other scenario. Drafts are seeded from the
+    scenario's own frozen candidate fixture, so the stable id and all
+    statement text are reproduced byte-for-byte.
+    """
+
+    inference_mode = "seeded"
+
+    def __init__(self, drafts: tuple[CandidateDraft, ...]) -> None:
+        self._drafts = drafts
+
+    def infer(self, events: tuple[ObservableEvent, ...]) -> tuple[CandidateDraft, ...]:
+        return self._drafts
+
+
+def _seeded_inferencer_for(
+    scenario_dir: Path,
+) -> StubCandidateInferencer | _SeededCandidateInferencer:
+    """Return the inferencer that reproduces a scenario's expected candidates.
+
+    Scenarios whose expected candidate is a revise_ai_suggestion (which the
+    stub no longer auto-derives) are replayed via _SeededCandidateInferencer
+    from the scenario's own frozen candidate fixture; every other scenario
+    uses the plain deterministic stub.
+    """
+    expected = _expected_candidates(scenario_dir)
+    revise_records = [
+        record for record in expected if record.get("node_type") == "revise_ai_suggestion"
+    ]
+    if not revise_records:
+        return StubCandidateInferencer()
+
+    drafts = tuple(
+        CandidateDraft(
+            node_type=NodeType.REVISE_AI_SUGGESTION,
+            statement=str(record["statement"]),
+            basis_event_ids=tuple(str(event_id) for event_id in record["basis_event_ids"]),
+            uncertainty=str(record["uncertainty"]),
+            question_to_student=(
+                record["question_to_student"]
+                if isinstance(record.get("question_to_student"), str)
+                else MissingInfo(note="未记录")
+            ),
+        )
+        for record in revise_records
+    )
+    return _SeededCandidateInferencer(drafts)
+
+
 @pytest.mark.parametrize("scenario_dir", SCENARIO_DIRS, ids=lambda path: path.name)
 def test_archive_bundle_matches_golden_scenarios(scenario_dir: Path) -> None:
     validator = ContractValidator(schema_dir=SCHEMA_DIR)
     events, confirmations = load_project_records(scenario_dir, validator=validator)
 
-    bundle = build_archive_bundle(events, confirmations=confirmations, validator=validator)
+    bundle = build_archive_bundle(
+        events,
+        confirmations=confirmations,
+        validator=validator,
+        inferencer=_seeded_inferencer_for(scenario_dir),
+    )
 
     actual_candidates = [candidate.to_dict() for candidate in bundle.candidates]
     expected_candidates = _expected_candidates(scenario_dir)
@@ -123,7 +187,12 @@ def test_archive_bundle_matches_golden_scenarios(scenario_dir: Path) -> None:
 def test_render_markdown_contains_required_sections(scenario_dir: Path) -> None:
     validator = ContractValidator(schema_dir=SCHEMA_DIR)
     events, confirmations = load_project_records(scenario_dir, validator=validator)
-    bundle = build_archive_bundle(events, confirmations=confirmations, validator=validator)
+    bundle = build_archive_bundle(
+        events,
+        confirmations=confirmations,
+        validator=validator,
+        inferencer=_seeded_inferencer_for(scenario_dir),
+    )
     markdown = render_markdown(bundle, source_dir=scenario_dir)
 
     for heading in (
@@ -421,7 +490,12 @@ def test_human_learning_label_reflects_denied_confirmation() -> None:
     scenario = SCENARIOS_DIR / "02-revise-ai-suggestion-denied"
     events, confirmations = load_project_records(scenario)
 
-    markdown = render_markdown(build_archive_bundle(events, confirmations=confirmations))
+    bundle = build_archive_bundle(
+        events,
+        confirmations=confirmations,
+        inferencer=_seeded_inferencer_for(scenario),
+    )
+    markdown = render_markdown(bundle)
     human_summary = markdown.split("<details>", maxsplit=1)[0]
 
     assert "系统线索（学生已否认）" in human_summary
@@ -431,7 +505,11 @@ def test_human_learning_label_reflects_denied_confirmation() -> None:
 def test_reflection_is_an_editable_student_field_not_confirmation_echo() -> None:
     scenario = SCENARIOS_DIR / "01-revise-ai-suggestion-confirmed"
     events, confirmations = load_project_records(scenario)
-    bundle = build_archive_bundle(events, confirmations=confirmations)
+    bundle = build_archive_bundle(
+        events,
+        confirmations=confirmations,
+        inferencer=_seeded_inferencer_for(scenario),
+    )
 
     markdown = render_markdown(bundle)
     reflection = markdown.split("## 个人反思\n", 1)[1].split("\n## 后续学习", 1)[0]
@@ -441,11 +519,13 @@ def test_reflection_is_an_editable_student_field_not_confirmation_echo() -> None
 
 
 def test_cli_writes_learning_record(tmp_path: Path) -> None:
+    scenario = SCENARIOS_DIR / "01-revise-ai-suggestion-confirmed"
     output_path = tmp_path / "learning-record.md"
     write_learning_record(
-        SCENARIOS_DIR / "01-revise-ai-suggestion-confirmed",
+        scenario,
         output_path=output_path,
         validator=ContractValidator(schema_dir=SCHEMA_DIR),
+        inferencer=_seeded_inferencer_for(scenario),
     )
 
     assert output_path.exists()
@@ -788,18 +868,65 @@ def test_loader_skips_generated_archive_outputs_and_learntrace_dir(tmp_path: Pat
     )
 
 
+def test_loader_skips_old_format_archive_snapshot_without_marker(tmp_path: Path) -> None:
+    """Archive snapshots from before ``learntrace_bundle`` existed (which carry
+    ``archive_manifest`` + ``record_counts`` + ``archive_version`` but no
+    ``learntrace_bundle`` marker) must still be recognized as generated output,
+    so they are not re-ingested as input alongside the authoritative parse-result
+    events and do not collide."""
+    scenario_dir = SCENARIOS_DIR / "05-add-tests-confirmed"
+    generated_records = tmp_path / "historical-snapshot.json"
+
+    write_learning_record(
+        scenario_dir,
+        output_path=tmp_path / "learning-record.md",
+        records_output_path=generated_records,
+        validator=ContractValidator(schema_dir=SCHEMA_DIR),
+    )
+
+    # Strip the marker to simulate a pre-marker snapshot. Everything else that
+    # makes it an archive-only shape remains (``archive_manifest``,
+    # ``record_counts``, ``archive_version``, ``events``, ``candidates``).
+    snapshot = _load_json(generated_records)
+    assert snapshot.pop("learntrace_bundle") is True
+    generated_records.write_text(json.dumps(snapshot, ensure_ascii=False), encoding="utf-8")
+
+    for source in scenario_dir.glob("*.json"):
+        (tmp_path / source.name).write_text(source.read_text(encoding="utf-8"), encoding="utf-8")
+
+    validator = ContractValidator(schema_dir=SCHEMA_DIR)
+    loaded = load_project_artifacts(tmp_path, validator=validator)
+    bundle = build_archive_bundle(
+        loaded.events,
+        confirmations=loaded.confirmations,
+        warnings=loaded.warnings,
+        validator=validator,
+    )
+
+    # Only the authoritative parse-result events are loaded; the stale
+    # pre-marker snapshot is not re-ingested (so no duplicate/conflicting event).
+    assert [event.id for event in bundle.events] == ["evt-s05-1", "evt-s05-2"]
+
+    # load_archive_snapshot must accept the pre-marker snapshot (previously the
+    # marker-only guard rejected it, breaking confirmation reuse after upgrade).
+    snapshot_loaded = load_archive_snapshot(generated_records, validator=validator)
+    assert [event.id for event in snapshot_loaded.events] == ["evt-s05-1", "evt-s05-2"]
+
+
 def test_stable_candidate_id_regardless_of_order() -> None:
     """Candidate IDs must be stable when input events are reordered."""
     validator = ContractValidator(schema_dir=SCHEMA_DIR)
 
     scenario_01 = SCENARIOS_DIR / "01-revise-ai-suggestion-confirmed"
     events_01, confirmations_01 = load_project_records(scenario_01, validator=validator)
+    inferencer_01 = _seeded_inferencer_for(scenario_01)
 
     # Build bundle with events in original order
     bundle_original = build_archive_bundle(
         events_01,
         confirmations=confirmations_01,
         validator=validator,
+        inferencer=inferencer_01,
     )
 
     # Build bundle with events in reversed order
@@ -807,6 +934,7 @@ def test_stable_candidate_id_regardless_of_order() -> None:
         tuple(reversed(events_01)),
         confirmations=confirmations_01,
         validator=validator,
+        inferencer=inferencer_01,
     )
 
     # Both bundles must produce the same candidate IDs
@@ -860,6 +988,23 @@ def test_render_markdown_reports_stub_inference_mode() -> None:
 
     assert "候选生成模式：`stub`" in markdown
     assert "本次候选由本地确定性规则生成" in markdown
+
+
+def test_render_markdown_flags_legacy_remote_llm_archive_mode() -> None:
+    """旧档案的 llm/llm_stub_fallback 模式重渲染时须标注历史，且不会触发远程调用。"""
+    validator = ContractValidator(schema_dir=SCHEMA_DIR)
+    events, confirmations = load_project_records(
+        SCENARIOS_DIR / "05-add-tests-confirmed",
+        validator=validator,
+    )
+    base = build_archive_bundle(events, confirmations=confirmations, validator=validator)
+    for legacy_mode in ("llm", "llm_stub_fallback"):
+        bundle = replace(base, inference_mode=legacy_mode)
+        markdown = render_markdown(bundle, source_dir=SCENARIOS_DIR / "05-add-tests-confirmed")
+
+        assert "历史记录" in markdown
+        assert f"（候选模式：`{legacy_mode}`）" in markdown
+        assert "重新渲染不会重新发起任何远程调用" in markdown
 
 
 def test_symlink_json_is_skipped(tmp_path: Path) -> None:

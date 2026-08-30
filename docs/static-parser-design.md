@@ -51,12 +51,31 @@ Task2 将用户确认范围内的本地项目材料转换为 schema v0 `Observab
 
 - Git 可执行文件只从 `PATH` 的绝对目录中解析为绝对路径，并排除位于待分析项目内的候选；后续子进程始终使用该绝对路径，避免 Windows 从当前项目目录执行伪造的 `git.exe`。
 - `git rev-parse --show-toplevel` 返回的规范化仓库根目录必须与调用方确认的项目根目录一致。传入父仓库子目录时产生 `git_root_mismatch`，不读取父仓库提交或同级文件。
-- 按从新到旧的提交顺序读取，默认最多 50 个提交；超过限制产生 `git_history_truncated`。
+- 按拓扑顺序读取完整可达历史，默认不设置条数上限。调用方显式设置
+  `max_commits` 时，它是侧支提交的逐条展开预算，不是按日期截断的硬窗口；
+  first-parent 主线和所有 merge commit 始终保留。
+  被省略的侧支提交生成聚合事实，`git_history_truncated` 同时记录保留、丢弃、
+  主线、merge 和侧支数量。
 - 每个提交产生一条总览事件，包含提交哈希、时间、提交信息和文件变更计数。
+- `git-index` 为每条提交记录 `tree_id`、文件总数、顶层目录摘要和文件角色；同一
+  `tree_id` 的布局可以复用。源码与测试同时出现在一个提交时只记录
+  `same_commit`、`causal=false` 的导航关系，不推断测试由该源码变化导致。
 - 每个新增、修改、删除、重命名或可识别的复制文件产生一条文件级事实，记录增删行数；二进制文件明确标记行数不可用。
 - merge commit 的文件变化固定按“第一父提交到 merge commit”比较，避免按多个父提交重复生成文件事件。
 - 默认使用 `-M -C` 做重命名和常规复制检测，不扫描所有未修改文件。调用方只有在确实需要更强复制检测时才设置 `find_copies_harder=True`；这会额外启用 `--find-copies-harder`，在大提交或 merge commit 上可能显著变慢。
-- 重命名事件同时引用新旧路径；所有 Git 事实都引用完整提交哈希。
+- 重命名事件同时引用新旧路径；所有 Git 事实都引用完整提交哈希。Task2 只读取
+  本地 Git，不解析、访问或依赖远程仓库地址。
+- 需要进一步理解代码时，通过 `git-evidence` 按提交和可选文件路径导出完整 diff、
+  改前版本和改后版本。导出是按需发生的，不把全部源码塞入 Task 2 事件；每项产物
+  写入 `.learntrace/evidence/git/`，并在 `index.json` 标注来源、diff hunk、对应源码
+  行范围、可用性和截断状态。本地授权证据保持原文，不与对外分享脱敏混为一层。
+- `git-tree` 按需写出某一可达版本的完整 Git 文件树；`git-file` 每次最多按范围
+  回读 200 行历史或 worktree 文本，并返回 revision、路径、行号、object ID 和
+  截断状态；`git-worktree` 保存 staged、unstaged、untracked、删除、重命名、冲突
+  及两类 diff，但不自动读取未跟踪文件内容，也不把 `.learntrace/` 和
+  `learning-record.md` 等自身产物计入项目修改。
+- 二进制、非 UTF-8、LFS 指针和 submodule 保留路径及 Git 元数据并明确不可用原因，
+  不因一个异常文件终止其他证据。所有导航产物使用同目录临时文件和原子替换。
 - 只调用不会执行 hook 的 Git 读取子命令，并为每个子命令设置 15 秒超时。提交元数据或任一 diff 子命令超时后，该提交不产生部分事实，而是记录 `git_commit_timeout`。
 
 ### Markdown/TXT
@@ -87,6 +106,8 @@ Task2 将用户确认范围内的本地项目材料转换为 schema v0 `Observab
 
 ## M1 已知限制
 
-M1 不做 AST/语义代码分析，不解析 PDF/Word，不支持任意测试框架的完整日志语法，不自动读取 `.gitignore`，也不提供最终 CLI/Skill 编排。未知日志只形成降级事实；是否扩展新格式应先增加脱敏夹具和回归测试。
+Task 2 不做 AST/语义代码分析，不解析 PDF/Word，也不支持任意测试框架的完整
+日志语法。未知日志只形成降级事实；代码语义由宿主 Agent按需读取原文后判断。
+是否扩展新格式应先增加脱敏夹具和回归测试。
 
 Maven Surefire 用例行依靠 `[ERROR] ... Time elapsed: ... <<< FAILURE!/ERROR!` 这一强格式特征独立识别，没有额外要求文件中同时出现汇总行。该规则当前误判风险很低；如果以后放宽 Maven 用例语法，应先增加文件级 Maven/JUnit 上下文判断。

@@ -134,6 +134,11 @@ def test_completed_file_tool_becomes_a_stable_valid_trace_event(tmp_path: Path) 
     assert event.source_refs[0].type is SourceType.TRACE_RECORD
     assert event.source_refs[0].ref == source_ref
     assert event.source_refs[0].note == "opencode"
+    # 第二个引用指向导出文件本身（证据回读“去哪看原文”的落点）
+    assert len(event.source_refs) == 2
+    assert event.source_refs[1].type is SourceType.FILE
+    assert event.source_refs[1].ref == export_path.resolve().as_posix()
+    assert event.source_refs[1].note == "session-export"
     ContractValidator().validate("observable_event", event.to_dict())
 
 
@@ -614,3 +619,61 @@ def test_repeated_identical_export_is_deduplicated(tmp_path: Path) -> None:
 
     assert len(result.events) == 1
     assert [warning.code for warning in result.warnings] == ["duplicate_export_event"]
+
+
+def test_ordinary_json_parses_without_hitting_depth_guard(tmp_path: Path) -> None:
+    """A normal, shallow export must parse fine — the depth guard is a
+    non-intrusive pre-check, not a rejection of everyday records."""
+    export_path = _write_export(
+        tmp_path / "export.json",
+        _export(_message(_tool_part(), _tool_part(part_id="prt_second"))),
+    )
+
+    result = adapt_opencode_export(export_path, authorized=True)
+
+    assert result.status is TraceInputStatus.PARSED
+    assert len(result.events) == 2
+
+
+def test_nesting_depth_guard_rejects_at_one_past_the_limit(tmp_path: Path) -> None:
+    """Nesting one level past the guard's limit must be rejected as an
+    unsupported export, proving the check trips at its advertised ceiling
+    rather than only at the far higher JSON/Python recursion limit."""
+    one_past_limit = 129
+    over_nesting = "[" * one_past_limit + "0" + "]" * one_past_limit
+    over_export = '{"info":{"id":"ses_main","version":"1.18.6"},"messages":' + over_nesting + "}"
+    over_path = tmp_path / "one-past-limit.json"
+    over_path.write_text(over_export, encoding="utf-8")
+
+    with pytest.raises(UnsupportedOpenCodeFormatError) as caught:
+        adapt_opencode_export(over_path, authorized=True)
+    assert "嵌套过深" in str(caught.value)
+
+
+def test_nesting_depth_guard_ignores_braces_inside_strings(tmp_path: Path) -> None:
+    """Braces, brackets, escaped quotes, and backslashes inside JSON string
+    literals must not be miscounted as nesting. A message whose text repeats
+    hundreds of ``{[`` characters, or whose summary carries escaped quotes,
+    stays a valid shallow export instead of tripping the depth guard."""
+    braces = "{" * 400 + "[" * 400
+    pathological_text = '{"braces": "' + braces + '", "escaped": "\\"\\\\{\\["}\n'
+    export_path = _write_export(
+        tmp_path / "export.json",
+        _export(_message(_tool_part(input_data={"filePath": pathological_text}))),
+    )
+
+    result = adapt_opencode_export(export_path, authorized=True)
+
+    # The string-laden text is normalized/redacted so the braces never surface
+    # in the summary; the export itself must still parse as PARSED, i.e. the
+    # depth guard did not mistake the in-string braces for nesting.
+    assert result.status is TraceInputStatus.PARSED
+    assert "{" not in result.events[0].summary
+
+    # A second, simpler shape: a JSON string value holding escaped quotes and
+    # backslashes must leave the counter untouched.
+    escaped_only = _write_export(
+        tmp_path / "escaped.json",
+        _export(_message(_tool_part(input_data={"filePath": '\\"\\\\"'}))),
+    )
+    assert adapt_opencode_export(escaped_only, authorized=True).status is TraceInputStatus.PARSED

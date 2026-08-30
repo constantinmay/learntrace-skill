@@ -50,9 +50,10 @@ learntrace --version
 不应读取这些内容。若需要使用 OpenCode 会话导出，还必须单独提供文件并明确
 授权。
 
-OpenCode 使用的模型负责遵循 Skill 和调用本地 CLI；LearnTrace 用来生成学习
-候选的远程 LLM 是另一条、默认关闭的可选路径。使用 `$learntrace` 不会自动
-启用远程候选推断，也不会自动授权上传 OpenCode 轨迹。
+OpenCode 使用的模型负责遵循 Skill 和调用本地 CLI。CLI 只使用本地确定性规则，
+不调用远程模型，也不读取任何 `LEARNTRACE_*` 环境变量；更深入的语义理解由
+宿主 Agent 承担（单 LLM 原则）。使用 `$learntrace` 不会自动授权上传
+OpenCode 轨迹。
 
 Skill 是宿主 Agent 的工作流约束，不是操作系统沙箱。实际联调已验证授权前
 停止、单次归档和归档后优先提问；宿主模型仍可能产生多余的元数据查询，最终
@@ -69,6 +70,60 @@ learntrace run <project-dir>
 
 `discover` 只列出候选文档、测试日志和 Git 是否可用，不读取文件内容。宿主
 Agent 应先向学生展示该范围，确认后再运行完整解析。
+
+Task 2 只使用本地 Git，不访问或依赖远程仓库。先生成完整、逐行可检索的轻量索引：
+
+```powershell
+learntrace git-index <project-dir>
+```
+
+历史索引中的每条提交包含 `tree_id`、版本文件数、顶层目录摘要、变更文件角色，
+以及源码和测试是否在同一提交中出现的非因果关系。需要查看一个版本的完整文件
+布局时再按需读取：
+
+```powershell
+learntrace git-tree <project-dir> <revision>
+```
+
+需要理解某次关键修改时，宿主 Agent 再按需导出本地原始证据：
+
+```powershell
+learntrace git-evidence <project-dir> <commit-hash> --path src/example.py
+```
+
+需要回读准确代码行，或检查尚未提交的开发过程时使用：
+
+```powershell
+learntrace git-file <project-dir> <revision> src/example.py --lines 120:180
+learntrace git-file <project-dir> <revision> src/generated.txt --bytes 0:65535
+learntrace git-file <project-dir> index src/example.py --lines 120:180
+learntrace git-file <project-dir> worktree src/example.py --lines 120:180
+learntrace git-worktree <project-dir>
+```
+
+`git-file` 每次最多读取 200 行或 1,000,000 字节，并记录 revision、路径、Git
+object ID、实际范围、`reached_eof` 和下一页 continuation。限制的是单次返回量，
+不是文件可访问范围；超长单行可改用 `--bytes` 继续读取。`index` 读取暂存区版本，
+`worktree` 读取当前工作区版本。`git-worktree` 记录 staged、unstaged、untracked、删除、重命名和冲突，
+但不会自动读取未跟踪文件内容；需要时仍由宿主 Agent 通过 `git-file ... worktree`
+按范围读取。LearnTrace 自己生成的 `.learntrace/` 和 `learning-record.md` 不进入
+工作区证据，避免工具输出被误当成用户开发过程。
+
+命令在 `<project-dir>/.learntrace/evidence/git/<commit-hash>/` 写入 `index.json`
+和有界 diff 预览。`index.json` 完整记录变更文件、对象 ID、diff hunk、前后 revision
+和回读命令；源码正文由 `git-file` 按需读取，不再为每个文件复制完整前后版本。
+该目录属于用户已授权的本地项目证据，不执行面向
+公开分享的脱敏；应将 `.learntrace/` 加入目标项目的忽略规则，不要提交或直接分享。
+二进制、非 UTF-8、Git LFS 指针和 submodule 不会被伪装成普通源码，索引会保留
+路径、对象、大小和不可用原因，供最终档案如实说明证据缺口。
+
+Git 历史默认完整读取，不使用任意条数上限。`--max-commits` 仅是调用方显式启用
+的侧支细节预算；first-parent 主线和所有 merge commit 始终保留，被省略内容会
+形成聚合事实和结构化统计。此时 `parse` 不会隐式生成完整历史索引；warning 中的
+`history_index_status=requires_generation` 表示必须先执行其中给出的
+`learntrace git-index <project>`，并核对索引 metadata 的 `head` 后再回读。
+完整历史会随仓库提交数量增加运行时间和本地 `history.jsonl` 体积，但不会要求
+Agent 一次读入全部内容；Agent 应先检索索引，再按提交和文件分页回读。
 
 首次运行会生成 `learning-record.md`，并在 `<project-dir>/.learntrace/`
 写入 Task 2、Task 3、机器可读档案和待确认问题。
@@ -100,6 +155,23 @@ learntrace run <project-dir> `
 
 多会话结果会合并并按事件去重，来源仍保留各自的 session 标识。未逐个授权
 的导出不会被读取。旧的 `--authorized` 仅用于单个导出文件。
+
+除 OpenCode 外，也支持经授权的 Claude Code 和 Codex 会话文件。使用者先从
+`~/.claude/projects/` 或 `~/.codex/sessions/` 复制会话 JSONL（LearnTrace 不会扫描
+这些目录），再逐个授权：
+
+```powershell
+learntrace run <project-dir> `
+  --claude-code-export <session.jsonl> `
+  --authorize-claude-code-export <session.jsonl> `
+  --codex-export <rollout-session.jsonl> `
+  --authorize-codex-export <rollout-session.jsonl>
+```
+
+三个宿主可以在同一次 `run` 中组合，事件合并进同一份机器档案并按稳定 ID 去重。
+JSONL 会话采用逐行流式解析：单文件上限 256 MiB、单行 16 MiB、单会话事件 2000 条、
+合并总量 10000 条，超出部分按时间保留最早事件并记录截断警告。详见
+[Claude Code 适配器](docs/claude-code-adapter.md)和[Codex 适配器](docs/codex-adapter.md)。
 
 学生填写独立确认文件后，第二次运行直接使用首次保存的事实和候选快照，
 不会重新解析轨迹或调用 LLM：
@@ -150,11 +222,8 @@ CLI 默认使用确定性候选推断器。归档扫描会跳过 `.opencode`、`
 和 `node_modules` 等噪音目录；只有确认输入树中的每个 JSON 都应是 LearnTrace
 产物时，才对 `archive` 使用 `--strict-inputs`。机器可读档案包含带稳定
 SHA-256 指纹的审计清单，CLI 同时输出该指纹与记录数量。
-远程 LLM 没有返回可用候选或响应无法解析时，归档会保留告警并回退到本地
-确定性推断，不会静默生成一份没有说明的空候选档案。
-推理模型需要更多输出预算时，可通过 `LEARNTRACE_LLM_MAX_TOKENS` 调整候选
-推断请求的输出上限（默认 `8000`，允许 `256` 到 `65536`）。如果响应因长度
-终止或只返回推理内容，机器档案会记录具体原因并使用本地回退；即使没有形成
+候选推断是本地确定性规则：CLI 不调用远程 LLM，也不读取任何 `LEARNTRACE_*`
+环境变量；更深入的语义理解由宿主 Agent 承担（单 LLM 原则）。即使没有形成
 候选，待确认问题文件也会提供基于证据缺口的学生复盘问题，而不会编造候选。
 
 ## 目录结构

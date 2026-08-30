@@ -84,20 +84,50 @@ def test_preserves_discovery_warnings_in_parse_result(
     assert result.to_dict()["warnings"] == [warning.to_dict()]
 
 
+def test_serializes_git_author_scope_only_when_set(tmp_path: Path) -> None:
+    (tmp_path / "report.md").write_text("# Goal\nRead records.\n", encoding="utf-8")
+
+    no_author = parse_static_materials(
+        tmp_path,
+        document_paths=[Path("report.md")],
+        test_log_paths=[],
+        include_git=True,
+    )
+
+    assert no_author.scope is not None
+    assert no_author.scope.git_author is None
+    assert "git_author" not in no_author.to_dict()["analysis_scope"]
+
+    scoped = parse_static_materials(
+        tmp_path,
+        document_paths=[Path("report.md")],
+        test_log_paths=[],
+        include_git=True,
+        git_author="Student One",
+    )
+
+    assert scoped.scope is not None
+    assert scoped.scope.git_author == "Student One"
+    assert scoped.to_dict()["analysis_scope"]["git_author"] == "Student One"
+
+
 def test_forwards_expensive_copy_detection_option(
     tmp_path: Path,
     monkeypatch: _MonkeyPatch,
 ) -> None:
-    received: list[tuple[int, bool]] = []
+    received: list[tuple[int, bool, str | None]] = []
 
     def parse_git(
         root: Path,
         *,
         max_commits: int,
         find_copies_harder: bool,
+        excluded_paths: tuple[Path, ...],
+        author: str | None,
     ) -> ParseResult:
         assert root == tmp_path.resolve()
-        received.append((max_commits, find_copies_harder))
+        assert excluded_paths == ()
+        received.append((max_commits, find_copies_harder, author))
         return ParseResult()
 
     monkeypatch.setattr(static_module, "parse_git_history", parse_git)
@@ -111,4 +141,4 @@ def test_forwards_expensive_copy_detection_option(
         find_copies_harder=True,
     )
 
-    assert received == [(7, True)]
+    assert received == [(7, True, None)]

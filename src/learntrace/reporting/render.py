@@ -66,7 +66,7 @@ _COMMIT_PREFIX_RE = re.compile(
     r"^(?:提交|commit)\s+[a-f0-9]+\s*(?:[：:]|的提交信息为)\s*",
     re.IGNORECASE,
 )
-_TRACE_TOOL_RE = re.compile(r"OpenCode 工具 (?P<tool>[A-Za-z0-9_.-]+)")
+_TRACE_TOOL_RE = re.compile(r"(?:OpenCode|Claude Code|Codex) 工具 (?P<tool>[A-Za-z0-9_.-]+)")
 _HOME_PATH_RE = re.compile(
     r"(?i)(?<!\w)(?:~[^\\/\s]*|\$(?:HOME|USERPROFILE|HOMEPATH)|"
     r"\$\{(?:HOME|USERPROFILE|HOMEPATH)\}|\$env:(?:HOME|USERPROFILE|HOMEPATH)|"
@@ -85,6 +85,11 @@ def _render_safe_text(value: str) -> str:
     text = redact_sensitive_text(value, limit=len(value) or 1)
     text = _HOME_PATH_RE.sub("[private-path]", text)
     return _ABSOLUTE_PATH_RE.sub("[absolute-path]", text)
+
+
+def render_safe_text(value: str) -> str:
+    """Public redaction boundary for narrative renders (same rules as reports)."""
+    return _render_safe_text(value)
 
 
 def _render_text(value: TextOrMissing) -> str:
@@ -210,7 +215,9 @@ def _relevant_trace_events(bundle: ArchiveBundle) -> tuple[list[ObservableEvent]
         # human-facing AI collaboration overview above aggregates completed
         # operations separately, so they are represented without flooding the
         # report with per-event identifiers.
-        if searchable.startswith("opencode 工具") and "已完成" in searchable:
+        if searchable.startswith(("opencode 工具", "claude code 工具", "codex 工具")) and (
+            "已完成" in searchable
+        ):
             continue
         relevant.append(event)
     visible = relevant[:_MAX_RENDERED_TRACE_EVENTS]
@@ -245,13 +252,15 @@ def _ai_collaboration_lines(bundle: ArchiveBundle) -> list[str]:
         tool = match.group("tool") if match else "其他工具"
         if "未完成" in event.summary or "incomplete" in event.summary.casefold():
             status = "incomplete"
+        elif "状态未知" in event.summary:
+            status = "unknown"
         elif "错误" in event.summary or "error" in event.summary.casefold():
             status = "error"
         else:
             status = "completed"
         tool_counts = counts.setdefault(
             tool,
-            {"completed": 0, "error": 0, "incomplete": 0},
+            {"completed": 0, "error": 0, "incomplete": 0, "unknown": 0},
         )
         tool_counts[status] += 1
     if not counts:
@@ -260,14 +269,15 @@ def _ai_collaboration_lines(bundle: ArchiveBundle) -> list[str]:
     for tool, values in sorted(
         counts.items(),
         key=lambda item: (
-            -(item[1]["completed"] + item[1]["error"] + item[1]["incomplete"]),
+            -(item[1]["completed"] + item[1]["error"] + item[1]["incomplete"] + item[1]["unknown"]),
             item[0],
         ),
     ):
-        total = values["completed"] + values["error"] + values["incomplete"]
+        total = values["completed"] + values["error"] + values["incomplete"] + values["unknown"]
         lines.append(
             f"- {tool}：共 {total} 次，完成 {values['completed']} 次，"
-            f"错误 {values['error']} 次，未完成 {values['incomplete']} 次。"
+            f"错误 {values['error']} 次，未完成 {values['incomplete']} 次，"
+            f"状态未知 {values['unknown']} 次。"
         )
     if excluded:
         lines.append(f"- 另有 {excluded} 条越界或低信号轨迹未纳入协作概览。")
@@ -275,20 +285,16 @@ def _ai_collaboration_lines(bundle: ArchiveBundle) -> list[str]:
 
 
 def _inference_mode_lines(bundle: ArchiveBundle) -> list[str]:
-    if bundle.inference_mode == "llm":
-        return [
-            "- 本次候选包含远程 LLM 推断，输出在进入档案前经过 schema 校验。",
-            "- AI 类候选必须至少绑定一条 `trace_record`，避免把推断直接写成事实。",
-        ]
     if bundle.inference_mode == "stub":
         return [
-            "- 本次候选由本地确定性规则生成，未启用远程 LLM 推断。",
+            "- 本次候选由本地确定性规则生成。",
             "- 候选仍保持在 `candidate_inference` 层，不会自动写成 `observable_fact`。",
         ]
-    if bundle.inference_mode == "llm_stub_fallback":
+    if bundle.inference_mode in ("llm", "llm_stub_fallback"):
         return [
-            "- 远程 LLM 未提供可用候选，本次改用本地确定性规则生成候选。",
-            "- LLM 告警与回退状态保留在机器档案中，候选仍不会自动写成事实。",
+            f"- 历史记录：该档案生成于早期版本（候选模式：`{bundle.inference_mode}`）。",
+            "- 当前 CLI 只使用本地确定性规则，重新渲染不会重新发起任何远程调用。",
+            "- 无论历史推断器来源如何，候选都不会自动上升为事实记录。",
         ]
     return [
         f"- 本次候选由自定义推断器生成（模式：`{bundle.inference_mode}`）。",

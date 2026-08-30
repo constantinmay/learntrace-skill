@@ -33,7 +33,9 @@ from pathlib import Path
 
 from learntrace.parsers import (
     discover_static_materials,
+    export_git_evidence,
     parse_static_materials,
+    write_git_history_index,
     write_parse_result,
 )
 
@@ -49,6 +51,16 @@ result = parse_static_materials(
     find_copies_harder=False,
 )
 write_parse_result(result, Path("local/static-result.json"))
+
+# Task4 宿主 Agent 选中关键提交后，再按需回读原始代码证据。
+history = write_git_history_index(root)
+evidence = export_git_evidence(
+    root,
+    "<full-or-unambiguous-commit-hash>",
+    paths=("src/example.py",),
+)
+print(history.output_path)
+print(evidence.index_path)
 ```
 
 `ParseResult.events` 是 `ObservableEvent` 元组；`ParseResult.warnings` 是未阻断整批解析的
@@ -83,13 +95,34 @@ for event in all_events:
     validator.validate("observable_event", event.to_dict())
 ```
 
-Task2 当前提供 Python API，不负责最终 CLI、Skill 对话或档案生成。CLI/Skill 应先调用
+Task2 提供 Python API 和确定性的 CLI 证据入口，不负责学习语义判断或档案生成。
+CLI/Skill 应先调用
 `discover_static_materials()` 展示候选范围和发现告警，取得用户确认后再调用
 `parse_static_materials()`，并把解析告警展示给用户，不能静默丢弃。
 
 ## 输出约定
 
 - `git_commit`：每条提交有一条总览事件，并为每个文件变更生成事实事件；
+- Git 历史默认完整读取。只有调用方显式设置 `max_commits` 时才应用侧支细节预算；
+  first-parent 主线和 merge commit 不因预算被丢弃；
+- Git 来源只包含本地 commit hash 和文件路径，不依赖远程仓库。Task4 宿主 Agent
+  可调用 `export_git_evidence()` 或 `learntrace git-evidence` 回读指定提交的 diff 与
+  前后源码，而无需在首次解析时把所有源码写入事件；
+- `learntrace git-tree` 提供指定版本的完整目录；`learntrace git-file` 通过行范围或
+  字节范围分页读取历史、index 或 worktree 的真实内容；`learntrace git-worktree`
+  提供未提交状态和有界 diff 预览。
+  三者都输出结构化本地定位信息，不生成远程链接；
+- 历史索引包含 `tree_id`、文件数量、顶层布局、文件角色，以及仅用于导航的
+  `same_commit`/`causal=false` 源码—测试关系；
+- 每个 `git-file` 页面包含 object ID、实际范围、`reached_eof` 和 continuation；
+  `reached_eof=false` 只表示本页结束，不表示文件其余内容不可用；
+- 二进制、非 UTF-8、LFS 和 submodule 保留路径、对象及不可用原因。非 UTF-8
+  文本页保留 base64 原始字节；LFS pointer 只报告对象 ID 与声明大小；
+- 浅克隆保留本地可见提交并明确 `history_complete=false` 和浅边界；聚合事件省略的
+  提交仍可从完整 `history.jsonl` 定位，不能把本地边界描述成项目初始化；若 warning
+  标记 `history_index_status=requires_generation`，该路径尚未由本次 parse 生成，宿主
+  Agent 必须先运行 `learntrace git-index <project>`，并核对 metadata 的 `head` 与
+  `history_index_expected_head` 一致；
 - merge commit 固定相对第一父提交比较，避免多父提交产生重复文件事实；
 - 默认使用轻量的 `-M -C`；只有调用方设置 `find_copies_harder=True` 时才扫描未修改文件寻找复制源。强复制检测可能让大型提交超时，普通分析不应默认开启；
 - `document`：Markdown 按章节和完整段落/代码块分块，TXT 按段落生成事件；
@@ -107,6 +140,30 @@ Task2 当前提供 Python API，不负责最终 CLI、Skill 对话或档案生�
 详细规则、批量 JSON 结构、告警码和已知限制见
 [静态材料解析设计](static-parser-design.md)。固定端到端场景位于
 `tests/fixtures/static_parser/`，验收测试为 `tests/integration/test_static_parser_flow.py`。
+
+### 真实项目复测
+
+除仓库内的固定测试外，可使用公开项目
+[`Liushenwuzhu-Alpaca/province-economy`](https://github.com/Liushenwuzhu-Alpaca/province-economy)
+复测 Task2 的本地 Git 证据入口。该项目包含较长的提交历史和多个合并提交，适合
+检查完整历史索引、first-parent 与 merge 保留、版本目录、提交 diff、前后源码以及
+源码—测试的同提交导航。
+
+将项目克隆到 LearnTrace 仓库外，或放入已被本地 Git 忽略的目录；不要把样例仓库、
+它的 `.git/` 或运行生成的 `.learntrace/` 纳入 LearnTrace 的提交。LearnTrace 只读取
+克隆后的本地 Git 数据，不依赖 GitHub API 或远程仓库链接。
+
+```powershell
+git clone https://github.com/Liushenwuzhu-Alpaca/province-economy.git
+learntrace discover province-economy
+learntrace git-index province-economy
+learntrace git-tree province-economy HEAD
+learntrace git-worktree province-economy
+```
+
+复测时应确认历史索引没有默认条数截断，合并提交仍可定位，并选择实际提交继续使用
+`git-evidence` 和 `git-file` 回读 diff、文件前后版本及准确代码行。该仓库目前没有可由
+Task2 识别的测试运行日志；结果应明确记录这项证据缺口，而不是推断测试已经运行或通过。
 
 ## 维护约定
 

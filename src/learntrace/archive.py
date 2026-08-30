@@ -15,6 +15,7 @@ from typing import Any, cast
 import jsonschema
 
 from learntrace import __version__
+from learntrace.artifacts import register_generated_artifacts
 from learntrace.models import (
     SCHEMA_VERSION,
     CandidateStatus,
@@ -35,7 +36,6 @@ from learntrace.reporting import (
     ArchiveBundle,
     ArchiveWarning,
     CandidateInferencer,
-    LLMInferenceError,
     apply_confirmations,
     archive_manifest,
     build_archive_bundle,
@@ -247,15 +247,21 @@ def _looks_like_learntrace_container(data: JsonObject) -> bool:
 
 
 def _looks_like_generated_archive_json(data: JsonObject) -> bool:
-    return (
-        data.get(_LEARNTRACE_BUNDLE_MARKER) is True
-        and "archive_manifest" in data
-        and "record_counts" in data
-        and "quality_checks" in data
-        and "risk_flags" in data
-        and "source_index" in data
-        and "candidate_links" in data
+    # Recognize both the current (marker-tagged) archive and older snapshots
+    # produced before ``learntrace_bundle`` existed. Older snapshots lack the
+    # marker but still carry the archive-only shape (``archive_manifest``,
+    # ``record_counts``, ``archive_version``) that a Task2 ``parse-result.json``
+    # or a teacher-authored foreign JSON never has. Treating both as generated
+    # keeps a stale ``out/archive-records.json`` from being re-ingested as input
+    # and colliding with the authoritative parse-result events.
+    has_archive_shape = (
+        "archive_manifest" in data and "record_counts" in data and "archive_version" in data
     )
+    if not has_archive_shape:
+        return False
+    if data.get(_LEARNTRACE_BUNDLE_MARKER) is True:
+        return True
+    return "events" in data and "candidates" in data
 
 
 def _looks_like_learntrace_json(data: JsonObject) -> bool:
@@ -747,6 +753,7 @@ def write_learning_record_result(
     strict_inputs: bool = False,
     confirmation_paths: Iterable[Path] = (),
     snapshot_path: Path | None = None,
+    artifact_registry_root: Path | None = None,
 ) -> LearningRecordWriteResult:
     contract_validator = validator if validator is not None else ContractValidator()
     explicit_confirmations = tuple(
@@ -797,6 +804,15 @@ def write_learning_record_result(
         _write_text(records_output_path, f"{archive_json}\n")
     if questions_output_path is not None:
         _write_text(questions_output_path, render_questions_markdown(bundle))
+    if artifact_registry_root is not None:
+        register_generated_artifacts(
+            artifact_registry_root,
+            tuple(
+                path
+                for path in (destination, records_output_path, questions_output_path)
+                if path is not None
+            ),
+        )
     return LearningRecordWriteResult(
         output_path=destination,
         records_output_path=records_output_path,
@@ -871,7 +887,7 @@ def main(argv: list[str] | tuple[str, ...] | None = None) -> int:
             confirmation_paths=tuple(args.confirmations),
             snapshot_path=args.snapshot,
         )
-    except (FileNotFoundError, LLMInferenceError, ValueError) as exc:
+    except (FileNotFoundError, ValueError) as exc:
         parser.exit(1, f"{parser.prog}: error: {exc}\n")
     print(_format_cli_summary(result))
     return 0
