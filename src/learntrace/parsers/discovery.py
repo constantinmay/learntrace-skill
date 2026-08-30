@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import os
+import subprocess
 from collections import Counter
 from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
 
+from learntrace.artifacts import EvidencePathPolicy
 from learntrace.parsers._common import project_reference, repo_root, safe_os_error
 from learntrace.parsers.git import GitAuthor, list_git_authors
 from learntrace.parsers.types import ParseWarning, ProjectInventory
@@ -89,6 +91,7 @@ def discover_static_materials(
 ) -> DiscoveredMaterials:
     """发现候选文件；调用方必须确认后再传给具体解析函数。"""
     root = repo_root(project_root)
+    path_policy = EvidencePathPolicy.load(root, additional_generated=excluded_paths)
     excluded_references: set[str] = set()
     for requested in excluded_paths:
         candidate = requested if requested.is_absolute() else root / requested
@@ -106,6 +109,7 @@ def discover_static_materials(
     design_documents: list[Path] = []
     warnings: list[ParseWarning] = []
     extensions: Counter[str] = Counter()
+    excluded_generated: set[str] = set(path_policy.generated_paths)
 
     def record_walk_error(error: OSError) -> None:
         filename = error.filename
@@ -126,6 +130,7 @@ def discover_static_materials(
             if not name.startswith(".")
             and name not in _EXCLUDED_DIRS
             and not (current / name).is_symlink()
+            and path_policy.allows((current / name).relative_to(root))
         )
         for filename in sorted(filenames):
             if filename.startswith("."):
@@ -134,6 +139,12 @@ def discover_static_materials(
             if path.is_symlink():
                 continue
             relative = path.relative_to(root)
+            reason = path_policy.reason(relative)
+            if reason == "learntrace_generated_artifact":
+                excluded_generated.add(relative.as_posix())
+                continue
+            if reason is not None:
+                continue
             if relative.as_posix() in excluded_references:
                 continue
             files.append(relative)
@@ -161,11 +172,53 @@ def discover_static_materials(
         return tuple(sorted(values, key=path_key))
 
     has_git = (root / ".git").exists()
+    tracked_files: tuple[str, ...] = ()
+    metadata_only_files: tuple[str, ...] = ()
+    git_marker = root / ".git"
+    # A plain directory named .git is not necessarily a repository (and is used
+    # by callers/tests as a discovery marker). Only invoke Git when its control
+    # file is present or when this is a linked worktree.
+    if has_git and ((git_marker / "HEAD").is_file() or git_marker.is_file()):
+        try:
+            from learntrace.parsers.git import run_git, validated_git_root
+            from learntrace.parsers.git_tree import read_tree_entries
+
+            git_root = validated_git_root(root)
+            head = run_git(git_root, "rev-parse", "--verify", "HEAD")
+            if head.returncode != 0 or not head.stdout.strip():
+                raise ValueError("Git history has no commits")
+            _, tracked_entries = read_tree_entries(git_root, head.stdout.strip())
+            tracked_files = tuple(
+                sorted(
+                    entry["path"] for entry in tracked_entries if isinstance(entry.get("path"), str)
+                )
+            )
+            metadata_only_files = tuple(
+                sorted(
+                    entry["path"]
+                    for entry in tracked_entries
+                    if isinstance(entry.get("path"), str) and not entry.get("available", False)
+                )
+            )
+        except (OSError, subprocess.TimeoutExpired, ValueError) as error:
+            warnings.append(
+                ParseWarning(
+                    "tracked_inventory_unavailable",
+                    ".",
+                    safe_os_error(error)
+                    if isinstance(error, OSError)
+                    else "Git tracked-file inventory timed out"
+                    if isinstance(error, subprocess.TimeoutExpired)
+                    else str(error),
+                )
+            )
     git_authors = list_git_authors(root) if has_git else ()
     sorted_documents = sort_paths(documents)
     sorted_logs = sort_paths(test_logs)
     inventory = ProjectInventory(
         git_available=has_git,
+        tracked_files=tracked_files,
+        metadata_only_files=metadata_only_files,
         files=tuple(path.as_posix() for path in sort_paths(files)),
         source_files=tuple(path.as_posix() for path in sort_paths(source_files)),
         test_files=tuple(path.as_posix() for path in sort_paths(test_files)),
@@ -175,6 +228,7 @@ def discover_static_materials(
         report_documents=tuple(path.as_posix() for path in sort_paths(report_documents)),
         design_documents=tuple(path.as_posix() for path in sort_paths(design_documents)),
         extension_counts=tuple(sorted(extensions.items())),
+        excluded_generated_artifacts=tuple(sorted(excluded_generated)),
     )
     return DiscoveredMaterials(
         documents=sorted_documents,

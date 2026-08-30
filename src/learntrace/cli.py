@@ -22,6 +22,7 @@ from learntrace.adapters import (
 )
 from learntrace.archive import main as archive_main
 from learntrace.archive import write_learning_record_result
+from learntrace.artifacts import register_generated_artifacts
 from learntrace.evidence import (
     export_git_commit,
     export_project_file,
@@ -30,7 +31,17 @@ from learntrace.evidence import (
     record_full_read_authorization,
 )
 from learntrace.models import ObservableEvent
-from learntrace.parsers import discover_static_materials, parse_static_materials, write_parse_result
+from learntrace.parsers import (
+    DEFAULT_EVIDENCE_MAX_CHARS,
+    discover_static_materials,
+    export_git_evidence,
+    parse_static_materials,
+    write_git_file,
+    write_git_history_index,
+    write_git_tree,
+    write_git_worktree,
+    write_parse_result,
+)
 from learntrace.reporting import (
     load_archive,
     load_payload,
@@ -42,8 +53,13 @@ _COMMANDS = frozenset(
     {
         "adapt",
         "archive",
-        "authorize-full-read",
         "discover",
+        "git-evidence",
+        "git-file",
+        "git-index",
+        "git-tree",
+        "git-worktree",
+        "authorize-full-read",
         "export-evidence",
         "parse",
         "render-narrative",
@@ -64,7 +80,15 @@ def _add_parse_options(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--document", action="append", type=Path, default=None)
     parser.add_argument("--test-log", action="append", type=Path, default=None)
     parser.add_argument("--no-git", action="store_true", help="Do not read local Git history.")
-    parser.add_argument("--max-commits", type=int, default=None, help="Default: 50.")
+    parser.add_argument(
+        "--max-commits",
+        type=int,
+        default=None,
+        help=(
+            "Optional side-branch detail budget; by default the complete reachable history is "
+            "retained. The first-parent chain and merge commits are never removed."
+        ),
+    )
     parser.add_argument("--find-copies-harder", action="store_true")
     parser.add_argument(
         "--author",
@@ -77,6 +101,32 @@ def _add_parse_options(parser: argparse.ArgumentParser) -> None:
             "as an explicit collaboration boundary, not hidden."
         ),
     )
+
+
+def _line_range(value: str) -> tuple[int, int]:
+    match = value.split(":", maxsplit=1)
+    if len(match) != 2:
+        raise argparse.ArgumentTypeError("line range must use START:END")
+    try:
+        start, end = (int(part) for part in match)
+    except ValueError as error:
+        raise argparse.ArgumentTypeError("line range must contain integers") from error
+    if start < 1 or end < start:
+        raise argparse.ArgumentTypeError("line range must satisfy 1 <= START <= END")
+    return start, end
+
+
+def _byte_range(value: str) -> tuple[int, int]:
+    match = value.split(":", maxsplit=1)
+    if len(match) != 2:
+        raise argparse.ArgumentTypeError("byte range must use START:END")
+    try:
+        start, end = (int(part) for part in match)
+    except ValueError as error:
+        raise argparse.ArgumentTypeError("byte range must contain integers") from error
+    if start < 0 or end <= start:
+        raise argparse.ArgumentTypeError("byte range must satisfy 0 <= START < END")
+    return start, end
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -96,6 +146,68 @@ def build_parser() -> argparse.ArgumentParser:
         help="List candidate evidence paths without reading file contents.",
     )
     discover_parser.add_argument("project_dir", type=Path)
+
+    evidence_parser = subparsers.add_parser(
+        "git-evidence",
+        help="Export a commit hunk manifest, bounded diff preview, and source readback locators.",
+    )
+    evidence_parser.add_argument("project_dir", type=Path)
+    evidence_parser.add_argument("commit", help="Reachable hexadecimal commit id.")
+    evidence_parser.add_argument(
+        "--path",
+        action="append",
+        default=[],
+        help="Changed repository path to export (repeatable; default: every changed path).",
+    )
+    evidence_parser.add_argument(
+        "--max-chars",
+        type=int,
+        default=DEFAULT_EVIDENCE_MAX_CHARS,
+        help="Maximum preview characters; the complete hunk manifest remains in index.json.",
+    )
+    evidence_parser.add_argument("-o", "--output-dir", type=Path)
+
+    index_parser = subparsers.add_parser(
+        "git-index",
+        help="Write a complete local JSONL index of reachable Git history.",
+    )
+    index_parser.add_argument("project_dir", type=Path)
+    index_parser.add_argument("-o", "--output", type=Path)
+
+    tree_parser = subparsers.add_parser(
+        "git-tree",
+        help="Write the complete tracked file tree for a reachable local revision.",
+    )
+    tree_parser.add_argument("project_dir", type=Path)
+    tree_parser.add_argument("revision")
+    tree_parser.add_argument("-o", "--output", type=Path)
+
+    file_parser = subparsers.add_parser(
+        "git-file",
+        help="Read a bounded source range from a revision or the current worktree.",
+    )
+    file_parser.add_argument("project_dir", type=Path)
+    file_parser.add_argument(
+        "revision", help="Reachable revision or the literal 'index' or 'worktree'."
+    )
+    file_parser.add_argument("path", help="Repository-relative file path.")
+    file_range = file_parser.add_mutually_exclusive_group()
+    file_range.add_argument("--lines", type=_line_range, metavar="START:END")
+    file_range.add_argument("--bytes", type=_byte_range, metavar="START:END")
+    file_parser.add_argument("-o", "--output", type=Path)
+
+    worktree_parser = subparsers.add_parser(
+        "git-worktree",
+        help="Write staged, unstaged, untracked, rename, deletion, and conflict facts.",
+    )
+    worktree_parser.add_argument("project_dir", type=Path)
+    worktree_parser.add_argument(
+        "--max-chars",
+        type=int,
+        default=DEFAULT_EVIDENCE_MAX_CHARS,
+        help="Maximum characters retained for each worktree diff.",
+    )
+    worktree_parser.add_argument("-o", "--output", type=Path)
 
     adapt_parser = subparsers.add_parser(
         "adapt",
@@ -280,9 +392,10 @@ def _parse_project(
     excluded_documents: tuple[Path, ...] = (),
 ) -> tuple[int, int]:
     root = args.project_dir.resolve()
-    discovered = discover_static_materials(root, excluded_paths=excluded_documents)
+    exclusions = (*excluded_documents, output_path)
+    discovered = discover_static_materials(root, excluded_paths=exclusions)
     documents = discovered.documents if args.document is None else tuple(args.document)
-    excluded = {path.resolve() for path in excluded_documents}
+    excluded = {(path if path.is_absolute() else root / path).resolve() for path in exclusions}
     documents = tuple(path for path in documents if (root / path).resolve() not in excluded)
     test_logs = discovered.test_logs if args.test_log is None else tuple(args.test_log)
     result = parse_static_materials(
@@ -290,12 +403,13 @@ def _parse_project(
         document_paths=documents,
         test_log_paths=test_logs,
         include_git=not args.no_git,
-        max_commits=args.max_commits if args.max_commits is not None else 50,
+        max_commits=args.max_commits,
         find_copies_harder=args.find_copies_harder,
-        inventory_excluded_paths=excluded_documents,
+        inventory_excluded_paths=exclusions,
         git_author=args.author,
     )
     write_parse_result(result, output_path)
+    register_generated_artifacts(root, (output_path,))
     return len(result.events), len(result.warnings)
 
 
@@ -482,6 +596,69 @@ def _run_command(args: argparse.Namespace, parser: argparse.ArgumentParser) -> i
             events, warnings = _parse_project(args, output)
             print(f"Wrote parse result: {output} (events={events}, warnings={warnings})")
             return 0
+        if args.command == "git-evidence":
+            result = export_git_evidence(
+                args.project_dir.resolve(),
+                args.commit,
+                paths=tuple(args.path),
+                output_dir=args.output_dir,
+                max_chars=args.max_chars,
+            )
+            print(
+                f"Wrote Git evidence: {result.index_path} "
+                f"(commit={result.commit_id}, artifacts={result.artifact_count})"
+            )
+            return 0
+        if args.command == "git-index":
+            result = write_git_history_index(
+                args.project_dir.resolve(),
+                output_path=args.output,
+            )
+            print(
+                f"Wrote Git history index: {result.output_path} "
+                f"(commits={result.total_commits}, complete={result.complete})"
+            )
+            return 0
+        if args.command == "git-tree":
+            result = write_git_tree(
+                args.project_dir.resolve(),
+                args.revision,
+                output_path=args.output,
+            )
+            print(
+                f"Wrote Git tree: {result.output_path} "
+                f"(record={result.record_id}, files={result.item_count})"
+            )
+            return 0
+        if args.command == "git-file":
+            start_line, end_line = args.lines or (1, 200)
+            start_byte, end_byte = args.bytes or (None, None)
+            result = write_git_file(
+                args.project_dir.resolve(),
+                args.revision,
+                args.path,
+                start_line=start_line,
+                end_line=end_line,
+                start_byte=start_byte,
+                end_byte=end_byte,
+                output_path=args.output,
+            )
+            print(
+                f"Wrote Git file evidence: {result.output_path} "
+                f"(record={result.record_id}, available={bool(result.item_count)})"
+            )
+            return 0
+        if args.command == "git-worktree":
+            result = write_git_worktree(
+                args.project_dir.resolve(),
+                output_path=args.output,
+                max_chars=args.max_chars,
+            )
+            print(
+                f"Wrote Git worktree evidence: {result.output_path} "
+                f"(record={result.record_id}, entries={result.item_count})"
+            )
+            return 0
         if args.command == "adapt":
             export_paths = tuple(args.export_path)
             if args.authorized and len(export_paths) != 1:
@@ -589,12 +766,22 @@ def _run_command(args: argparse.Namespace, parser: argparse.ArgumentParser) -> i
                 questions_output_path=work_dir / "learning-questions.md",
                 confirmation_paths=tuple(args.confirmations),
                 snapshot_path=archive_snapshot,
+                artifact_registry_root=root,
             )
             print(f"Applied confirmations to analysis snapshot: {archive_snapshot}")
             print(f"Wrote learning record: {archive_result.output_path}")
             return 0
 
-        events, warnings = _parse_project(args, parse_output, excluded_documents=(output,))
+        events, warnings = _parse_project(
+            args,
+            parse_output,
+            excluded_documents=(
+                output,
+                archive_snapshot,
+                work_dir / "learning-questions.md",
+                work_dir / "task3-result.json",
+            ),
+        )
         export_paths = tuple(args.opencode_export)
         if args.authorized and len(export_paths) > 1:
             raise ValueError(
@@ -656,6 +843,7 @@ def _run_command(args: argparse.Namespace, parser: argparse.ArgumentParser) -> i
             records_output_path=archive_snapshot,
             questions_output_path=work_dir / "learning-questions.md",
             confirmation_paths=tuple(args.confirmations),
+            artifact_registry_root=root,
         )
         print(f"Wrote parse result: {parse_output} (events={events}, warnings={warnings})")
         print(

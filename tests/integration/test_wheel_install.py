@@ -14,6 +14,7 @@ that installation (not the repo ``src``).
 
 from __future__ import annotations
 
+import os
 import shutil
 import subprocess
 import sys
@@ -38,13 +39,21 @@ _REQUIRED_SCHEMA_FILES = (
 
 
 def _run(args: list[str], cwd: Path) -> subprocess.CompletedProcess[str]:
+    environment = dict(os.environ)
+    environment.update(
+        {
+            "PATH": _PATH,
+            "PYTHONPATH": "",
+            "PIP_DISABLE_PIP_VERSION_CHECK": "1",
+        }
+    )
     return subprocess.run(
         args,
         cwd=cwd,
         capture_output=True,
         text=True,
         check=False,
-        env={"PATH": _PATH, "PYTHONPATH": ""},
+        env=environment,
     )
 
 
@@ -64,6 +73,8 @@ _RT_DEPS = (
     "referencing",
     "rpds",
     "rpds_py",
+    "rfc3339_validator",
+    "typing_extensions",
 )
 
 
@@ -80,6 +91,10 @@ def _seed_runtime_deps(target: Path) -> bool:
                 dst = target / match.name
                 if not dst.exists():
                     shutil.copytree(match, dst)
+            elif match.is_file():
+                dst = target / match.name
+                if not dst.exists():
+                    shutil.copy2(match, dst)
     return (target / "jsonschema").is_dir()
 
 
@@ -179,7 +194,7 @@ def test_cli_entry_point_runs_from_installed_wheel(tmp_path: Path) -> None:
     )
     result = _run([str(cli_bin), "--help"], cwd=tmp_path)
     assert result.returncode == 0, result.stderr
-    # The main entry point routes through cli.build_parser(), whose help opens
-    # with the standard argparse "usage:" line. Assert on that (rather than a
-    # parser description, which drifted after the cli/archive parser split).
     assert "usage:" in result.stdout, result.stdout
+    assert "Parse local evidence" in result.stdout, result.stdout
+    assert "git-file" in result.stdout, result.stdout
+    assert "run" in result.stdout, result.stdout
