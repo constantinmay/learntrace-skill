@@ -19,6 +19,7 @@ from learntrace.adapters.types import (
     TraceParseIssue,
     UnsupportedOpenCodeFormatError,
     events_conflict,
+    session_export_source_ref,
 )
 from learntrace.models import (
     ContractValidator,
@@ -371,11 +372,7 @@ def adapt_opencode_export(
                         ref=source_ref,
                         note="opencode",
                     ),
-                    SourceRef(
-                        type=SourceType.FILE,
-                        ref=export_path.resolve().as_posix(),
-                        note="session-export",
-                    ),
+                    session_export_source_ref(export_path, project_root),
                 ),
                 occurred_at=_occurred_at(
                     state,

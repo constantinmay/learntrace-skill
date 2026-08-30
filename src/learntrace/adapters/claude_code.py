@@ -19,6 +19,7 @@ from learntrace.adapters.types import (
     TraceParseIssue,
     UnsupportedTraceFormatError,
     events_conflict,
+    session_export_source_ref,
 )
 from learntrace.models import (
     ContractValidator,
@@ -287,11 +288,7 @@ def _build_event(
                 ref=source_ref,
                 note="claude-code",
             ),
-            SourceRef(
-                type=SourceType.FILE,
-                ref=export_path.resolve().as_posix(),
-                note="session-export",
-            ),
+            session_export_source_ref(export_path, project_root),
         ),
         occurred_at=pending_call.occurred_at,
     )

@@ -20,6 +20,7 @@ from learntrace.adapters.types import (
     TraceParseIssue,
     UnsupportedTraceFormatError,
     events_conflict,
+    session_export_source_ref,
 )
 from learntrace.models import (
     ContractValidator,
@@ -283,7 +284,6 @@ def adapt_codex_export(
     a summary warning.
     """
 
-    del project_root  # Codex call arguments carry no project-relative paths yet.
     if not authorized:
         return TraceAdapterResult(status=TraceInputStatus.NOT_AUTHORIZED)
     if export_path is None:
@@ -396,11 +396,7 @@ def adapt_codex_export(
                         ref=source_ref,
                         note="codex",
                     ),
-                    SourceRef(
-                        type=SourceType.FILE,
-                        ref=export_path.resolve().as_posix(),
-                        note="session-export",
-                    ),
+                    session_export_source_ref(export_path, project_root),
                 ),
                 occurred_at=pending_call.occurred_at,
             )

@@ -149,7 +149,7 @@ def test_paired_function_call_becomes_a_stable_valid_trace_event(tmp_path: Path)
     # 第二个引用指向会话导出文件本身（证据回读“去哪看原文”的落点）
     assert len(event.source_refs) == 2
     assert event.source_refs[1].type is SourceType.FILE
-    assert event.source_refs[1].ref == session_path.resolve().as_posix()
+    assert event.source_refs[1].ref == "[absolute-path]"
     assert event.source_refs[1].note == "session-export"
     assert event.kind is EventKind.TRACE_RECORD
     assert event.id == f"evt-trace-{hashlib.sha256(expected_ref.encode()).hexdigest()[:16]}"

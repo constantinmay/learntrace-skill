@@ -54,6 +54,11 @@ Task 4 的稳定跨任务接口；`work_segments` 是在不改变原子事件的
 - `occurred_at` 只取工具记录的开始时间，并且可以省略；
 - `source_refs` 指向原会话、消息和工具片段的标识，`note` 为 `opencode`。
 
+适配器读取授权导出文件时使用调用方给出的真实路径，但事件里的辅助文件引用只保留
+项目内相对路径；项目外或未提供项目根时改用 `[outside-project]` / `[absolute-path]`
+占位符，不把主机用户名或 home 路径写进轨迹结果。真正的轨迹定位仍以
+`type=trace_record` 的会话、消息和工具片段引用为准。
+
 写入结果时，`write_trace_result` 会再次校验所有事件，再用同目录临时文件和原子替换
 生成 UTF-8 JSON。
 

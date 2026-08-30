@@ -4,10 +4,12 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import StrEnum
+from pathlib import Path
 from typing import Any
 
 from learntrace.adapters.aggregation import TraceWorkSegment
-from learntrace.models import ObservableEvent
+from learntrace.models import ObservableEvent, SourceRef, SourceType
+from learntrace.privacy import normalize_project_path
 
 
 class TraceInputStatus(StrEnum):
@@ -47,6 +49,27 @@ class TraceAdapterResult:
         """Short alias retained for consumers that call them ``segments``."""
 
         return self.work_segments
+
+
+def session_export_source_ref(
+    export_path: Path,
+    project_root: Path | None,
+) -> SourceRef:
+    """Return a privacy-safe pointer to the authorized session export.
+
+    The adapter still receives the real path so it can read the explicitly
+    authorized input, but persisted trace records must not copy a host's
+    absolute username/home path.  Keep a project-relative path when it is
+    safe; otherwise use the existing deterministic placeholders from the
+    path normalizer.  The trace-record reference remains the authoritative
+    citation for the original tool part.
+    """
+
+    return SourceRef(
+        type=SourceType.FILE,
+        ref=normalize_project_path(export_path.as_posix(), project_root),
+        note="session-export",
+    )
 
 
 def event_merge_key(event: ObservableEvent) -> dict[str, Any]:

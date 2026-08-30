@@ -16,6 +16,7 @@ from learntrace.adapters import (
     adapt_opencode_exports,
     write_trace_result,
 )
+from learntrace.adapters.types import session_export_source_ref
 from learntrace.models import ContractValidator, EventKind, SourceType
 
 
@@ -137,9 +138,23 @@ def test_completed_file_tool_becomes_a_stable_valid_trace_event(tmp_path: Path) 
     # 第二个引用指向导出文件本身（证据回读“去哪看原文”的落点）
     assert len(event.source_refs) == 2
     assert event.source_refs[1].type is SourceType.FILE
-    assert event.source_refs[1].ref == export_path.resolve().as_posix()
+    assert event.source_refs[1].ref == "export.json"
     assert event.source_refs[1].note == "session-export"
     ContractValidator().validate("observable_event", event.to_dict())
+
+
+def test_session_export_source_ref_redacts_host_absolute_path() -> None:
+    """Export provenance must not copy a Windows username into trace output."""
+
+    source_ref = session_export_source_ref(
+        Path(r"C:\Users\Alice\sessions\session.json"),
+        Path(r"D:\repo"),
+    )
+
+    assert source_ref.type is SourceType.FILE
+    assert source_ref.ref == "[outside-project]"
+    assert "Users" not in source_ref.to_dict()["ref"]
+    assert "Alice" not in source_ref.to_dict()["ref"]
 
 
 def test_malformed_sibling_is_skipped_with_a_safe_warning(tmp_path: Path) -> None:
