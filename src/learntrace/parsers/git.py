@@ -29,6 +29,15 @@ _LS_TREE_ENTRY_RE = re.compile(rb"^([0-9]{6}) ([a-z]+) ([0-9a-f]+)\t")
 
 
 @dataclass(frozen=True, slots=True)
+class GitAuthor:
+    """最近提交中出现的一个作者（名称、邮箱、提交数）。"""
+
+    name: str
+    email: str
+    commits: int
+
+
+@dataclass(frozen=True, slots=True)
 class _GitFileChange:
     status: str
     path: str
@@ -254,6 +263,36 @@ def _change_counts(changes: list[_GitFileChange]) -> str:
         if count:
             parts.append(f"{count} 个{labels[status]}")
     return "、".join(parts) if parts else "0 个"
+
+
+def _author_matches(author: str, author_name: str, author_email: str) -> bool:
+    """按作者名称或邮箱做整体、大小写不敏感匹配（不用 Git regex，不做子串匹配）。
+
+    用整体匹配而非子串，避免选 ``Alice`` 时误中 ``Malice`` / ``xAlice`` 等
+    他人提交混入个人档案。
+    """
+    needle = author.strip().casefold()
+    return bool(needle) and (needle == author_name.casefold() or needle == author_email.casefold())
+
+
+def _history_commit_authors(
+    root: Path,
+    *,
+    warnings: list[ParseWarning],
+) -> list[tuple[str, str, str]] | None:
+    """一次性读取全部历史提交的 (hash, author_name, author_email)；失败返回 None。"""
+    result = _git(root, "log", "--format=%H%x1f%an%x1f%ae")
+    if result.returncode != 0:
+        message = compact_text(result.stderr) or "could not read commit authors"
+        warnings.append(ParseWarning("git_read_error", ".", message))
+        return None
+    entries: list[tuple[str, str, str]] = []
+    for line in result.stdout.splitlines():
+        fields = line.split(_FIELD_SEPARATOR, maxsplit=2)
+        if len(fields) != 3 or not fields[0].strip():
+            continue
+        entries.append((fields[0].strip(), fields[1], fields[2]))
+    return entries
 
 
 def _change_summary(commit_id: str, change: _GitFileChange) -> str:
@@ -1202,6 +1241,44 @@ def write_git_history_index(
         raise ValueError("Git history index timed out") from error
     except OSError as error:
         raise ValueError(safe_os_error(error)) from error
+def read_git_commit_text(project_root: Path, commit_id: str) -> str:
+    """读取单个提交的完整文本（提交信息 + diff）；不可读时抛 ValueError。"""
+    root = repo_root(project_root)
+    result = _git(
+        root,
+        "show",
+        "--no-color",
+        "--format=%H%x1f%an <%ae>%x1f%cI%x1f%s",
+        commit_id,
+    )
+    if result.returncode != 0:
+        message = compact_text(result.stderr) or "could not read commit"
+        raise ValueError(message)
+    return result.stdout
+
+
+def list_git_authors(project_root: Path) -> tuple[GitAuthor, ...]:
+    """列出全部历史提交的作者（名称、邮箱、提交数）；不可读或读取失败返回空。"""
+    root = repo_root(project_root)
+    try:
+        repository = _git(root, "rev-parse", "--is-inside-work-tree")
+    except (OSError, subprocess.TimeoutExpired):
+        return ()
+    if repository.returncode != 0 or repository.stdout.strip() != "true":
+        return ()
+    try:
+        entries = _history_commit_authors(root, warnings=[])
+    except (OSError, subprocess.TimeoutExpired):
+        return ()
+    if entries is None:
+        return ()
+    counts: dict[tuple[str, str], int] = {}
+    for _commit_id, name, email in entries:
+        counts[(name, email)] = counts.get((name, email), 0) + 1
+    ranked = sorted(counts.items(), key=lambda item: (-item[1], item[0][0].casefold()))
+    return tuple(
+        GitAuthor(name=name, email=email, commits=count) for (name, email), count in ranked
+    )
 
 
 def parse_git_history(
@@ -1210,8 +1287,13 @@ def parse_git_history(
     max_commits: int | None = None,
     find_copies_harder: bool = False,
     excluded_paths: tuple[Path, ...] = (),
+    author: str | None = None,
 ) -> ParseResult:
-    """读取 Git 历史；细节预算不会丢弃 first-parent 主线或 merge 边界。"""
+    """读取 Git 历史；细节预算不会丢弃 first-parent 主线或 merge 边界。
+
+    传入 ``author`` 时按作者名称或邮箱整体、大小写不敏感匹配，
+    其余提交在解析层过滤并显式告警。
+    """
     root = repo_root(project_root)
     if max_commits is not None and max_commits < 1:
         msg = "max_commits must be at least 1"
@@ -1280,19 +1362,55 @@ def parse_git_history(
                     ("repository_shallow", True),
                     ("history_complete", False),
                     ("shallow_boundary_count", len(history_state.shallow_boundaries)),
-                    (
-                        "shallow_boundary_commits",
-                        ",".join(history_state.shallow_boundaries),
-                    ),
+                    ("shallow_boundary_commits", ",".join(history_state.shallow_boundaries)),
                 ),
             )
         )
-    selected, omitted, truncation_details = _select_history(
-        history_entries,
-        first_parent_ids,
-        max_commits,
-    )
-    if omitted:
+    if author is not None:
+        try:
+            history_authors = _history_commit_authors(root, warnings=warnings)
+        except (OSError, subprocess.TimeoutExpired):
+            return ParseResult(warnings=tuple(warnings))
+        if history_authors is None:
+            return ParseResult(warnings=tuple(warnings))
+        author_by_hash = {commit_id: (name, email) for commit_id, name, email in history_authors}
+        filtered_entries = [
+            entry
+            for entry in history_entries
+            if _author_matches(author, *author_by_hash.get(entry.commit_id, ("", "")))
+        ]
+        filtered_count = len(history_entries) - len(filtered_entries)
+        history_entries = filtered_entries
+        if filtered_count > 0:
+            warnings.append(
+                ParseWarning(
+                    "git_author_filtered",
+                    ".",
+                    f"多作者协作边界：最近提交中有 {filtered_count} 个不属于作者"
+                    f"“{author.strip()}”（按名称或邮箱整体、大小写不敏感匹配），"
+                    "已在解析层过滤，不进入报告。",
+                )
+            )
+        if not history_entries:
+            return ParseResult(events=(), warnings=tuple(warnings))
+    if author is not None:
+        selected = history_entries if max_commits is None else history_entries[:max_commits]
+        omitted = []
+        if max_commits is not None and len(history_entries) > max_commits:
+            warnings.append(
+                ParseWarning(
+                    "git_history_truncated",
+                    ".",
+                    f"Git history limited to the newest {max_commits} matching author commits.",
+                )
+            )
+    else:
+        selected, omitted, truncation_details = _select_history(
+            history_entries,
+            first_parent_ids,
+            max_commits,
+        )
+    if author is None and omitted:
         truncation_details = (
             *truncation_details,
             ("history_index_path", ".learntrace/evidence/git/history.jsonl"),
@@ -1355,8 +1473,19 @@ def parse_git_history(
             warnings.append(ParseWarning("git_commit_read_error", commit_id, change_error))
             continue
         changes, excluded = _filter_evidence_changes(path_policy, changes)
-        excluded_generated.update(excluded)
+        if not changes and excluded:
+            continue
+        subject_text = compact_text(subject) or "（提交信息未记录）"
         if not changes:
+            events.append(
+                ObservableEvent(
+                    id=f"evt-git-{full_hash}",
+                    kind=EventKind.GIT_COMMIT,
+                    summary=f"提交 {full_hash[:7]} 的提交信息为“{subject_text}”，记录 0 个文件变更（0 个）。",
+                    source_refs=(_commit_source_ref(full_hash),),
+                    occurred_at=occurred_at,
+                )
+            )
             continue
         subject_text = compact_text(subject) or "（提交信息未记录）"
         summary = (

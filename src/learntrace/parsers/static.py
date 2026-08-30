@@ -26,8 +26,12 @@ def parse_static_materials(
     max_commits: int | None = None,
     find_copies_harder: bool = False,
     inventory_excluded_paths: Iterable[Path] = (),
+    git_author: str | None = None,
 ) -> ParseResult:
-    """解析调用方已确认的范围，返回事实事件和非致命告警。"""
+    """解析调用方已确认的范围，返回事实事件和非致命告警。
+
+    多作者仓库可传 ``git_author`` 指定唯一作者，解析层仅保留该作者名下的提交。
+    """
     root = repo_root(project_root)
     documents = deduplicate_paths(root, document_paths)
     logs = deduplicate_paths(root, test_log_paths)
@@ -42,6 +46,7 @@ def parse_static_materials(
         include_git=include_git,
         documents=tuple(project_reference(root, path) for path in documents),
         test_logs=tuple(project_reference(root, path) for path in logs),
+        git_author=git_author,
     )
     result = ParseResult(warnings=discovered.warnings)
     if include_git:
@@ -51,6 +56,7 @@ def parse_static_materials(
                 max_commits=max_commits,
                 find_copies_harder=find_copies_harder,
                 excluded_paths=excluded,
+                author=git_author,
             )
         )
     combined = result.merged(

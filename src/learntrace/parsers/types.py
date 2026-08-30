@@ -18,13 +18,17 @@ class AnalysisScope:
     include_git: bool
     documents: tuple[str, ...]
     test_logs: tuple[str, ...]
+    git_author: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        data: dict[str, Any] = {
             "include_git": self.include_git,
             "documents": list(self.documents),
             "test_logs": list(self.test_logs),
         }
+        if self.git_author is not None:
+            data["git_author"] = self.git_author
+        return data
 
 
 @dataclass(frozen=True, slots=True)

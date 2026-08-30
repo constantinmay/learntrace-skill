@@ -36,7 +36,6 @@ from learntrace.reporting import (
     ArchiveBundle,
     ArchiveWarning,
     CandidateInferencer,
-    LLMInferenceError,
     apply_confirmations,
     archive_manifest,
     build_archive_bundle,
@@ -888,7 +887,7 @@ def main(argv: list[str] | tuple[str, ...] | None = None) -> int:
             confirmation_paths=tuple(args.confirmations),
             snapshot_path=args.snapshot,
         )
-    except (FileNotFoundError, LLMInferenceError, ValueError) as exc:
+    except (FileNotFoundError, ValueError) as exc:
         parser.exit(1, f"{parser.prog}: error: {exc}\n")
     print(_format_cli_summary(result))
     return 0

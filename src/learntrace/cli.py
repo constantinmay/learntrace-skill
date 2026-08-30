@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import copy
 import json
 import sys
 from collections.abc import Sequence
@@ -16,11 +17,19 @@ from learntrace.adapters import (
     adapt_claude_code_exports,
     adapt_codex_exports,
     adapt_opencode_exports,
+    events_conflict,
     write_trace_result,
 )
 from learntrace.archive import main as archive_main
 from learntrace.archive import write_learning_record_result
 from learntrace.artifacts import register_generated_artifacts
+from learntrace.evidence import (
+    export_git_commit,
+    export_project_file,
+    export_session_evidence,
+    load_evidence_index,
+    record_full_read_authorization,
+)
 from learntrace.models import ObservableEvent
 from learntrace.parsers import (
     DEFAULT_EVIDENCE_MAX_CHARS,
@@ -33,7 +42,12 @@ from learntrace.parsers import (
     write_git_worktree,
     write_parse_result,
 )
-from learntrace.reporting import LLMInferenceError
+from learntrace.reporting import (
+    load_archive,
+    load_payload,
+    render_narrative_markdown,
+    verify_payload,
+)
 
 _COMMANDS = frozenset(
     {
@@ -45,8 +59,12 @@ _COMMANDS = frozenset(
         "git-index",
         "git-tree",
         "git-worktree",
+        "authorize-full-read",
+        "export-evidence",
         "parse",
+        "render-narrative",
         "run",
+        "verify-narrative",
     }
 )
 _MAX_TOTAL_TRACE_EVENTS = 10_000
@@ -72,6 +90,17 @@ def _add_parse_options(parser: argparse.ArgumentParser) -> None:
         ),
     )
     parser.add_argument("--find-copies-harder", action="store_true")
+    parser.add_argument(
+        "--author",
+        type=str,
+        default=None,
+        help=(
+            "Multi-author repositories: keep only this author's commits (matched "
+            "literally, case-insensitively, against the author name or email). "
+            "Other authors' commits are filtered at the parse layer and reported "
+            "as an explicit collaboration boundary, not hidden."
+        ),
+    )
 
 
 def _line_range(value: str) -> tuple[int, int]:
@@ -206,6 +235,99 @@ def build_parser() -> argparse.ArgumentParser:
     )
     adapt_parser.add_argument("-o", "--output", type=Path)
 
+    verify_parser = subparsers.add_parser(
+        "verify-narrative",
+        help="Check a narrative payload against its archive (three red lines).",
+    )
+    verify_parser.add_argument("payload_path", type=Path, help="Narrative payload JSON file.")
+    verify_parser.add_argument(
+        "archive_path", type=Path, help="archive-records.json produced by the archive step."
+    )
+
+    export_parser = subparsers.add_parser(
+        "export-evidence",
+        help="On-demand evidence read-back into .learntrace/evidence/ (not pre-generated).",
+    )
+    export_parser.add_argument("project_dir", type=Path)
+    export_parser.add_argument(
+        "--git-commit",
+        type=str,
+        default=None,
+        help="Export one commit (message + diff) to evidence/git/.",
+    )
+    export_parser.add_argument(
+        "--file",
+        type=str,
+        default=None,
+        help="Export one project-relative file (redacted) to evidence/files/.",
+    )
+    export_parser.add_argument(
+        "--session-export",
+        type=Path,
+        default=None,
+        help="Export one authorized session slice to evidence/sessions/.",
+    )
+    export_parser.add_argument(
+        "--source",
+        choices=tuple(_TRACE_EXPORT_ADAPTERS),
+        default="opencode",
+        help="Host for --session-export (default: opencode).",
+    )
+    export_parser.add_argument(
+        "--authorization",
+        choices=("minimal", "full"),
+        default="minimal",
+        help=(
+            "Session slice retention level: minimal = only the five v0 event "
+            "fields; full = the raw file (requires full-read authorization)."
+        ),
+    )
+    export_parser.add_argument("--list", action="store_true", help="Print the evidence index.")
+
+    authorize_parser = subparsers.add_parser(
+        "authorize-full-read",
+        help=(
+            "Record a per-file full-read authorization for one session export, "
+            "after the student's explicit consent (required before "
+            "export-evidence --authorization full)."
+        ),
+    )
+    authorize_parser.add_argument("project_dir", type=Path)
+    authorize_parser.add_argument(
+        "--session-export",
+        type=Path,
+        required=True,
+        help="The exact session export file to authorize a full read of.",
+    )
+    authorize_parser.add_argument(
+        "--source",
+        choices=tuple(_TRACE_EXPORT_ADAPTERS),
+        required=True,
+        help="Host for the session export (opencode / claude-code / codex).",
+    )
+    authorize_parser.add_argument(
+        "--authorized-at",
+        type=str,
+        required=True,
+        help="ISO-8601 timestamp of the student's explicit full-read consent.",
+    )
+
+    render_parser = subparsers.add_parser(
+        "render-narrative",
+        help="Render a verified narrative payload to Markdown (working or submitted).",
+    )
+    render_parser.add_argument("payload_path", type=Path, help="Narrative payload JSON file.")
+    render_parser.add_argument(
+        "archive_path", type=Path, help="archive-records.json produced by the archive step."
+    )
+    render_parser.add_argument("-o", "--output", type=Path)
+    render_parser.add_argument(
+        "--variant",
+        choices=("working", "submitted"),
+        default=None,
+        help="Override the payload's own variant (default: payload.variant).",
+    )
+
     run_parser = subparsers.add_parser("run", help="Run the local parse-to-archive pipeline.")
     _add_parse_options(run_parser)
     run_parser.add_argument("--opencode-export", action="append", type=Path, default=[])
@@ -284,6 +406,7 @@ def _parse_project(
         max_commits=args.max_commits,
         find_copies_harder=args.find_copies_harder,
         inventory_excluded_paths=exclusions,
+        git_author=args.author,
     )
     write_parse_result(result, output_path)
     register_generated_artifacts(root, (output_path,))
@@ -354,7 +477,7 @@ def _merge_trace_results(
             existing = events_by_id.get(event.id)
             if existing is None:
                 events_by_id[event.id] = event
-            elif existing.to_dict() != event.to_dict():
+            elif events_conflict(existing, event):
                 raise ValueError("多个轨迹来源包含 ID 相同但内容冲突的工具记录。")
 
     events = sorted(events_by_id.values(), key=_trace_event_sort_key)
@@ -392,20 +515,76 @@ def _run_command(args: argparse.Namespace, parser: argparse.ArgumentParser) -> i
         if args.command == "discover":
             discovered = discover_static_materials(args.project_dir.resolve())
             inventory = discovered.inventory
+            payload: dict[str, object] = {
+                "git_available": discovered.has_git,
+                "documents": [path.as_posix() for path in discovered.documents],
+                "test_logs": [path.as_posix() for path in discovered.test_logs],
+                "inventory_counts": {
+                    "files": len(inventory.files),
+                    "source_files": len(inventory.source_files),
+                    "test_files": len(inventory.test_files),
+                },
+                "warnings": [warning.to_dict() for warning in discovered.warnings],
+            }
+            if discovered.git_authors:
+                payload["git_authors"] = [
+                    {"name": item.name, "email": item.email, "commits": item.commits}
+                    for item in discovered.git_authors
+                ]
+            print(json.dumps(payload, ensure_ascii=False, indent=2))
+            return 0
+        if args.command == "export-evidence":
+            root = args.project_dir.resolve()
+            if args.list:
+                entries = load_evidence_index(root)
+                print(json.dumps([entry for entry in entries], ensure_ascii=False, indent=2))
+                return 0
+            exported: list[dict[str, object]] = []
+            if args.git_commit is not None:
+                entry = export_git_commit(root, args.git_commit)
+                exported.append(entry.to_dict())
+            if args.file is not None:
+                entry = export_project_file(root, args.file)
+                exported.append(entry.to_dict())
+            if args.session_export is not None:
+                entry = export_session_evidence(
+                    root,
+                    args.session_export,
+                    source=args.source,
+                    authorization=args.authorization,
+                )
+                exported.append(entry.to_dict())
+            if not exported:
+                raise ValueError(
+                    "export-evidence needs one of --git-commit, --file, --session-export, or --list"
+                )
             print(
                 json.dumps(
                     {
-                        "git_available": discovered.has_git,
-                        "documents": [path.as_posix() for path in discovered.documents],
-                        "test_logs": [path.as_posix() for path in discovered.test_logs],
-                        "inventory_counts": {
-                            "files": len(inventory.files),
-                            "tracked_files": len(inventory.tracked_files),
-                            "metadata_only_files": len(inventory.metadata_only_files),
-                            "source_files": len(inventory.source_files),
-                            "test_files": len(inventory.test_files),
-                        },
-                        "warnings": [warning.to_dict() for warning in discovered.warnings],
+                        "evidence_dir": (root / ".learntrace" / "evidence").as_posix(),
+                        "exported": exported,
+                    },
+                    ensure_ascii=False,
+                    indent=2,
+                )
+            )
+            return 0
+        if args.command == "authorize-full-read":
+            record = record_full_read_authorization(
+                args.project_dir,
+                args.session_export,
+                source=args.source,
+                authorized_at=args.authorized_at,
+            )
+            print(
+                json.dumps(
+                    {
+                        "recorded": record,
+                        "note": (
+                            "Full-read authorization recorded for this exact file. "
+                            "You may now run export-evidence --session-export <path> "
+                            "--source <host> --authorization full."
+                        ),
                     },
                     ensure_ascii=False,
                     indent=2,
@@ -503,6 +682,43 @@ def _run_command(args: argparse.Namespace, parser: argparse.ArgumentParser) -> i
                 f"warnings={len(result.warnings)})"
             )
             return 0
+        if args.command in ("verify-narrative", "render-narrative"):
+            payload = load_payload(args.payload_path)
+            archive = load_archive(args.archive_path)
+            # --variant 先落到 payload 副本上,再对最终 payload 执行 verify:
+            # 渲染哪一版就必须通过哪一版的红线,不能用另一版的验证结果
+            # 绕过版本边界(如 working 版未经 submitted 必填项检查直接上交)。
+            final_payload = payload
+            if args.command == "render-narrative" and args.variant is not None:
+                final_payload = copy.deepcopy(payload)
+                final_payload["variant"] = args.variant
+            violations = verify_payload(final_payload, archive)
+            if violations:
+                print(
+                    json.dumps(
+                        {"valid": False, "violations": violations},
+                        ensure_ascii=False,
+                        indent=2,
+                    )
+                )
+                return 1
+            if args.command == "verify-narrative":
+                print(
+                    json.dumps(
+                        {"valid": True, "violations": []},
+                        ensure_ascii=False,
+                        indent=2,
+                    )
+                )
+                return 0
+            markdown = render_narrative_markdown(final_payload, archive)
+            if args.output is not None:
+                args.output.parent.mkdir(parents=True, exist_ok=True)
+                args.output.write_text(markdown, encoding="utf-8")
+                print(f"Wrote narrative render: {args.output}")
+            else:
+                print(markdown, end="")
+            return 0
 
         root = args.project_dir.resolve()
         work_dir = root / ".learntrace"
@@ -521,6 +737,8 @@ def _run_command(args: argparse.Namespace, parser: argparse.ArgumentParser) -> i
                 conflicting_options.append("--max-commits")
             if args.find_copies_harder:
                 conflicting_options.append("--find-copies-harder")
+            if args.author is not None:
+                conflicting_options.append("--author")
             if args.opencode_export:
                 conflicting_options.append("--opencode-export")
             if args.authorized:
@@ -636,7 +854,7 @@ def _run_command(args: argparse.Namespace, parser: argparse.ArgumentParser) -> i
         )
         print(f"Wrote learning record: {archive_result.output_path}")
         return 0
-    except (FileNotFoundError, LLMInferenceError, OSError, ValueError) as exc:
+    except (FileNotFoundError, OSError, PermissionError, ValueError) as exc:
         parser.exit(1, f"{parser.prog}: error: {exc}\n")
 
 

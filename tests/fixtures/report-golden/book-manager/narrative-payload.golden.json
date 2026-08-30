@@ -1,0 +1,105 @@
+{
+  "schema_note": "Draft target for the narrative payload (agent -> CLI intermediate), additive to schema v0. The agent fills prose slots and citations only; section skeleton, tables, metadata header and footnote definitions are rendered by the CLI. This file mirrors learning-record.md (working variant).",
+  "layer": "narrative_payload",
+  "variant": "working",
+  "meta": {
+    "project": "读书/资源管理系统",
+    "evidence_window": "2026-08(日期级)",
+    "status": "未确认版",
+    "pending_questions": 2,
+    "evidence_gaps": 2
+  },
+  "overview": {
+    "text": "前后端分离的读书/资源管理项目(课程大作业):Go 后端(REST API + SQLite)、React 前端;功能含书籍增删改查、分类、搜索、评分与备注。",
+    "citations": ["evt-doc-08d307b1760355a1", "evt-doc-06e4fd3544e92d3e", "evt-doc-ef70b1b414f505e3"]
+  },
+  "stages": [
+    {
+      "stage_id": "stage-1",
+      "title": "初始化与数据层",
+      "goal": "搭建仓库与数据模型",
+      "key_changes": ["初始化仓库骨架", "数据模型与 SQLite 建表", "清理编译产物"],
+      "citations": ["evt-git-06f5aedf878836d2833895737a139c5b363d7f5a", "evt-git-193ebd403a64a2827292e645de36d5f45392d403", "evt-git-3f0c8b4c3da0836ae0206feeb1e774c5fe4cc26a"]
+    },
+    {
+      "stage_id": "stage-2",
+      "title": "后端 REST API",
+      "goal": "实现书籍 CRUD 接口",
+      "key_changes": ["handlers 实现增删改查/搜索/分类筛选"],
+      "citations": ["evt-git-e34539734543d9f7a0612bd1a9db987ab71e2b69"]
+    },
+    {
+      "stage_id": "stage-3",
+      "title": "前端脚手架与数据接入",
+      "goal": "初始化前端并打通接口",
+      "key_changes": ["Vite + React + TS 脚手架与 /api 代理", "类型与 API 客户端"],
+      "citations": ["evt-git-b61a8bf74e6959ab0af9e86439e5fa17d235fc08", "evt-git-0e23a31f58682494d2bf50cd000def053a1b44b3"]
+    },
+    {
+      "stage_id": "stage-4",
+      "title": "前端功能界面",
+      "goal": "完成书籍管理界面",
+      "key_changes": ["书籍列表/详情/表单组件", "分类管理与确认弹窗"],
+      "citations": ["evt-git-45bb97e3215f3799c76d27fa1c3d89150a5b65ab", "evt-git-26af0db283e5ec8985860b5a3923acc124c34561", "evt-git-425f643c0b5ffaaf00f16cde3c5077f252760b1d"]
+    },
+    {
+      "stage_id": "stage-5",
+      "title": "文档收尾",
+      "goal": "完善项目文档",
+      "key_changes": ["README 收尾"],
+      "citations": ["evt-git-40601e52098fdf155725f2fc5581844b2e4514ef"]
+    }
+  ],
+  "turning_points": [
+    {
+      "title": "修复 created_at 格式不一致",
+      "status": "denied_kept_in_appendix",
+      "body": "修复提交存在(证据强度高);问题最初表现与验证方式无记录;系统推断已被本人否认,仅留附录备查。",
+      "citations": ["evt-git-3eac32114182bb9bca32ce8f13527d8ed04e45ae"]
+    }
+  ],
+  "ai_collaboration": {
+    "coverage": "授权轨迹仅覆盖 2026-08-10 一段约 40 分钟的集中会话;其余开发期间无授权轨迹。",
+    "shape": "命令行操作为主,辅以文件写入与编辑;含待办清单管理行为(计划驱动)。",
+    "focus": "前端界面文件(App.tsx、index.css、components/)与 backend/handlers.go;另有若干项目目录外路径。",
+    "episodes": [
+      {
+        "label": "AI 主动提问",
+        "body": "会话开始处一次 question 工具交互,提问内容未授权保留。",
+        "citations": ["evt-trace-e4ae6591a8636db6"],
+        "derived": false
+      },
+      {
+        "label": "项目外路径编辑报错",
+        "body": "一次 edit 以错误结束,路径在项目目录之外;工具故障属系统噪声。",
+        "citations": ["evt-trace-6a8153ce80b2ad9c"],
+        "derived": false
+      },
+      {
+        "label": "命令行验证前后端",
+        "body": "调试期间通过命令行分别调用 curl、go、node 验证前后端行为。",
+        "citations": ["evt-trace-1304434438911dd0", "evt-trace-ed8a63dcc4a57ffb", "evt-trace-088825be1096dd27"],
+        "derived": false
+      },
+      {
+        "label": "插曲·界面联调",
+        "body": "该会话以前端界面搭建为主线,边写边调;后端接口改动集中在书籍创建逻辑附近。",
+        "citations": ["evt-trace-ec0526f401fc177f", "evt-trace-b729286dc0a2751b", "evt-trace-ac15850717458bff"],
+        "derived": true,
+        "derivation": "host_agent_episode_digest",
+        "deniable": true
+      }
+    ],
+    "boundary": "不建立轨迹操作与 Git 提交的对应关系;完整原子记录见机器审计档案。"
+  },
+  "verification": [
+    "未发现测试日志与运行输出(证据缺口 1)",
+    "修复后验证方式无记录(证据缺口 2)"
+  ],
+  "reflection": { "status": "student_authored_only", "text": null },
+  "takeaways": [],
+  "evidence_gaps": [
+    "未发现测试日志与运行输出",
+    "调试窗口中观察到的具体问题未记录"
+  ]
+}

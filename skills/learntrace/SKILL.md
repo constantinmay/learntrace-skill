@@ -27,6 +27,49 @@ or another command to inspect project contents. Do not repeat `discover` unless
 the project changed or the student asks. The Skill is workflow guidance, not a
 sandbox: never describe it as an absolute security boundary.
 
+### Multi-author Git scope
+
+When `discover` reports more than one author in `git_authors`, the consent gate
+adds a scope-selection step before parsing. Show the author list (name, email,
+commit count) and ask the student which author this portfolio covers. The
+report defaults to `self_only`: only the student's own commits are parsed.
+
+Pass the chosen author to the parse layer with `--author`. It filters at parse
+time (not at render time) by matching the author name or email literally and
+case-insensitively. Other authors' commits are dropped from the events and
+reported as an explicit collaboration boundary in a `git_author_filtered`
+warning — they are not hidden. Never infer the author from commit messages or
+file ownership; ask the student.
+
+### AI trace export authorization levels
+
+Each supplied export path needs its own explicit authorization; one
+authorization covers exactly one export file. For each export, ask one question
+with three options:
+
+> "这份会话导出怎么用？(a) 只提取时间线等元数据 (b) 可以阅读全文整理摘要 (c) 不使用"
+
+- **(a) Minimal retention (authorized, minimal)** — the export is read and
+  adapted into v0 events, but only the five retained field categories carry
+  forward: time, tool type, normalized relative path, command summary
+  (executable name only), and source host. No message or result text.
+- **(b) Full-text read (authorized, full)** — requires a per-file full-read
+  authorization **record** before any raw read. When the student consents to
+  full-text reading of this exact file, record it with
+  `learntrace authorize-full-read <project-dir> --session-export <path>
+  --source <host> --authorized-at <iso-timestamp>`. Only then may the host
+  agent read the full text (and produce an *auto-organized* summary, marked
+  `自动整理`, with the supporting records listed so the student can deny it).
+  Without that record, `export-evidence --authorization full` refuses: passing
+  the `full` flag alone never grants the right to read the raw session.
+- **(c) Not used (the default)** — the file is not read. The report records it
+  as an explicit gap (count + category), not as absence of AI use.
+
+A supplied but unauthorized export stays unread and surfaces as an explicit
+gap. Do not read a session file directly (`read`, `cat`, `Get-Content`) beyond
+what the authorization level allows: evidence files are not a bypass channel
+around minimal retention.
+
 ## First analysis
 
 After authorization, choose one input mode. Do not mix modes or copy evidence
@@ -224,6 +267,78 @@ those combinations. A candidate status of `resolved` means the user answered
 the question; the separate decision remains `confirmed`, `supplemented`, or
 `denied`.
 
+## Narrative payload
+
+The narrative layer is produced as a structured payload that the host agent
+fills and the CLI renders — the agent never writes the final Markdown, and the
+agent never writes the student's reflection.
+
+Method: read the structured JSON (Task 2 events, Task 3 trace result, archive
+records), re-read the evidence locations behind each citation, then fill the
+payload slots. Each section's `citations` must resolve to observable events in
+the archive; a citation may carry an `evidence_location` so a person or agent
+can re-read the exact source (a source file + line range, a Git commit hash, or
+a session export + session id + message range). Verify with
+`learntrace verify-narrative <payload> <archive>` and render with
+`learntrace render-narrative <payload> <archive>`.
+
+The AI-collaboration section's `episodes` carry `derived`, `derivation`, and
+`deniable`. A `derived: true` episode is a host-agent digest of a fully
+authorized conversation: it must set `derivation: host_agent_episode_digest`
+and `deniable: true`, list the supporting records, and be presented so the
+student can deny it. Episodes are the mechanism for consuming segmented work
+from an authorized full-text session; they never map a conversation onto a
+commit.
+
+## Evidence read-back
+
+Citations are the read-back channel. There are two ways to re-read a cited
+evidence location; neither is pre-generated during a first scan.
+
+- **Method 1 — direct location.** The payload citation's `evidence_location`
+  names exactly where to look: a source file with a line range, a Git commit
+  hash, or a session export path with a session id and message range. Re-read
+  that location on demand.
+- **Method 2 — on-demand export.** Use `learntrace export-evidence` to write a
+  specific cited item into `<project-dir>/.learntrace/evidence/` and record it
+  in `.learntrace/evidence/index.json`:
+  - `--git-commit <hash>` → `evidence/git/<short>.diff.txt`
+  - `--file <project-relative-path>` → `evidence/files/...`
+  - `--session-export <path> --source <host> [--authorization minimal|full]`
+    → `evidence/sessions/...`
+  - `--list` prints the current index.
+
+Session exports follow the authorization level from the consent gate:
+`minimal` writes only the five retained v0 event fields; `full` writes the raw
+file and requires a per-file full-read authorization record (see
+`authorize-full-read`). Every exported file is redacted through
+`redact_sensitive_text` before it is written to disk. The index `source`
+identifier carries only the host name and session id — never the local
+absolute path of the session export, so `index.json` and `--list` output do
+not leak the machine's home directory or username. `export-evidence` never
+runs as part of a first scan or `run`; it is a deliberate, on-demand step
+after a citation needs backing.
+
+### Full-read authorization record
+
+`export-evidence --authorization full` reads the raw session file. That is a
+privilege escalation over minimal retention, so it is gated by a verifiable
+per-file record, not by the flag itself:
+
+1. Obtain the student's explicit full-read consent for this exact file.
+2. Record it: `learntrace authorize-full-read <project-dir>
+   --session-export <path> --source <host> --authorized-at <iso-timestamp>`.
+   This writes one record to `.learntrace/full-read-authorizations.json`
+   (absolute path + host + timestamp; no file content).
+3. Only then does `export-evidence --session-export <same-path>
+   --authorization full` proceed. A record for a different file does not
+   cover this one, and changing `--authorization` to `full` without a record
+   is refused.
+
+The CLI/API contract: the host agent is responsible for obtaining consent and
+calling `authorize-full-read` once per file; the CLI only verifies that a
+matching record exists before performing the full read.
+
 ## Evidence and privacy
 
 Read [references/evidence-policy.md](references/evidence-policy.md) before
@@ -241,10 +356,8 @@ classifying evidence or writing the portfolio.
   as `/api` and `/v1` are preserved, while ambiguous root-relative strings such
   as `/health` or `/docs/x` may be redacted as absolute paths.
 
-Remote LLM inference is opt-in and requires both `LEARNTRACE_LLM_API_KEY` and
-`LEARNTRACE_LLM_ENABLED=1`. Only event id, kind, sanitized summary, and time are
-sent; source references, notes, and repository code stay local. Empty or invalid
-LLM results fall back to deterministic local inference and remain visibly
-flagged in the archive. `LEARNTRACE_LLM_MAX_TOKENS` optionally controls the
-response budget (default `8000`, range `256`–`65536`); a length-limited or
-reasoning-only response is reported before fallback.
+The CLI is single-LLM: it never calls a remote model. Candidate inference is
+local, deterministic, and offline — the same input always produces the same
+archive. You (the host agent) are the only LLM in the loop; any deeper,
+LLM-based interpretation of the student's work belongs to you, not to the CLI.
+No credentials or `LEARNTRACE_*` environment variables are read.

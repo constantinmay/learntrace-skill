@@ -18,12 +18,15 @@ import jsonschema
 from referencing import Registry, Resource
 from referencing.jsonschema import DRAFT202012
 
-RecordType = Literal["observable_event", "learning_node_candidate", "student_confirmation"]
+RecordType = Literal[
+    "observable_event", "learning_node_candidate", "student_confirmation", "narrative_payload"
+]
 
 SCHEMA_FILES: dict[RecordType, str] = {
     "observable_event": "observable-event.schema.json",
     "learning_node_candidate": "learning-node-candidate.schema.json",
     "student_confirmation": "student-confirmation.schema.json",
+    "narrative_payload": "narrative-payload.schema.json",
 }
 
 _COMMON_SCHEMA_FILE = "common.schema.json"

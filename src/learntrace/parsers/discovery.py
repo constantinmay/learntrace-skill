@@ -11,6 +11,7 @@ from pathlib import Path
 
 from learntrace.artifacts import EvidencePathPolicy
 from learntrace.parsers._common import project_reference, repo_root, safe_os_error
+from learntrace.parsers.git import GitAuthor, list_git_authors
 from learntrace.parsers.types import ParseWarning, ProjectInventory
 
 _EXCLUDED_DIRS = frozenset(
@@ -57,6 +58,7 @@ class DiscoveredMaterials:
     has_git: bool
     inventory: ProjectInventory
     warnings: tuple[ParseWarning, ...] = ()
+    git_authors: tuple[GitAuthor, ...] = ()
 
 
 def _is_test_log(path: Path) -> bool:
@@ -210,6 +212,7 @@ def discover_static_materials(
                     else str(error),
                 )
             )
+    git_authors = list_git_authors(root) if has_git else ()
     sorted_documents = sort_paths(documents)
     sorted_logs = sort_paths(test_logs)
     inventory = ProjectInventory(
@@ -233,4 +236,5 @@ def discover_static_materials(
         has_git=has_git,
         inventory=inventory,
         warnings=tuple(warnings),
+        git_authors=git_authors,
     )

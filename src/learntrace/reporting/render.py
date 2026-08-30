@@ -87,6 +87,11 @@ def _render_safe_text(value: str) -> str:
     return _ABSOLUTE_PATH_RE.sub("[absolute-path]", text)
 
 
+def render_safe_text(value: str) -> str:
+    """Public redaction boundary for narrative renders (same rules as reports)."""
+    return _render_safe_text(value)
+
+
 def _render_text(value: TextOrMissing) -> str:
     if isinstance(value, MissingInfo):
         return "未记录"
@@ -280,20 +285,16 @@ def _ai_collaboration_lines(bundle: ArchiveBundle) -> list[str]:
 
 
 def _inference_mode_lines(bundle: ArchiveBundle) -> list[str]:
-    if bundle.inference_mode == "llm":
-        return [
-            "- 本次候选包含远程 LLM 推断，输出在进入档案前经过 schema 校验。",
-            "- AI 类候选必须至少绑定一条 `trace_record`，避免把推断直接写成事实。",
-        ]
     if bundle.inference_mode == "stub":
         return [
-            "- 本次候选由本地确定性规则生成，未启用远程 LLM 推断。",
+            "- 本次候选由本地确定性规则生成。",
             "- 候选仍保持在 `candidate_inference` 层，不会自动写成 `observable_fact`。",
         ]
-    if bundle.inference_mode == "llm_stub_fallback":
+    if bundle.inference_mode in ("llm", "llm_stub_fallback"):
         return [
-            "- 远程 LLM 未提供可用候选，本次改用本地确定性规则生成候选。",
-            "- LLM 告警与回退状态保留在机器档案中，候选仍不会自动写成事实。",
+            f"- 历史记录：该档案生成于早期版本（候选模式：`{bundle.inference_mode}`）。",
+            "- 当前 CLI 只使用本地确定性规则，重新渲染不会重新发起任何远程调用。",
+            "- 无论历史推断器来源如何，候选都不会自动上升为事实记录。",
         ]
     return [
         f"- 本次候选由自定义推断器生成（模式：`{bundle.inference_mode}`）。",
