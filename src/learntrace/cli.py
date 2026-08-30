@@ -22,7 +22,6 @@ from learntrace.archive import main as archive_main
 from learntrace.archive import write_learning_record_result
 from learntrace.models import ObservableEvent
 from learntrace.parsers import discover_static_materials, parse_static_materials, write_parse_result
-from learntrace.reporting import LLMInferenceError
 
 _COMMANDS = frozenset({"adapt", "archive", "discover", "parse", "run"})
 _MAX_TOTAL_TRACE_EVENTS = 10_000
@@ -438,7 +437,7 @@ def _run_command(args: argparse.Namespace, parser: argparse.ArgumentParser) -> i
         )
         print(f"Wrote learning record: {archive_result.output_path}")
         return 0
-    except (FileNotFoundError, LLMInferenceError, OSError, ValueError) as exc:
+    except (FileNotFoundError, OSError, ValueError) as exc:
         parser.exit(1, f"{parser.prog}: error: {exc}\n")
 
 

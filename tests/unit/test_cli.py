@@ -9,8 +9,7 @@ from learntrace import cli as cli_module
 from learntrace.archive import build_parser
 from learntrace.cli import main
 from learntrace.models import MissingInfo, NodeType, ObservableEvent
-from learntrace.reporting import CandidateDraft, LLMInferenceError, StubCandidateInferencer
-from learntrace.reporting.llm import LLMConfig, OpenAIChatCandidateInferencer
+from learntrace.reporting import CandidateDraft
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SCENARIO_DIR = (
@@ -134,39 +133,6 @@ def test_main_reports_missing_records_without_traceback(
     captured = capsys.readouterr()
     assert "expected LearnTrace record JSON or a Task2 parse-result JSON" in captured.err
     assert "Traceback" not in captured.err
-
-
-def test_run_falls_back_after_llm_failure_without_traceback(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    capsys: CaptureFixture[str],
-) -> None:
-    inferencer = OpenAIChatCandidateInferencer(LLMConfig(api_key="test-key"))
-
-    def fail_inference(events: tuple[ObservableEvent, ...]) -> tuple[CandidateDraft, ...]:
-        raise LLMInferenceError("LLM response could not be parsed")
-
-    monkeypatch.setattr(inferencer, "infer", fail_inference)
-
-    monkeypatch.setattr(
-        "learntrace.reporting.llm.default_candidate_inferencer",
-        lambda: inferencer,
-    )
-    (tmp_path / "task.md").write_text("# Goal\n\nBuild safely.\n", encoding="utf-8")
-
-    exit_code = main(["run", str(tmp_path), "--no-git"])
-
-    assert exit_code == 0
-    captured = capsys.readouterr()
-    assert "Traceback" not in captured.err
-    archive = json.loads(
-        (tmp_path / ".learntrace" / "archive-records.json").read_text(encoding="utf-8")
-    )
-    assert [warning["code"] for warning in archive["warnings"]] == [
-        "llm_inference_failed",
-        "llm_fallback_to_stub",
-    ]
-    assert archive["candidate_inference_mode"] == "llm_stub_fallback"
 
 
 def test_parse_command_discovers_documents_and_writes_events(tmp_path: Path) -> None:
@@ -353,7 +319,7 @@ def test_run_with_confirmations_reuses_first_analysis_snapshot(
 
     inferencer = CountingInferencer()
     monkeypatch.setattr(
-        "learntrace.reporting.llm.default_candidate_inferencer",
+        "learntrace.reporting.pipeline.StubCandidateInferencer",
         lambda: inferencer,
     )
     (tmp_path / "task.md").write_text(
@@ -502,16 +468,11 @@ def test_cli_merges_shorthand_confirmation_file(tmp_path: Path) -> None:
 
 def test_run_warns_when_export_produces_zero_events(
     tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
     capsys: CaptureFixture[str],
 ) -> None:
     """Requesting an OpenCode export that adapts to zero events must emit a
     stderr warning so a silently-empty trace archive is not mistaken for a
     successful trace import."""
-    monkeypatch.setattr(
-        "learntrace.reporting.llm.default_candidate_inferencer",
-        lambda: StubCandidateInferencer(),
-    )
     (tmp_path / "task.md").write_text(
         "# Goal\n\nImplement the parser safely.\n",
         encoding="utf-8",
@@ -543,17 +504,12 @@ def test_run_warns_when_export_produces_zero_events(
 
 def test_run_warns_when_opencode_zero_events_even_if_other_host_parsed(
     tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
     capsys: CaptureFixture[str],
 ) -> None:
     """When OpenCode yields 0 events but a co-requested host (Claude Code)
     parses successfully, the OpenCode zero-events warning must still appear.
     The warning is scoped to OpenCode's own adapter status, not the merged
     multi-host status (which would hide a silently-empty OpenCode export)."""
-    monkeypatch.setattr(
-        "learntrace.reporting.llm.default_candidate_inferencer",
-        lambda: StubCandidateInferencer(),
-    )
     (tmp_path / "task.md").write_text(
         "# Goal\n\nImplement the parser safely.\n",
         encoding="utf-8",
@@ -592,15 +548,10 @@ def test_run_warns_when_opencode_zero_events_even_if_other_host_parsed(
 
 def test_run_does_not_warn_when_only_non_opencode_host_requested(
     tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
     capsys: CaptureFixture[str],
 ) -> None:
     """When OpenCode is not requested at all and only a co-host (Claude Code)
     is requested/authorized, no OpenCode zero-events warning must be emitted."""
-    monkeypatch.setattr(
-        "learntrace.reporting.llm.default_candidate_inferencer",
-        lambda: StubCandidateInferencer(),
-    )
     (tmp_path / "task.md").write_text(
         "# Goal\n\nImplement the parser safely.\n",
         encoding="utf-8",

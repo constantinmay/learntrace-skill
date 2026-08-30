@@ -185,10 +185,8 @@ classifying evidence or writing the portfolio.
   as `/api` and `/v1` are preserved, while ambiguous root-relative strings such
   as `/health` or `/docs/x` may be redacted as absolute paths.
 
-Remote LLM inference is opt-in and requires both `LEARNTRACE_LLM_API_KEY` and
-`LEARNTRACE_LLM_ENABLED=1`. Only event id, kind, sanitized summary, and time are
-sent; source references, notes, and repository code stay local. Empty or invalid
-LLM results fall back to deterministic local inference and remain visibly
-flagged in the archive. `LEARNTRACE_LLM_MAX_TOKENS` optionally controls the
-response budget (default `8000`, range `256`–`65536`); a length-limited or
-reasoning-only response is reported before fallback.
+The CLI is single-LLM: it never calls a remote model. Candidate inference is
+local, deterministic, and offline — the same input always produces the same
+archive. You (the host agent) are the only LLM in the loop; any deeper,
+LLM-based interpretation of the student's work belongs to you, not to the CLI.
+No credentials or `LEARNTRACE_*` environment variables are read.

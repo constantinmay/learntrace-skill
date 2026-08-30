@@ -39,7 +39,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 SCHEMA_DIR = REPO_ROOT / "src" / "learntrace" / "schemas" / "v0"
 SCENARIOS_DIR = REPO_ROOT / "tests" / "fixtures" / "golden" / "scenarios"
 SCENARIO_DIRS = tuple(sorted(path for path in SCENARIOS_DIR.iterdir() if path.is_dir()))
-DEMO_DIR = REPO_ROOT / "examples" / "task4-llm-demo"
+DEMO_DIR = REPO_ROOT / "examples" / "task4-demo"
 
 
 def _load_json(path: Path) -> Any:
@@ -905,6 +905,23 @@ def test_render_markdown_reports_stub_inference_mode() -> None:
 
     assert "候选生成模式：`stub`" in markdown
     assert "本次候选由本地确定性规则生成" in markdown
+
+
+def test_render_markdown_flags_legacy_remote_llm_archive_mode() -> None:
+    """旧档案的 llm/llm_stub_fallback 模式重渲染时须标注历史，且不会触发远程调用。"""
+    validator = ContractValidator(schema_dir=SCHEMA_DIR)
+    events, confirmations = load_project_records(
+        SCENARIOS_DIR / "05-add-tests-confirmed",
+        validator=validator,
+    )
+    base = build_archive_bundle(events, confirmations=confirmations, validator=validator)
+    for legacy_mode in ("llm", "llm_stub_fallback"):
+        bundle = replace(base, inference_mode=legacy_mode)
+        markdown = render_markdown(bundle, source_dir=SCENARIOS_DIR / "05-add-tests-confirmed")
+
+        assert "历史记录" in markdown
+        assert f"（候选模式：`{legacy_mode}`）" in markdown
+        assert "重新渲染不会重新发起任何远程调用" in markdown
 
 
 def test_symlink_json_is_skipped(tmp_path: Path) -> None:

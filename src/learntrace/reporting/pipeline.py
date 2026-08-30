@@ -238,17 +238,11 @@ def _is_commit_overview(summary: str) -> bool:
 
 
 class StubCandidateInferencer:
-    """Default stub inferencer.
+    """Default candidate inferencer: local deterministic rules only.
 
-
-
-
-
-    The logic is deterministic and pluggable so a real LLM-backed adapter can be
-
-
-    substituted later without changing the Task 4 pipeline.
-
+    The CLI performs no remote LLM inference. Deeper, LLM-based understanding
+    of a student's work belongs to the host agent; this inferencer keeps archive
+    output deterministic, offline, and reproducible.
 
     """
 
@@ -1234,45 +1228,9 @@ def build_archive_bundle(
 
     sorted_confirmations = _dedupe_confirmations(confirmations)
 
-    if inferencer is not None:
-        candidate_inferencer = inferencer
-
-    else:
-        from learntrace.reporting.llm import default_candidate_inferencer
-
-        candidate_inferencer = default_candidate_inferencer()
-
-    from learntrace.reporting.llm import OpenAIChatCandidateInferencer
-
+    candidate_inferencer = inferencer if inferencer is not None else StubCandidateInferencer()
     configured_inference_mode = str(getattr(candidate_inferencer, "inference_mode", "custom"))
-    supports_llm_fallback = isinstance(candidate_inferencer, OpenAIChatCandidateInferencer)
-    inference_failure_warnings: tuple[ArchiveWarning, ...] = ()
-    try:
-        inferred_drafts = candidate_inferencer.infer(deduped_events)
-    except Exception as exc:
-        # Keep ordinary custom-inferencer failures visible. Only the explicit
-        # remote LLM adapter receives the documented local fallback.
-        from learntrace.reporting.llm import LLMInferenceError
-
-        if not supports_llm_fallback or not isinstance(exc, LLMInferenceError):
-            raise
-        inferred_drafts = ()
-        failure_code = str(getattr(exc, "code", "llm_inference_failed"))
-        failure_detail = str(exc).strip()
-        inference_failure_warnings = (
-            ArchiveWarning(
-                code=failure_code,
-                source="candidate_inference",
-                message=(
-                    "LLM 候选推断失败；已改用本地确定性规则。"
-                    + (f" 原因：{failure_detail}" if failure_detail else "")
-                ),
-            ),
-        )
-
-    fallback_used = supports_llm_fallback and not inferred_drafts and bool(deduped_events)
-    if fallback_used:
-        inferred_drafts = StubCandidateInferencer().infer(deduped_events)
+    inferred_drafts = candidate_inferencer.infer(deduped_events)
     unique_drafts, duplicate_count = _dedupe_candidate_drafts(inferred_drafts)
     drafts, truncated_count = _limit_candidate_drafts(unique_drafts)
 
@@ -1281,16 +1239,7 @@ def build_archive_bundle(
         getattr(candidate_inferencer, "inference_warnings", None),
     )
     inference_warnings = tuple(warning_provider()) if callable(warning_provider) else ()
-    effective_warnings = (*warnings, *inference_failure_warnings, *inference_warnings)
-    if fallback_used:
-        effective_warnings = (
-            *effective_warnings,
-            ArchiveWarning(
-                code="llm_fallback_to_stub",
-                source="candidate_inference",
-                message="LLM 未提供可用候选；本次候选已由本地确定性规则补充。",
-            ),
-        )
+    effective_warnings = (*warnings, *inference_warnings)
     if duplicate_count:
         effective_warnings = (
             *effective_warnings,
@@ -1320,7 +1269,7 @@ def build_archive_bundle(
         candidates=candidates,
         confirmations=sorted_confirmations,
         warnings=_dedupe_warnings(effective_warnings),
-        inference_mode=("llm_stub_fallback" if fallback_used else configured_inference_mode),
+        inference_mode=configured_inference_mode,
         task2_meta=dict(task2_meta) if task2_meta is not None else {},
     )
 
