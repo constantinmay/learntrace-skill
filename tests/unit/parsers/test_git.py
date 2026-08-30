@@ -14,13 +14,14 @@ from learntrace.cli import main
 from learntrace.models import ContractValidator, SourceType
 from learntrace.parsers import (
     export_git_evidence,
+    list_git_authors,
     parse_git_history,
+    read_git_commit_text,
     write_git_file,
     write_git_history_index,
     write_git_tree,
 )
 from learntrace.parsers import git as git_module
-from learntrace.parsers import list_git_authors, parse_git_history, read_git_commit_text
 
 
 class _MonkeyPatch(Protocol):

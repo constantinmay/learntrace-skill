@@ -1,0 +1,60 @@
+{
+  "layer": "narrative_payload",
+  "variant": "working",
+  "meta": {
+    "project": "<project name>",
+    "evidence_window": "<date or date range>",
+    "status": "未确认版",
+    "pending_questions": 0,
+    "evidence_gaps": 1
+  },
+  "overview": {
+    "text": "<fact-based project overview>",
+    "citations": ["<event-id-from-authorized-archive>"]
+  },
+  "stages": [
+    {
+      "stage_id": "stage-1",
+      "title": "<Git development stage>",
+      "goal": "<recorded goal or scope>",
+      "key_changes": ["<fact-based change>"],
+      "citations": ["<git-event-id-from-authorized-archive>"]
+    }
+  ],
+  "turning_points": [],
+  "ai_collaboration": {
+    "coverage": "<authorized trace coverage; do not imply full-project coverage>",
+    "observed_touchpoints": [
+      {
+        "touchpoint_id": "touchpoint-001",
+        "title": "<directly observed question or tool error>",
+        "body": "<describe only what the event records>",
+        "citations": ["<trace-event-id-from-authorized-archive>"],
+        "derived": false
+      }
+    ],
+    "work_segments": [
+      {
+        "segment_id": "segment-001",
+        "title": "<human-readable work segment>",
+        "summary": "<conservative summary of observable activity>",
+        "coverage": "<date or authorized session range>",
+        "activity_shape": ["read", "search"],
+        "file_focus": ["<redacted or project-relative path>"],
+        "command_categories": ["inspect_files"],
+        "citations": ["<trace-event-id-from-authorized-archive>"],
+        "derived": true,
+        "derivation": "deterministic_trace_grouping",
+        "deniable": true
+      }
+    ],
+    "boundary": "<state missing coverage and that trace-to-commit causation is not established>"
+  },
+  "verification": ["<recorded verification or 未记录>"],
+  "reflection": {
+    "status": "student_authored_only",
+    "text": null
+  },
+  "takeaways": [],
+  "evidence_gaps": ["<what the authorized evidence cannot establish>"]
+}

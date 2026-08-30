@@ -236,7 +236,7 @@ tests/unit/            单元测试
 tests/contract/        Schema 与金标样例回归
 tests/integration/     跨模块联调测试
 tests/fixtures/        脱敏测试材料
-examples/              可公开演示项目
+examples/              可公开演示项目与报告模板（见 `examples/report-template/`）
 docs/                  项目说明与架构文档
 local/                 不进入 Git 的本地材料
 ```

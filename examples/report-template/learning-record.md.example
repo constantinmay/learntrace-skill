@@ -1,0 +1,70 @@
+# <Project name> - Learning record
+
+| Project | Evidence window | Status | Evidence boundary |
+|---|---|---|---|
+| <project name> | <date or date range> | 未确认版 | <short boundary statement> |
+
+> This report is built from explicitly authorized evidence. It describes recorded facts and conservatively derived work segments. It does not turn automatic grouping into a learning conclusion.
+
+## 项目概述
+
+<事实性项目概述>[^overview]
+
+## 开发轨迹
+
+| 阶段 | 关键结果 |
+|---|---|
+| 1 · <stage title> | <recorded result>[^stage-1] |
+
+## 阶段详情
+
+### 阶段 1 · <stage title>
+
+- 目标或范围：<recorded goal or scope>
+- 关键变化：<recorded change>[^stage-1]
+- 证据限制：<未记录 or evidence gap>
+
+## AI 协作过程
+
+本节只描述本人明确授权范围内的可观察工作过程；不代表整个项目，也不建立 AI 轨迹与 Git 提交的因果关系。
+
+### 工作段 1：<human-readable title>
+
+- 这段在做什么：<conservative activity summary>
+- 覆盖范围：<authorized date or session range>
+- 主要活动：读取 -> 搜索
+- 文件焦点：<project-relative or redacted paths>
+- 命令类别：查看文件
+- 结果与限制：<what is and is not recorded>
+- 依据：授权轨迹记录[^segment-001]
+- 状态：自动整理，可由本人否认或修改。
+
+工作段是确定性轨迹整理，不是宿主 Agent 的自然语言摘要。正文不展示完整命令、补丁正文、工具输出正文或工具调用次数。
+
+## 验证与质量
+
+- <recorded test or verification fact>
+- <未记录 when no output or log establishes the result>
+
+## 学习收获
+
+- 未记录；本节内容由本人填写或确认，系统不代写。
+
+## 个人反思
+
+- 未记录；本节内容由本人填写。
+
+## 证据边界
+
+- <state the files, sessions, dates, or outputs that are not covered>
+- <state what cannot be concluded from the evidence>
+
+## 附录
+
+<Optional denied or unresolved material. Keep it out of body conclusions.>
+
+---
+
+[^overview]: <authorized document event ID or source reference>
+[^stage-1]: <authorized Git event ID or source reference>
+[^segment-001]: <authorized trace event ID or source reference>
