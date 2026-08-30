@@ -1,6 +1,6 @@
 {
-  "_comment": "Git development-stage presentation sketch for sample B, additive to schema v0. This multi-author sketch describes only the student's Git stages after author-scope filtering: first-parent ordering, merge anchors, side-commit and replay deduplication, collaboration boundaries, and explicit history truncation. It is not the trace message/turn/episode aggregation schema and does not assert trace-to-commit causation.",
-  "schema_note": "Draft target for the Git stage layer. Additive to schema v0; no existing fields changed. Names may change before implementation. Trace work segments remain a separate narrative-presentation concern.",
+  "_comment": "Target structure sketch for sample B (multi-branch, PR merges, truncated history), additive to schema v0. REVISED for multi-author reality: the project is a 3-person collaboration; this sketch assumes an author-scope filter applied at parse/consent time, so stages contain only the student's own commits. Demonstrates: author_scope declaration, first-parent mainline ordering, merge-boundary segmentation, side-commit folding, rebase-duplicate folding via content fingerprint, collaboration-boundary annotation without attribution, and explicit truncation handling (stage 0).",
+  "schema_note": "Draft target for the stage layer. Additive to schema v0; no existing fields changed. Names may change before implementation.",
   "author_scope": {
     "mode": "author",
     "author": "Liushenwuzhu-Alpaca",

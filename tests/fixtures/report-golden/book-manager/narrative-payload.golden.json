@@ -44,8 +44,8 @@
     },
     {
       "stage_id": "stage-5",
-      "title": "修复与文档收尾",
-      "goal": "修复缺陷并完善文档",
+      "title": "文档收尾",
+      "goal": "完善项目文档",
       "key_changes": ["README 收尾"],
       "citations": ["evt-git-40601e52098fdf155725f2fc5581844b2e4514ef"]
     }
@@ -59,72 +59,38 @@
     }
   ],
   "ai_collaboration": {
-    "coverage": "授权轨迹仅覆盖 2026-08-10 一段约 40 分钟的集中会话；其余开发期间无授权轨迹。",
-    "observed_touchpoints": [
+    "coverage": "授权轨迹仅覆盖 2026-08-10 一段约 40 分钟的集中会话;其余开发期间无授权轨迹。",
+    "shape": "命令行操作为主,辅以文件写入与编辑;含待办清单管理行为(计划驱动)。",
+    "focus": "前端界面文件(App.tsx、index.css、components/)与 backend/handlers.go;另有若干项目目录外路径。",
+    "episodes": [
       {
-        "touchpoint_id": "touchpoint-question",
-        "title": "AI 主动提问",
-        "body": "会话开始处有一次 question 工具交互，提问内容未授权保留。",
+        "label": "AI 主动提问",
+        "body": "会话开始处一次 question 工具交互,提问内容未授权保留。",
         "citations": ["evt-trace-e4ae6591a8636db6"],
         "derived": false
       },
       {
-        "touchpoint_id": "touchpoint-tool-error",
-        "title": "项目外路径编辑报错",
-        "body": "一次 edit 以错误结束，路径在项目目录之外；工具故障属于系统噪声。",
+        "label": "项目外路径编辑报错",
+        "body": "一次 edit 以错误结束,路径在项目目录之外;工具故障属系统噪声。",
         "citations": ["evt-trace-6a8153ce80b2ad9c"],
         "derived": false
       },
       {
-        "touchpoint_id": "touchpoint-runtime-check",
-        "title": "命令行运行操作",
-        "body": "调试期间记录了 curl、go、node 的运行操作；命令输出未授权保留。",
+        "label": "命令行验证前后端",
+        "body": "调试期间通过命令行分别调用 curl、go、node 验证前后端行为。",
         "citations": ["evt-trace-1304434438911dd0", "evt-trace-ed8a63dcc4a57ffb", "evt-trace-088825be1096dd27"],
         "derived": false
-      }
-    ],
-    "work_segments": [
-      {
-        "segment_id": "segment-structure",
-        "title": "了解项目结构",
-        "summary": "读取和整理项目文件，形成项目结构概览；具体目标和判断未记录。",
-        "coverage": "2026-08-10（授权会话）",
-        "activity_shape": ["read", "search"],
-        "file_focus": ["App.tsx", "index.css", "components/", "backend/handlers.go"],
-        "command_categories": ["inspect_files"],
-        "citations": ["evt-trace-ec0526f401fc177f", "evt-trace-b729286dc0a2751b", "evt-trace-ac15850717458bff"],
-        "derived": true,
-        "derivation": "deterministic_trace_grouping",
-        "deniable": true
       },
       {
-        "segment_id": "segment-integration",
-        "title": "界面与接口联调",
-        "summary": "围绕前端界面和后端接口进行读取、编辑与运行操作；操作与提交之间不建立对应关系。",
-        "coverage": "2026-08-10（授权会话）",
-        "activity_shape": ["read", "edit", "run"],
-        "file_focus": ["App.tsx", "index.css", "backend/handlers.go"],
-        "command_categories": ["inspect_files", "edit_files", "run_commands"],
+        "label": "插曲·界面联调",
+        "body": "该会话以前端界面搭建为主线,边写边调;后端接口改动集中在书籍创建逻辑附近。",
         "citations": ["evt-trace-ec0526f401fc177f", "evt-trace-b729286dc0a2751b", "evt-trace-ac15850717458bff"],
         "derived": true,
-        "derivation": "deterministic_trace_grouping",
-        "deniable": true
-      },
-      {
-        "segment_id": "segment-check",
-        "title": "运行与检查",
-        "summary": "记录了 go、node、curl 的运行操作；输出未记录，不能据此判断运行结果。",
-        "coverage": "2026-08-10（授权会话）",
-        "activity_shape": ["run"],
-        "file_focus": ["backend/", "frontend/"],
-        "command_categories": ["run_commands", "http_request"],
-        "citations": ["evt-trace-1304434438911dd0", "evt-trace-ed8a63dcc4a57ffb", "evt-trace-088825be1096dd27"],
-        "derived": true,
-        "derivation": "deterministic_trace_grouping",
+        "derivation": "host_agent_episode_digest",
         "deniable": true
       }
     ],
-    "boundary": "不建立轨迹操作与 Git 提交的对应关系；完整原子记录见机器审计档案。"
+    "boundary": "不建立轨迹操作与 Git 提交的对应关系;完整原子记录见机器审计档案。"
   },
   "verification": [
     "未发现测试日志与运行输出(证据缺口 1)",
@@ -134,6 +100,6 @@
   "takeaways": [],
   "evidence_gaps": [
     "未发现测试日志与运行输出",
-    "修复前调试窗口中观察到的具体问题未记录"
+    "调试窗口中观察到的具体问题未记录"
   ]
 }

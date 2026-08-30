@@ -78,65 +78,32 @@
     }
   ],
   "ai_collaboration": {
-    "coverage": "授权轨迹覆盖 2026-05-19 至 2026-06-02；开工后前约两周无授权轨迹。仅代表已授权会话。",
-    "observed_touchpoints": [
+    "coverage": "授权轨迹覆盖 2026-05-19 至 2026-06-02;开工后前约两周无授权轨迹。仅代表已授权会话。",
+    "shape": "命令行操作为主,辅以文件读取与编辑;含任务拆解与待办管理行为(计划驱动)。",
+    "focus": "项目根文档(README、PLAN、pyproject)、main.py、src/ 各模块与可视化包,与阶段 3-4 工作面一致。",
+    "episodes": [
       {
-        "touchpoint_id": "touchpoint-plan-errors",
-        "title": "编排计划文件编辑报错",
-        "body": "Docker 编排计划文件的 edit 操作连续报错，随后改用检索和读取定位文件；本人澄清为工具问题，属于系统噪声。",
+        "label": "编排计划文件编辑连续报错",
+        "body": "Docker 编排计划文件的 edit 连续报错 5 次,随后改用检索/读取定位后继续;本人澄清为 agent 工具问题,属系统噪声。",
         "citations": ["evt-trace-9cdd0094057575c0", "evt-trace-ef387c93fee4dc09", "evt-trace-f236bf3db1d1a386", "evt-trace-b20143bd0a3da858", "evt-trace-164f0366491470ff"],
         "derived": false
       },
       {
-        "touchpoint_id": "touchpoint-questions",
-        "title": "AI 主动提问",
-        "body": "会话中有两次 question 工具交互，提问内容未授权保留。",
+        "label": "AI 两次主动提问",
+        "body": "question 工具两次交互,提问内容未授权保留。",
         "citations": ["evt-trace-76e0909519035e72", "evt-trace-b1becb39ae829723"],
         "derived": false
-      }
-    ],
-    "work_segments": [
-      {
-        "segment_id": "segment-decomposition",
-        "title": "项目结构与任务拆解",
-        "summary": "在已授权会话中读取项目资料并拆解后续工作；项目早期的初始化和模型分析不在授权范围内。",
-        "coverage": "2026-05-19 至 2026-06-02（授权会话）",
-        "activity_shape": ["read", "search", "plan"],
-        "file_focus": ["README", "PLAN", "pyproject", "main.py", "src/"],
-        "command_categories": ["inspect_files", "plan_work"],
-        "citations": ["evt-trace-9cdd0094057575c0", "evt-trace-76e0909519035e72"],
-        "derived": true,
-        "derivation": "deterministic_trace_grouping",
-        "deniable": true
       },
       {
-        "segment_id": "segment-container-demo",
-        "title": "Docker 容器化与演示准备",
-        "summary": "围绕编排计划和演示约束进行读取、编辑与检索；工具报错后的处理方式可观察，但具体判断未记录。",
-        "coverage": "2026-05-19 至 2026-06-02（授权会话）",
-        "activity_shape": ["read", "edit", "search"],
-        "file_focus": ["Docker", "compose", "README", "PLAN"],
-        "command_categories": ["inspect_files", "edit_files", "search_files"],
+        "label": "插曲·Docker 容器化",
+        "body": "目标是支撑一键演示;AI 先起草编排方案,本人在计划文件上多轮修改;工具报错改为检索定位后继续;最终完成三容器编排与演示须知。",
         "citations": ["evt-trace-9cdd0094057575c0", "evt-trace-ef387c93fee4dc09", "evt-trace-f236bf3db1d1a386"],
         "derived": true,
-        "derivation": "deterministic_trace_grouping",
-        "deniable": true
-      },
-      {
-        "segment_id": "segment-integration-check",
-        "title": "集成与验证",
-        "summary": "记录了项目文件和集成相关操作；测试日志无法识别，不能据此判断验证结果。",
-        "coverage": "2026-05-19 至 2026-06-02（授权会话）",
-        "activity_shape": ["read", "edit", "run"],
-        "file_focus": ["src/", "Docker", "logs/agent.log"],
-        "command_categories": ["edit_files", "run_commands", "inspect_logs"],
-        "citations": ["evt-trace-b20143bd0a3da858", "evt-trace-164f0366491470ff", "evt-test-26adddd592d1fd44"],
-        "derived": true,
-        "derivation": "deterministic_trace_grouping",
+        "derivation": "host_agent_episode_digest",
         "deniable": true
       }
     ],
-    "boundary": "轨迹与 Git 提交之间不建立对应关系；完整原子记录与摘要依据见机器审计档案。"
+    "boundary": "轨迹与 Git 提交之间不建立对应关系;完整原子记录与摘要依据见机器审计档案。"
   },
   "verification": [
     "logs/agent.log(204 行)格式无法识别,不作为测试证据",
