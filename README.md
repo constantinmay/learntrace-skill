@@ -118,7 +118,9 @@ object ID、实际范围、`reached_eof` 和下一页 continuation。限制的�
 
 Git 历史默认完整读取，不使用任意条数上限。`--max-commits` 仅是调用方显式启用
 的侧支细节预算；first-parent 主线和所有 merge commit 始终保留，被省略内容会
-形成聚合事实和结构化统计。
+形成聚合事实和结构化统计。此时 `parse` 不会隐式生成完整历史索引；warning 中的
+`history_index_status=requires_generation` 表示必须先执行其中给出的
+`learntrace git-index <project>`，并核对索引 metadata 的 `head` 后再回读。
 完整历史会随仓库提交数量增加运行时间和本地 `history.jsonl` 体积，但不会要求
 Agent 一次读入全部内容；Agent 应先检索索引，再按提交和文件分页回读。
 

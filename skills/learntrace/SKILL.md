@@ -90,6 +90,10 @@ If history metadata reports `repository_shallow=true` or `history_complete=false
 the oldest record only the local visible boundary; do not describe it as initialization.
 When aggregate events omit side-branch detail, search the complete
 `.learntrace/evidence/git/history.jsonl` index and continue from the selected commit.
+If the warning reports `history_index_status=requires_generation`, the path is an
+expected output, not an existing locator: run the supplied
+`learntrace git-index <project>` command first, then verify that the first metadata
+record's `head` equals `history_index_expected_head` before relying on the index.
 
 The export directory contains local evidence locators, a complete hunk manifest, and
 bounded previews. Source bodies remain in Git and are read through `git-file`; the

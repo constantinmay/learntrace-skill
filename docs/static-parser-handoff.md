@@ -119,7 +119,10 @@ CLI/Skill 应先调用
 - 二进制、非 UTF-8、LFS 和 submodule 保留路径、对象及不可用原因。非 UTF-8
   文本页保留 base64 原始字节；LFS pointer 只报告对象 ID 与声明大小；
 - 浅克隆保留本地可见提交并明确 `history_complete=false` 和浅边界；聚合事件省略的
-  提交仍可从完整 `history.jsonl` 定位，不能把本地边界描述成项目初始化；
+  提交仍可从完整 `history.jsonl` 定位，不能把本地边界描述成项目初始化；若 warning
+  标记 `history_index_status=requires_generation`，该路径尚未由本次 parse 生成，宿主
+  Agent 必须先运行 `learntrace git-index <project>`，并核对 metadata 的 `head` 与
+  `history_index_expected_head` 一致；
 - merge commit 固定相对第一父提交比较，避免多父提交产生重复文件事实；
 - 默认使用轻量的 `-M -C`；只有调用方设置 `find_copies_harder=True` 时才扫描未修改文件寻找复制源。强复制检测可能让大型提交超时，普通分析不应默认开启；
 - `document`：Markdown 按章节和完整段落/代码块分块，TXT 按段落生成事件；
