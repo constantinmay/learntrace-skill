@@ -12,6 +12,7 @@ from typing import TypeGuard, cast
 from urllib.parse import quote
 
 from learntrace.adapters._jsonl import WarningLog, iter_jsonl_records
+from learntrace.adapters.aggregation import segment_trace_events
 from learntrace.adapters.types import (
     TraceAdapterResult,
     TraceInputStatus,
@@ -406,10 +407,12 @@ def adapt_claude_code_export(
     events.sort(key=_event_sort_key)
     issues = _sorted_issues(warnings.finalize())
     result_status = TraceInputStatus.PARSED if events else TraceInputStatus.AUTHORIZED_NOT_FOUND
+    event_tuple = tuple(events)
     return TraceAdapterResult(
         status=result_status,
-        events=tuple(events),
+        events=event_tuple,
         warnings=tuple(issues),
+        work_segments=segment_trace_events(event_tuple),
     )
 
 
@@ -496,6 +499,7 @@ def adapt_claude_code_exports(
         status=(TraceInputStatus.PARSED if events else TraceInputStatus.AUTHORIZED_NOT_FOUND),
         events=events,
         warnings=tuple(_sorted_issues(warnings.finalize())),
+        work_segments=segment_trace_events(events),
     )
 
 

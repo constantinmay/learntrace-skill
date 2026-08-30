@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import TypeGuard, cast
 from urllib.parse import quote
 
+from learntrace.adapters.aggregation import segment_trace_events
 from learntrace.adapters.types import (
     TraceAdapterResult,
     TraceInputStatus,
@@ -388,10 +389,12 @@ def adapt_opencode_export(
     events.sort(key=_event_sort_key)
     warnings.sort(key=lambda issue: (issue.location, issue.code, issue.message))
     result_status = TraceInputStatus.PARSED if events else TraceInputStatus.AUTHORIZED_NOT_FOUND
+    event_tuple = tuple(events)
     return TraceAdapterResult(
         status=result_status,
-        events=tuple(events),
+        events=event_tuple,
         warnings=tuple(warnings),
+        work_segments=segment_trace_events(event_tuple),
     )
 
 
@@ -478,4 +481,5 @@ def adapt_opencode_exports(
         status=(TraceInputStatus.PARSED if events else TraceInputStatus.AUTHORIZED_NOT_FOUND),
         events=events,
         warnings=tuple(warnings),
+        work_segments=segment_trace_events(events),
     )

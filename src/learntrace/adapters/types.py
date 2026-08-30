@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any
 
+from learntrace.adapters.aggregation import TraceWorkSegment
 from learntrace.models import ObservableEvent
 
 
@@ -31,12 +32,21 @@ class TraceParseIssue:
 class TraceAdapterResult:
     """Task 3's local batch container.
 
-    Only ``events`` is part of the stable cross-task data contract.
+    ``events`` remains the atomic cross-task contract. ``work_segments`` is an
+    additive deterministic index for consumers that want contiguous work
+    periods; old callers can omit it and continue to read the result.
     """
 
     status: TraceInputStatus
     events: tuple[ObservableEvent, ...] = ()
     warnings: tuple[TraceParseIssue, ...] = ()
+    work_segments: tuple[TraceWorkSegment, ...] = ()
+
+    @property
+    def segments(self) -> tuple[TraceWorkSegment, ...]:
+        """Short alias retained for consumers that call them ``segments``."""
+
+        return self.work_segments
 
 
 def event_merge_key(event: ObservableEvent) -> dict[str, Any]:

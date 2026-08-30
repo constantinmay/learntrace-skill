@@ -136,6 +136,9 @@ Agent 一次读入全部内容；Agent 应先检索索引，再按提交和文�
 - `.learntrace/learning-questions.md`：只保存需要学生本人确认、补充或否认
   的问题。
 
+授权轨迹如何按工作过程分段、怎样归类命令以及宿主 Agent 如何写可否认摘要，见
+[AI 轨迹分段说明](docs/trace-segmentation.md)。
+
 如需纳入 OpenCode 轨迹，首次运行时显式提供导出与授权：
 
 ```powershell

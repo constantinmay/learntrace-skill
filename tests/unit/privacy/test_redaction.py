@@ -98,6 +98,9 @@ def test_paths_are_normalized_without_leaking_host_details(
         ("uv run pytest tests/unit -q", "uv run pytest"),
         ("python scripts/check.py --token secret", "python"),
         ("TOKEN=secret git status && echo private", "git status"),
+        ("cd frontend && npm run build -- --mode=prod", "npm run build"),
+        ("pip install -r requirements.txt", "pip install"),
+        ("npm install --save-dev vite", "npm install"),
         ("", "unknown-command"),
     ],
 )

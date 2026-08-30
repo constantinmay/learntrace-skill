@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 import shlex
+from enum import StrEnum
 from pathlib import Path
 
 _REDACTED = "[REDACTED]"
@@ -130,11 +131,31 @@ def _command_tokens(value: str) -> list[str]:
 
 
 def summarize_command(value: str) -> str:
-    """Keep only a conservative executable/subcommand label, never arguments."""
+    """Keep a conservative executable/subcommand label, never arguments.
 
-    tokens = _command_tokens(value)
-    while tokens and _ENV_ASSIGNMENT_RE.fullmatch(tokens[0]):
-        tokens.pop(0)
+    A shell prefix such as ``cd frontend &&`` is navigation rather than the
+    operation we want to describe, so a later command in the chain may be
+    selected.  Only a small allow-list of safe subcommands is retained; all
+    other arguments (including paths and option values) are discarded.
+    """
+
+    # Choose the first non-navigation command in a simple shell chain.  This
+    # lets the segment classifier recognize ``cd frontend && npm run build``
+    # without persisting ``frontend`` or any later arguments.  Quoted shell
+    # operators are uncommon in adapter input and remain part of their token.
+    command_parts = re.split(r"(?:&&|\|\||[;|])", value)
+    tokens: list[str] = []
+    for part in command_parts:
+        candidate = _command_tokens(part)
+        while candidate and _ENV_ASSIGNMENT_RE.fullmatch(candidate[0]):
+            candidate.pop(0)
+        if not candidate:
+            continue
+        executable_candidate = candidate[0].replace("\\", "/").rsplit("/", maxsplit=1)[-1]
+        if executable_candidate.casefold() in {"cd", "pushd", "popd"} and len(command_parts) > 1:
+            continue
+        tokens = candidate
+        break
     if not tokens:
         return "unknown-command"
 
@@ -148,10 +169,139 @@ def summarize_command(value: str) -> str:
         subcommand = tokens[1].casefold()
         if _SAFE_EXECUTABLE_RE.fullmatch(subcommand) and not subcommand.startswith("-"):
             return f"git {subcommand}"
-    if executable == "uv" and len(tokens) > 2 and tokens[1:3] == ["run", "pytest"]:
+    if (
+        executable == "uv"
+        and len(tokens) > 2
+        and [token.casefold() for token in tokens[1:3]]
+        == [
+            "run",
+            "pytest",
+        ]
+    ):
         return "uv run pytest"
+    if executable == "uv" and len(tokens) > 1:
+        if tokens[1].casefold() == "sync":
+            return "uv sync"
+        if len(tokens) > 2 and tokens[1].casefold() == "pip" and tokens[2].casefold() == "install":
+            return "uv pip install"
+    if executable in {"pip", "pip3", "pipx"} and len(tokens) > 1:
+        subcommand = tokens[1].casefold()
+        if subcommand in {"install", "sync"}:
+            return f"{executable} {subcommand}"
     if executable in {"npm", "pnpm", "yarn"} and len(tokens) > 1:
         subcommand = tokens[1].casefold()
+        if subcommand in {"install", "i", "add", "ci"}:
+            return f"{executable} install"
+        if subcommand == "run" and len(tokens) > 2:
+            script = tokens[2].casefold()
+            if script in {"test", "build", "bundle", "deploy", "release"}:
+                return f"{executable} run {script}"
         if subcommand in {"test", "run"}:
             return f"{executable} {subcommand}"
+    if (
+        executable in {"make", "cargo", "go", "mvn", "gradle", "docker", "podman"}
+        and len(tokens) > 1
+    ):
+        subcommand = tokens[1].casefold()
+        if subcommand in {
+            "test",
+            "build",
+            "package",
+            "assemble",
+            "install",
+            "compose",
+            "push",
+            "get",
+            "add",
+        }:
+            return f"{executable} {subcommand}"
     return executable
+
+
+class CommandCategory(StrEnum):
+    """Small, human-readable command groups used by work-segment summaries."""
+
+    INSTALL = "装依赖"
+    TEST = "跑测试"
+    BUILD_DEPLOY = "构建部署"
+    INSPECT = "查文件"
+    OTHER = "其他"
+
+
+def classify_command(value: str) -> CommandCategory:
+    """Classify a command without retaining its arguments or paths.
+
+    Classification is intentionally conservative and deterministic.  It is
+    applied to the already minimized command label when possible (for example
+    ``uv run pytest`` or ``git status``), but also accepts a raw command for
+    callers that classify before minimization.  When several shell commands
+    are chained, the first matching category by the documented priority is
+    returned; no command text is returned by this helper.
+    """
+
+    if not value.strip():
+        return CommandCategory.OTHER
+    lowered = value.casefold().strip()
+    direct_labels = {
+        CommandCategory.INSTALL.value.casefold(): CommandCategory.INSTALL,
+        CommandCategory.TEST.value.casefold(): CommandCategory.TEST,
+        CommandCategory.BUILD_DEPLOY.value.casefold(): CommandCategory.BUILD_DEPLOY,
+        CommandCategory.INSPECT.value.casefold(): CommandCategory.INSPECT,
+        CommandCategory.OTHER.value.casefold(): CommandCategory.OTHER,
+    }
+    if lowered in direct_labels:
+        return direct_labels[lowered]
+    tokens = _command_tokens(lowered)
+    while tokens and _ENV_ASSIGNMENT_RE.fullmatch(tokens[0]):
+        tokens.pop(0)
+    compact = " ".join(tokens)
+
+    # Dependency installation/update commands.
+    if (
+        re.search(r"\b(?:pip|pip3|pipx)\s+(?:install|sync)", compact)
+        or re.search(r"\buv\s+(?:pip\s+)?(?:install|sync)", compact)
+        or re.search(r"\b(?:npm|pnpm|yarn)\s+(?:install|i|add|ci)\b", compact)
+        or re.search(r"\b(?:poetry|conda|mamba|apt|apt-get|apk|brew|gem)\s+.*\binstall\b", compact)
+        or re.search(r"\b(?:cargo)\s+add\b", compact)
+        or re.search(r"\bgo\s+get\b", compact)
+    ):
+        return CommandCategory.INSTALL
+
+    # Test commands.  Match both direct runners and common package-manager
+    # wrappers (``npm run test`` / ``python -m pytest``).
+    if (
+        re.search(r"\bpytest\b", compact)
+        or re.search(r"\b(?:unittest|nose|tox|vitest|jest)\b", compact)
+        or re.search(r"\b(?:go|cargo|mvn|gradle)\s+test\b", compact)
+        or re.search(r"\b(?:npm|pnpm|yarn)\s+(?:run\s+)?test\b", compact)
+        or re.search(r"\bmake\s+test\b", compact)
+    ):
+        return CommandCategory.TEST
+
+    # Build/deploy commands.  ``npm run`` without a script remains OTHER;
+    # only an explicit build/deploy verb is classified here.
+    if (
+        re.search(r"\b(?:npm|pnpm|yarn)\s+run\s+(?:build|bundle|deploy|release)\b", compact)
+        or re.search(r"\b(?:vite|webpack|rollup|tsc)\s+(?:build|compile)\b", compact)
+        or re.search(r"\b(?:cargo|go)\s+build\b", compact)
+        or re.search(r"\b(?:mvn|gradle)\s+(?:package|install|assemble)\b", compact)
+        or re.search(r"\b(?:docker|podman)\s+(?:build|compose|push|run)\b", compact)
+        or re.search(r"\b(?:kubectl|helm|terraform)\s+(?:apply|upgrade|deploy|install)\b", compact)
+        or re.search(r"\b(?:make|vercel|netlify)\s+(?:build|deploy)\b", compact)
+        or re.search(r"\b(?:build|bundle|deploy|release)\b", compact)
+    ):
+        return CommandCategory.BUILD_DEPLOY
+
+    # Read-only inspection commands.  Git mutating commands are deliberately
+    # not called "查文件"; they fall through to OTHER.
+    if (
+        re.search(
+            r"(?:^|\s)(?:ls|dir|find|rg|grep|cat|type|pwd|tree|head|tail|sed|less|more|file)(?:\s|$)",
+            compact,
+        )
+        or re.search(r"\bgit\s+(?:status|log|diff|show)\b", compact)
+        or re.search(r"\bget-content\b", compact)
+    ):
+        return CommandCategory.INSPECT
+
+    return CommandCategory.OTHER

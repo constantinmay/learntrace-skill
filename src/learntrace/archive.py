@@ -15,6 +15,10 @@ from typing import Any, cast
 import jsonschema
 
 from learntrace import __version__
+from learntrace.adapters.aggregation import (
+    TraceSegmentSummary,
+    TraceWorkSegment,
+)
 from learntrace.artifacts import register_generated_artifacts
 from learntrace.models import (
     SCHEMA_VERSION,
@@ -68,7 +72,9 @@ _IGNORED_DIR_NAMES = frozenset(
         "venv",
     }
 )
-_LEARNTRACE_CONTAINER_KEYS = frozenset({"events", "confirmations", "warnings"})
+_LEARNTRACE_CONTAINER_KEYS = frozenset(
+    {"events", "confirmations", "warnings", "work_segments", "segment_summaries"}
+)
 _LEARNTRACE_BUNDLE_MARKER = "learntrace_bundle"
 # A single LearnTrace record is tagged with one of these three evidence levels.
 # Anything else carrying an "evidence_level" key is an unrelated JSON document
@@ -88,6 +94,8 @@ class LoadedProjectRecords:
     confirmations: tuple[StudentConfirmation, ...]
     warnings: tuple[ArchiveWarning, ...] = ()
     task2_meta: dict[str, Any] = field(default_factory=dict[str, Any])
+    work_segments: tuple[TraceWorkSegment, ...] = ()
+    segment_summaries: tuple[TraceSegmentSummary, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -218,6 +226,25 @@ def _looks_like_confirmation_object(data: JsonObject) -> bool:
     )
 
 
+def _looks_like_work_segment_object(data: JsonObject) -> bool:
+    event_ids = data.get("event_ids", data.get("trace_event_ids", data.get("citations")))
+    return (
+        isinstance(data.get("id", data.get("segment_id")), str)
+        and isinstance(event_ids, list)
+        and all(isinstance(item, str) for item in cast(list[object], event_ids))
+    )
+
+
+def _looks_like_segment_summary_object(data: JsonObject) -> bool:
+    citations = data.get("event_ids", data.get("citations"))
+    return (
+        isinstance(data.get("segment_id"), str)
+        and isinstance(data.get("label"), str)
+        and isinstance(data.get("body"), str)
+        and isinstance(citations, list)
+    )
+
+
 def _looks_like_learntrace_container(data: JsonObject) -> bool:
     # The events list must be non-empty and every element a well-shaped
     # observable event. An empty "events" is not proof of LearnTrace data — a
@@ -235,11 +262,30 @@ def _looks_like_learntrace_container(data: JsonObject) -> bool:
     has_valid_confirmations = bool(confirmation_objects) and all(
         _looks_like_confirmation_object(item) for item in confirmation_objects
     )
-    if not has_valid_events and not has_valid_confirmations:
+    raw_segments = data.get("work_segments")
+    segment_objects = cast(list[JsonObject], raw_segments) if _is_object_list(raw_segments) else []
+    has_valid_segments = bool(segment_objects) and all(
+        _looks_like_work_segment_object(item) for item in segment_objects
+    )
+    raw_summaries = data.get("segment_summaries")
+    summary_objects = (
+        cast(list[JsonObject], raw_summaries) if _is_object_list(raw_summaries) else []
+    )
+    has_valid_summaries = bool(summary_objects) and all(
+        _looks_like_segment_summary_object(item) for item in summary_objects
+    )
+    if not (
+        has_valid_events or has_valid_confirmations or has_valid_segments or has_valid_summaries
+    ):
         return False
     if events is not None and not _is_object_list(events):
         return False
     if confirmations is not None and not _is_object_list(confirmations):
+        return False
+
+    if raw_segments is not None and not _is_object_list(raw_segments):
+        return False
+    if raw_summaries is not None and not _is_object_list(raw_summaries):
         return False
 
     warnings = data.get("warnings")
@@ -393,6 +439,22 @@ def _parse_candidate(raw: JsonObject, path: Path) -> LearningNodeCandidate:
     )
 
 
+def _parse_work_segment(raw: object, path: Path) -> TraceWorkSegment:
+    data = _require_object(raw, "work_segment", path)
+    try:
+        return TraceWorkSegment.from_dict(data)
+    except ValueError as exc:
+        raise ValueError(f"{path}: invalid work_segment: {exc}") from exc
+
+
+def _parse_segment_summary(raw: object, path: Path) -> TraceSegmentSummary:
+    data = _require_object(raw, "segment_summary", path)
+    try:
+        return TraceSegmentSummary.from_dict(data)
+    except ValueError as exc:
+        raise ValueError(f"{path}: invalid segment_summary: {exc}") from exc
+
+
 def _confirmation_id(data: JsonObject) -> str:
     content = json.dumps(data, ensure_ascii=False, sort_keys=True)
     return f"conf-{hashlib.sha256(content.encode('utf-8')).hexdigest()[:16]}"
@@ -501,6 +563,18 @@ def load_archive_snapshot(
     warnings = tuple(
         _parse_warning(item, resolved) for item in _require_list(raw, "warnings", resolved)
     )
+    raw_work_segments = raw.get("work_segments", [])
+    if not isinstance(raw_work_segments, list):
+        raise ValueError(f"{resolved}: expected list field 'work_segments'")
+    work_segments = tuple(
+        _parse_work_segment(item, resolved) for item in cast(list[object], raw_work_segments)
+    )
+    raw_segment_summaries = raw.get("segment_summaries", [])
+    if not isinstance(raw_segment_summaries, list):
+        raise ValueError(f"{resolved}: expected list field 'segment_summaries'")
+    segment_summaries = tuple(
+        _parse_segment_summary(item, resolved) for item in cast(list[object], raw_segment_summaries)
+    )
     inference_mode = _require_string(raw, "candidate_inference_mode", resolved)
     task2_meta: dict[str, Any] = {}
     manifest_raw = raw.get("archive_manifest")
@@ -517,6 +591,8 @@ def load_archive_snapshot(
         warnings=warnings,
         inference_mode=inference_mode,
         task2_meta=task2_meta,
+        work_segments=work_segments,
+        segment_summaries=segment_summaries,
     )
     validate_bundle(bundle, validator=contract)
     stored_manifest = _require_object(raw.get("archive_manifest"), "archive_manifest", resolved)
@@ -597,10 +673,14 @@ def _collect_records_from_json(
     list[StudentConfirmation],
     list[ArchiveWarning],
     dict[str, object],
+    list[TraceWorkSegment],
+    list[TraceSegmentSummary],
 ]:
     events: list[ObservableEvent] = []
     confirmations: list[StudentConfirmation] = []
     warnings: list[ArchiveWarning] = []
+    work_segments: list[TraceWorkSegment] = []
+    segment_summaries: list[TraceSegmentSummary] = []
 
     task2_meta: dict[str, object] = {}
     for key in ("parser_version", "analysis_scope", "inventory"):
@@ -633,7 +713,20 @@ def _collect_records_from_json(
     if raw_warnings is not None:
         warnings.extend(_parse_warning(item, path) for item in _require_list(raw, "warnings", path))
 
-    return events, confirmations, warnings, task2_meta
+    raw_segments = raw.get("work_segments")
+    if raw_segments is not None:
+        work_segments.extend(
+            _parse_work_segment(item, path) for item in _require_list(raw, "work_segments", path)
+        )
+
+    raw_summaries = raw.get("segment_summaries")
+    if raw_summaries is not None:
+        segment_summaries.extend(
+            _parse_segment_summary(item, path)
+            for item in _require_list(raw, "segment_summaries", path)
+        )
+
+    return events, confirmations, warnings, task2_meta, work_segments, segment_summaries
 
 
 def load_project_artifacts(
@@ -652,8 +745,12 @@ def load_project_artifacts(
     confirmations: list[StudentConfirmation] = []
     warnings: list[ArchiveWarning] = []
     task2_meta: dict[str, object] = {}
+    work_segments: list[TraceWorkSegment] = []
+    segment_summaries: list[TraceSegmentSummary] = []
     event_sources: dict[str, tuple[ObservableEvent, Path]] = {}
     confirmation_sources: dict[str, tuple[StudentConfirmation, Path]] = {}
+    segment_sources: dict[str, tuple[TraceWorkSegment, Path]] = {}
+    summary_sources: dict[str, tuple[TraceSegmentSummary, Path]] = {}
 
     for path in _iter_json_files(root):
         try:
@@ -678,6 +775,8 @@ def load_project_artifacts(
                 loaded_confirmations,
                 loaded_warnings,
                 file_meta,
+                loaded_segments,
+                loaded_summaries,
             ) = _collect_records_from_json(
                 raw,
                 path,
@@ -716,6 +815,32 @@ def load_project_artifacts(
                 )
                 raise ValueError(msg)
         warnings.extend(loaded_warnings)
+        for segment in loaded_segments:
+            existing = segment_sources.get(segment.id)
+            if existing is None:
+                segment_sources[segment.id] = (segment, path)
+                work_segments.append(segment)
+                continue
+            existing_segment, existing_path = existing
+            if existing_segment.to_dict() != segment.to_dict():
+                msg = (
+                    f"conflicting work_segment records for id {segment.id}: "
+                    f"{existing_path} vs {path}"
+                )
+                raise ValueError(msg)
+        for summary in loaded_summaries:
+            existing = summary_sources.get(summary.segment_id)
+            if existing is None:
+                summary_sources[summary.segment_id] = (summary, path)
+                segment_summaries.append(summary)
+                continue
+            existing_summary, existing_path = existing
+            if existing_summary.to_dict() != summary.to_dict():
+                msg = (
+                    f"conflicting segment_summary records for segment {summary.segment_id}: "
+                    f"{existing_path} vs {path}"
+                )
+                raise ValueError(msg)
 
     if not events and not confirmations:
         msg = (
@@ -729,6 +854,8 @@ def load_project_artifacts(
         confirmations=tuple(confirmations),
         warnings=tuple(warnings),
         task2_meta=task2_meta,
+        work_segments=tuple(work_segments),
+        segment_summaries=tuple(segment_summaries),
     )
 
 
@@ -784,6 +911,8 @@ def write_learning_record_result(
             loaded.events,
             confirmations=(*loaded.confirmations, *explicit_confirmations),
             warnings=loaded.warnings,
+            work_segments=loaded.work_segments,
+            segment_summaries=loaded.segment_summaries,
             validator=contract_validator,
             inferencer=inferencer,
             task2_meta=loaded.task2_meta,

@@ -1241,6 +1241,8 @@ def write_git_history_index(
         raise ValueError("Git history index timed out") from error
     except OSError as error:
         raise ValueError(safe_os_error(error)) from error
+
+
 def read_git_commit_text(project_root: Path, commit_id: str) -> str:
     """读取单个提交的完整文本（提交信息 + diff）；不可读时抛 ValueError。"""
     root = repo_root(project_root)
@@ -1366,6 +1368,7 @@ def parse_git_history(
                 ),
             )
         )
+    truncation_details: tuple[tuple[str, int | str | bool], ...] = ()
     if author is not None:
         try:
             history_authors = _history_commit_authors(root, warnings=warnings)
@@ -1481,7 +1484,10 @@ def parse_git_history(
                 ObservableEvent(
                     id=f"evt-git-{full_hash}",
                     kind=EventKind.GIT_COMMIT,
-                    summary=f"提交 {full_hash[:7]} 的提交信息为“{subject_text}”，记录 0 个文件变更（0 个）。",
+                    summary=(
+                        f"提交 {full_hash[:7]} 的提交信息为“{subject_text}”，"
+                        "记录 0 个文件变更（0 个）。"
+                    ),
                     source_refs=(_commit_source_ref(full_hash),),
                     occurred_at=occurred_at,
                 )

@@ -37,7 +37,13 @@ learntrace adapt <session-1.json> <session-2.json> `
 - `parsed`：至少生成了一条轨迹事件；个别坏记录会被跳过并写入安全警告。
 
 Task 3 的批次结果包含 `status`、`events` 和 `warnings`。其中只有 `events` 是提供给
-Task 4 的稳定跨任务接口。
+Task 4 的稳定跨任务接口；`work_segments` 是在不改变原子事件的前提下新增的确定性
+分段视图。分段规则、字段和宿主 Agent 摘要交接见
+[AI 轨迹分段说明](trace-segmentation.md)。
+
+适配器成功解析后会在结果中附带 `work_segments`。它只引用同一结果里的事件 ID，按
+默认 30 分钟（严格大于才切段）和明确项目对象范围切分；没有有效时间或安全路径时
+不会猜测边界。旧调用方只读取 `events` 也不受影响。
 
 ## 会保留什么
 

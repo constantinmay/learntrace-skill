@@ -7,6 +7,7 @@ import os
 import tempfile
 from pathlib import Path
 
+from learntrace.adapters.aggregation import validate_work_segments
 from learntrace.adapters.types import TraceAdapterResult
 from learntrace.models import ContractValidator
 
@@ -29,12 +30,16 @@ def _result_dict(result: TraceAdapterResult) -> dict[str, object]:
         }
         for warning in result.warnings
     ]
-    return {
+    validate_work_segments(result.work_segments, result.events)
+    payload: dict[str, object] = {
         "adapter_version": _ADAPTER_VERSION,
         "status": str(result.status),
         "events": events,
         "warnings": warnings,
     }
+    if result.work_segments:
+        payload["work_segments"] = [segment.to_dict() for segment in result.work_segments]
+    return payload
 
 
 def write_trace_result(result: TraceAdapterResult, output_path: Path) -> None:

@@ -62,6 +62,7 @@ _TRACE_EXCLUSION_TERMS = (
 )
 _MAX_RENDERED_TRACE_EVENTS = 20
 _MAX_PROGRESS_ITEMS = 8
+_MAX_SEGMENT_PATHS = 8
 _COMMIT_PREFIX_RE = re.compile(
     r"^(?:提交|commit)\s+[a-f0-9]+\s*(?:[：:]|的提交信息为)\s*",
     re.IGNORECASE,
@@ -263,9 +264,51 @@ def _ai_collaboration_lines(bundle: ArchiveBundle) -> list[str]:
             {"completed": 0, "error": 0, "incomplete": 0, "unknown": 0},
         )
         tool_counts[status] += 1
-    if not counts:
-        return ["- 未见与本项目范围相关的授权 AI 工具轨迹。"]
     lines: list[str] = []
+    if bundle.work_segments:
+        lines.append(
+            f"- 已将授权轨迹整理为 {len(bundle.work_segments)} 段连续工作过程（自动分段，"
+            "不代表学习结论）。"
+        )
+        for index, segment in enumerate(bundle.work_segments, start=1):
+            details: list[str] = []
+            if segment.paths:
+                visible_paths = segment.paths[:_MAX_SEGMENT_PATHS]
+                path_text = _render_safe_text("、".join(visible_paths))
+                if len(segment.paths) > _MAX_SEGMENT_PATHS:
+                    path_text += f"等 {len(segment.paths)} 个项目内路径"
+                details.append(f"涉及 {path_text}")
+            if segment.tools:
+                details.append(f"工具 {_render_safe_text('、'.join(segment.tools))}")
+            if segment.command_categories:
+                details.append(
+                    "命令类别：" + _render_safe_text("、".join(segment.command_categories))
+                )
+            description = "；".join(details) or "未记录对象或工具"
+            lines.append(f"- 工作过程 {index}：{description}。")
+
+    active_summaries = [summary for summary in bundle.segment_summaries if not summary.denied]
+    denied_summary_count = len(bundle.segment_summaries) - len(active_summaries)
+    if active_summaries:
+        lines.append("- 自动整理摘要（宿主 Agent 生成，可否认）：")
+        for summary in active_summaries:
+            authorization_note = (
+                "已获全文授权" if summary.authorization == "full" else "未授权完整对话"
+            )
+            lines.append(
+                f"  - {_render_safe_text(summary.label)}：{_render_safe_text(summary.body)}"
+                f"（自动整理；{authorization_note}）。"
+            )
+    if denied_summary_count:
+        lines.append(
+            f"- 有 {denied_summary_count} 段自动整理摘要已被学生否认；报告不展示摘要，"
+            "原始轨迹仍保留。"
+        )
+
+    if not counts:
+        if lines:
+            return lines
+        return ["- 未见与本项目范围相关的授权 AI 工具轨迹。"]
     for tool, values in sorted(
         counts.items(),
         key=lambda item: (
@@ -314,6 +357,8 @@ def render_markdown(bundle: ArchiveBundle, *, source_dir: Path | None = None) ->
             "## 项目概览",
             f"- 证据目录：{_source_dir_label(source_dir)}",
             f"- 可观察事实：{len(bundle.events)} 条",
+            f"- AI 工作过程分段：{len(bundle.work_segments)} 段",
+            f"- 工作过程摘要：{sum(not item.denied for item in bundle.segment_summaries)} 段可见",
             f"- 学习节点候选：{len(bundle.candidates)} 条",
             f"- 学生确认：{len(bundle.confirmations)} 条",
             "",
@@ -380,7 +425,7 @@ def render_markdown(bundle: ArchiveBundle, *, source_dir: Path | None = None) ->
             f"- 档案指纹：`{manifest['hash_algorithm']}:{manifest['content_fingerprint']}`",
             f"- Schema：`{manifest['schema_version']}`",
             f"- 生成工具：`{manifest['tool']} {manifest['tool_version']}`",
-            "- 指纹仅基于事实、候选、确认与解析告警生成，不包含本机路径或生成时间。",
+            "- 指纹基于事实、候选、确认、分段、摘要与解析告警生成，不包含本机路径或生成时间。",
             "",
         ]
     )
@@ -473,10 +518,27 @@ def render_markdown(bundle: ArchiveBundle, *, source_dir: Path | None = None) ->
             *_inference_mode_lines(bundle),
             "- 学生未说明的内容一律展示为“未记录”。",
             "",
-            "</details>",
-            "",
         ]
     )
+    if bundle.work_segments:
+        lines.append("## 工作过程分段")
+        for segment in bundle.work_segments:
+            time_text = f"{segment.start_time or '未记录'} → {segment.end_time or '未记录'}"
+            lines.append(
+                f"- {segment.id}：{time_text}；依据原始轨迹记录：{', '.join(segment.event_ids)}。"
+            )
+        lines.append("")
+    if bundle.segment_summaries:
+        lines.append("## 工作过程摘要审计")
+        for summary in bundle.segment_summaries:
+            state = "已否认（正文隐藏）" if summary.denied else "当前展示"
+            lines.append(
+                f"- {summary.id} [{state}]：段 {summary.segment_id}；依据原始轨迹记录："
+                f"{', '.join(summary.event_ids)}；derived=true；"
+                "derivation=host_agent_episode_digest；deniable=true。"
+            )
+        lines.append("")
+    lines.extend(["</details>", ""])
     return "\n".join(lines)
 
 

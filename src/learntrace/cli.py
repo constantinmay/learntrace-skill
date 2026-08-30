@@ -18,6 +18,7 @@ from learntrace.adapters import (
     adapt_codex_exports,
     adapt_opencode_exports,
     events_conflict,
+    segment_trace_events,
     write_trace_result,
 )
 from learntrace.archive import main as archive_main
@@ -507,6 +508,7 @@ def _merge_trace_results(
         status=status,
         events=tuple(events),
         warnings=tuple(warnings),
+        work_segments=segment_trace_events(tuple(events)),
     )
 
 

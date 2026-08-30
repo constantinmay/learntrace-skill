@@ -1,5 +1,6 @@
 """Task 4 reporting pipeline exports."""
 
+from learntrace.adapters.aggregation import TraceSegmentSummary, TraceWorkSegment
 from learntrace.reporting.narrative import (
     load_archive,
     load_payload,
@@ -23,6 +24,8 @@ from learntrace.reporting.render import render_markdown, render_questions_markdo
 __all__ = [
     "ArchiveBundle",
     "ArchiveWarning",
+    "TraceSegmentSummary",
+    "TraceWorkSegment",
     "CandidateDraft",
     "CandidateInferencer",
     "StubCandidateInferencer",
