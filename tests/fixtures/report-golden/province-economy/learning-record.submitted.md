@@ -131,9 +131,37 @@
 - `logs/agent.log` 是调试日志，格式无法解析，不作为测试证据[^t-agentlog]。
 - 早期算法阶段没有自动化测试，验证靠终端输出人工核对（本人陈述）；该过程无日志留存，除本人陈述外无其他佐证。
 
+## AI 协作过程
+
+本节是经本人复核的授权轨迹工作过程概览，不等同于学习结论，也不建立轨迹与 Git 提交的因果关系。项目早期的初始化、模型分析和可视化联调没有授权轨迹。
+
+### 工作段 1：项目结构与任务拆解
+
+- 主要活动：读取 -> 搜索 -> 计划项目资料。
+- 覆盖范围：2026-05-19 至 2026-06-02 的授权会话。
+- 文件焦点：`README`、`PLAN`、`pyproject`、`main.py`、`src/`。
+- 依据：授权轨迹脚注[^t-segment-decomposition]。
+
+### 工作段 2：Docker 容器化与演示准备
+
+- 主要活动：读取 -> 编辑 -> 搜索编排计划。
+- 覆盖范围：2026-05-19 至 2026-06-02 的授权会话。
+- 文件焦点：Docker、compose、README、PLAN。
+- 结果与限制：工具报错后的处理方式可观察，但具体判断未记录。
+- 依据：授权轨迹脚注[^t-segment-container-demo]。
+
+### 工作段 3：集成与验证
+
+- 主要活动：读取 -> 编辑 -> 运行项目相关操作。
+- 文件焦点：`src/`、Docker、`logs/agent.log`。
+- 结果与限制：测试日志无法识别，不能据此判断验证结果。
+- 依据：授权轨迹脚注[^t-segment-integration-check]。
+
+以上工作段是确定性轨迹整理；完整命令参数、补丁正文、工具输出正文和原子工具次数不在本报告正文中。
+
 ## AI 使用声明
 
-本项目开发过程中使用了 AI 编程助手（OpenCode)。我授权分析的轨迹覆盖 2026-05-19 至 2026-06-02（项目后期：Docker 化与 Agent 模块集成阶段），此前约两周的开发无授权轨迹。所有代码与文档均经我本人审阅、运行和修改。Docker 化期间 AI 工具对编排计划文件的 edit 操作连续报错，属工具故障，与学习能力无关；我当时改用检索/读取定位文件内容后继续。轨迹与提交之间的对应关系未做建立。本报告的原始记录由 LearnTrace 自动生成，插曲摘要经我本人确认，全部内容经我本人复核。
+本项目开发过程中使用了 AI 编程助手（OpenCode）。我授权分析的轨迹覆盖 2026-05-19 至 2026-06-02；此前约两周的开发无授权轨迹。工作段只描述已授权会话中的可观察操作，不建立轨迹与 Git 提交的对应关系；项目事实和学习内容经本人复核。授权轨迹还记录了编排计划文件编辑报错和两次主动提问，内容未授权保留，不进入学习结论[^t-edit-fails][^t-question-b]。
 
 ## 学习收获与下一步
 
@@ -145,7 +173,13 @@
 
 ---
 
-[^doc-overview]: 项目文档含分省经济分析与工具接口说明，例：archive 事件 `evt-doc-07fa99e9322a94bd`、`evt-doc-000a694f2c435b05`；完整清单见 archive `events[]`。
+[^doc-overview]: 项目文档含分省经济分析与工具接口说明，archive 事件 `evt-doc-07fa99e9322a94bd`、`evt-doc-000a694f2c435b05`。
+[^t-segment-decomposition]: 代表性授权轨迹事件 `evt-trace-9cdd0094057575c0`、`evt-trace-76e0909519035e72`。
+[^t-segment-container-demo]: 代表性授权轨迹事件 `evt-trace-9cdd0094057575c0`、`evt-trace-ef387c93fee4dc09`、`evt-trace-f236bf3db1d1a386`。
+[^t-segment-integration-check]: 授权轨迹事件 `evt-trace-b20143bd0a3da858`、`evt-trace-164f0366491470ff`、`evt-test-26adddd592d1fd44`。
+[^t-edit-fails]: 授权轨迹事件 `evt-trace-9cdd0094057575c0`、`evt-trace-ef387c93fee4dc09`、`evt-trace-f236bf3db1d1a386`、`evt-trace-b20143bd0a3da858`、`evt-trace-164f0366491470ff`。
+[^t-question-b]: 授权轨迹事件 `evt-trace-76e0909519035e72`、`evt-trace-b1becb39ae829723`。
+[^c-6708594e]: 合入锚点 `6708594e`（archive 事件 `evt-git-6708594e985b29365aaabae6179be8f67530dfb4`）。
 [^c-c02b2b5]: commit `c02b2b5`(archive 事件 `evt-git-c02b2b5a6c5058a1a31524b5e71782a080fef41b`)
 [^c-9908fe9]: commit `9908fe9`(archive 事件 `evt-git-9908fe98eb17374b3456bfa0d976e91106edd016`)
 [^c-78e35bf]: commit `78e35bf`(archive 事件 `evt-git-78e35bf1bb13337179cb986395719f8f5b5844cf`)

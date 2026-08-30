@@ -113,6 +113,45 @@ def _cited_event_ids(payload: dict[str, Any]) -> list[str]:
     return list(dict.fromkeys(ids))
 
 
+def _legacy_payload_for_renderer(payload: dict[str, Any]) -> dict[str, Any]:
+    """Project the display fixture to the current v0 renderer shape.
+
+    The display fixture deliberately moves to work segments before the production
+    schema and renderer migrate. Existing v0 tests use this test-only projection.
+    """
+    legacy = copy.deepcopy(payload)
+    ai = cast(dict[str, Any], legacy["ai_collaboration"])
+    ai.setdefault("shape", "授权轨迹以命令行操作为主，辅以文件读取、编辑和运行。")
+    ai.setdefault("focus", "工作段 fixture 中记录的项目文件焦点。")
+    if "episodes" in ai:
+        return legacy
+    episodes: list[dict[str, Any]] = []
+    for touchpoint in cast(list[dict[str, Any]], ai.get("observed_touchpoints", [])):
+        episodes.append(
+            {
+                "label": touchpoint["title"],
+                "body": touchpoint["body"],
+                "citations": touchpoint["citations"],
+                "derived": False,
+            }
+        )
+    for segment in cast(list[dict[str, Any]], ai.get("work_segments", [])):
+        episodes.append(
+            {
+                "label": segment["title"],
+                "body": segment["summary"],
+                "citations": segment["citations"],
+                "derived": True,
+                "derivation": "host_agent_episode_digest",
+                "deniable": True,
+            }
+        )
+    ai["episodes"] = episodes
+    ai.pop("observed_touchpoints", None)
+    ai.pop("work_segments", None)
+    return legacy
+
+
 def _synthesize_archive(payload: dict[str, Any]) -> dict[str, Any]:
     """从 payload 引用合成最小档案(事件全集 + 被否认候选),用于红线与渲染测试。"""
     events = [
@@ -178,7 +217,8 @@ def _section(markdown: str, start_header: str, end_header: str) -> str:
 @pytest.fixture(scope="module", params=SAMPLES)
 def golden_sample(request: pytest.FixtureRequest) -> tuple[str, dict[str, Any], dict[str, Any]]:
     name = str(request.param)
-    payload = load_payload(GOLDEN_DIR / name / "narrative-payload.golden.json")
+    display_payload = load_payload(GOLDEN_DIR / name / "narrative-payload.golden.json")
+    payload = _legacy_payload_for_renderer(display_payload)
     return name, payload, _synthesize_archive(payload)
 
 
@@ -290,7 +330,9 @@ def test_derived_episodes_are_marked(
 
 def test_truncated_stage_omits_goal_line() -> None:
     name = "province-economy"
-    payload = load_payload(GOLDEN_DIR / name / "narrative-payload.golden.json")
+    payload = _legacy_payload_for_renderer(
+        load_payload(GOLDEN_DIR / name / "narrative-payload.golden.json")
+    )
     archive = _synthesize_archive(payload)
     markdown = render_narrative_markdown(payload, archive, variant="working")
     stage0 = _section(markdown, "### 阶段 0", "### 阶段 1")
@@ -302,7 +344,9 @@ def test_truncated_stage_omits_goal_line() -> None:
 
 
 def test_kind_grouped_key_changes_render() -> None:
-    payload = load_payload(GOLDEN_DIR / "book-manager" / "narrative-payload.golden.json")
+    payload = _legacy_payload_for_renderer(
+        load_payload(GOLDEN_DIR / "book-manager" / "narrative-payload.golden.json")
+    )
     archive = _synthesize_archive(payload)
     first_citation = payload["stages"][0]["citations"][0]
     payload["stages"][0]["key_changes"] = [
@@ -319,7 +363,9 @@ def test_kind_grouped_key_changes_render() -> None:
 
 
 def test_dev_trajectory_table_uses_text_only() -> None:
-    payload = load_payload(GOLDEN_DIR / "book-manager" / "narrative-payload.golden.json")
+    payload = _legacy_payload_for_renderer(
+        load_payload(GOLDEN_DIR / "book-manager" / "narrative-payload.golden.json")
+    )
     archive = _synthesize_archive(payload)
     payload["stages"][0]["key_changes"] = [
         {"kind": "Added", "text": "仓库骨架", "citations": []},
@@ -331,7 +377,9 @@ def test_dev_trajectory_table_uses_text_only() -> None:
 
 
 def test_redaction_applied_at_render_boundary() -> None:
-    payload = load_payload(GOLDEN_DIR / "book-manager" / "narrative-payload.golden.json")
+    payload = _legacy_payload_for_renderer(
+        load_payload(GOLDEN_DIR / "book-manager" / "narrative-payload.golden.json")
+    )
     archive = _synthesize_archive(payload)
     payload["overview"]["text"] = (
         "课程项目说明。配置 token=supersecret123,本地在 ~/projects/book 下开发,"
@@ -346,7 +394,9 @@ def test_redaction_applied_at_render_boundary() -> None:
 
 
 def test_citation_with_label_and_evidence_location() -> None:
-    payload = load_payload(GOLDEN_DIR / "book-manager" / "narrative-payload.golden.json")
+    payload = _legacy_payload_for_renderer(
+        load_payload(GOLDEN_DIR / "book-manager" / "narrative-payload.golden.json")
+    )
     archive = _synthesize_archive(payload)
     event_id = payload["stages"][0]["citations"][0]
     payload["stages"][0]["citations"] = [
@@ -366,7 +416,9 @@ def test_citation_with_label_and_evidence_location() -> None:
 
 
 def test_schema_rejects_unknown_evidence_location_kind() -> None:
-    payload = load_payload(GOLDEN_DIR / "book-manager" / "narrative-payload.golden.json")
+    payload = _legacy_payload_for_renderer(
+        load_payload(GOLDEN_DIR / "book-manager" / "narrative-payload.golden.json")
+    )
     archive = _synthesize_archive(payload)
     event_id = payload["stages"][0]["citations"][0]
     payload["stages"][0]["citations"] = [
@@ -476,7 +528,9 @@ def test_red_line_2_denied_slot_citations_are_exempt(
 
 
 def test_red_line_2_denied_slot_not_allowed_in_submitted() -> None:
-    payload = load_payload(GOLDEN_DIR / "book-manager" / "narrative-payload.golden.json")
+    payload = _legacy_payload_for_renderer(
+        load_payload(GOLDEN_DIR / "book-manager" / "narrative-payload.golden.json")
+    )
     archive = _synthesize_archive(payload)
     bad = copy.deepcopy(payload)
     bad["variant"] = "submitted"
@@ -518,7 +572,9 @@ def test_red_line_3_working_reflection_must_be_null(
 
 
 def test_red_line_3_submitted_requires_student_content() -> None:
-    payload = load_payload(GOLDEN_DIR / "book-manager" / "narrative-payload.golden.json")
+    payload = _legacy_payload_for_renderer(
+        load_payload(GOLDEN_DIR / "book-manager" / "narrative-payload.golden.json")
+    )
     archive = _synthesize_archive(payload)
     bad = copy.deepcopy(payload)
     bad["variant"] = "submitted"

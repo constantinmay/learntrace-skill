@@ -1,5 +1,5 @@
 {
-  "_comment": "Target structure sketch for the stage layer, additive to schema v0 (no breaking change). development_stages lives alongside events/candidates/confirmations; event ids reference the example project's archive-records.json. trace_touchpoints hold a few representative event ids per stage; the full list stays queryable via events[] time ranges. Times normalized to UTC+8.",
+  "_comment": "Git development-stage presentation sketch for sample A, additive to schema v0. This file describes Git stages only: commit evidence, first-parent ordering, merge anchors, trace touchpoints as references, and evidence gaps. It is not the trace message/turn/episode aggregation schema and does not assert trace-to-commit causation.",
   "development_stages": [
     {
       "id": "stage-1",
@@ -97,8 +97,8 @@
     }
   ],
   "render_policy_notes": {
-    "ai_git_pairing": "file-path overlap and time proximity may surface clues for review, never asserted causation",
-    "trace_display": "no tool invocation counts in the main document; tool faults are system noise, not learning signals",
+    "ai_git_pairing": "file-path overlap and time proximity may surface review clues, never asserted causation; this is a Git-stage display note, not trace aggregation",
+    "trace_display": "trace touchpoints are references only; no tool invocation counts in the main document; tool faults are system noise, not learning signals",
     "internal_ids": "event ids appear only in footnote definitions and this JSON, never in body text"
   }
 }

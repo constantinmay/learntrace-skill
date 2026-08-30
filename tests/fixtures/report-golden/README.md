@@ -1,71 +1,59 @@
-# report-golden:报告呈现层金标工件
+# report-golden: 报告呈现层金标工件
 
-依据 `docs/learning-trajectory-design.md` §12,这些文件是渲染层重构的目标产物,
-**先于实现固定**,用作后续回归对照。按项目分目录。
+依据 `docs/learning-trajectory-design.md` §12，本目录固定报告呈现契约，供后续渲染实现回归对照。它不是提取层输出，也不实现 Issue #28 的 `message -> turn -> episode` 聚合。
 
-> 2026-08-24 第三版:按信任域隐私模型与四层证据模型(事实 / 派生摘要 / 候选推断 /
-> 学生确认)修订——AI 协作章节改为五要素(可见性地图/活动形状/文件焦点/关键插曲/
-> 边界声明),新增派生摘要示例(标「派生」、可否认);新增 `narrative-payload.golden.json`
-> 作为 agent→CLI 中间件契约,与 markdown 渲染产物互为对照。
-> **定位**:本目录固定的是**呈现契约**(报告结构、语气、五要素口径、payload
-> 字段与可否认规则),不是提取层输出。其中引用的具体事件 ID、事实计数、
-> 「阶段 0」截断范围来自**旧提取层**的真实运行快照,属于占位内容——新提取层
-> 不得以此为验收基准,否则等于要求新层复刻旧层行为。
->
-> **校准计划**:Issue #27(Git 截断)、#28(分段与摘要)、#29(推断规则)落地
-> 后,用新管道对两个真实样例重新生成一次,一次性校准 ID、计数与阶段划分,
-> 此后 golden 以新层输出为锚。提取层各 issue(#27/#28/#29)的验收一律以自带
-> 合成夹具为准;本目录只验收 #26(呈现层)。
+## 三层职责
 
-## book-manager/(线性历史、单作者、1 条被否认候选)
+- `archive-stages.json`：Git 开发阶段的展示目标。它只描述提交、first-parent、合入锚点、历史截断和作者范围；不表示 AI trace episode，也不把轨迹操作与提交建立因果关系。
+- `narrative-payload.golden.json`：宿主 Agent 到 CLI 的叙事输入目标。它验证报告字段、引用、确认状态、派生标记和证据边界；本 MVP 的工作段是确定性轨迹整理，不是宿主 Agent 自然语言摘要。
+- `learning-record.md` 与 `learning-record.submitted.md`：最终报告的工作版和上交版展示目标。允许措辞调整，但不允许结构和隐私边界回退。
 
-输入:12 条 Git 提交、13 条 README 文档事实、125 条授权 OpenCode 轨迹。
+提取层的 v0 事实、候选和学生确认仍由 `tests/fixtures/golden/` 与 schema 契约验证。未来的轨迹聚合应使用独立合成夹具验证 `message -> turn -> episode` 的数据形状，而不是把本目录中的旧真实项目快照当作事件数量或阶段数量的硬编码基准。
 
-- `learning-record.md` — 理想未确认工作版;
-- `learning-record.submitted.md` — 理想上交版(面向教师);
-- `learning-questions.md` — 可选复盘提示(2 条);
-- `student-answers.simulated.json` — **模拟**学生回答(非真实材料),驱动工作版到
-  上交版的确认流程;
-- `archive-stages.json` — 阶段层目标结构草案(v0 纯新增);
-- `narrative-payload.golden.json` — 叙事 payload 金标(agent 产出、CLI 渲染的
-  中间件;verify 的校验对象)。
+## 报告呈现验收
 
-## province-economy/(多分支 + **多人协作** + PR 合并 + 历史截断)
+工作版至少包含：项目概览、开发轨迹、AI 协作过程、学习线索、验证与质量、证据边界和机器审计附录。上交版保留事实性项目过程及已确认/已补充内容，不出现待确认徽章或被否认内容，不把自动整理写成学生已经学会的结论。
 
-该仓库实为三人协作项目(远端 PR 记录可证:可视化、数据/Agent、集成/Docker 各有一人)。
-golden 采用**作者范围过滤**口径:授权门处选择"仅纳入本人名下提交",协作方提交在
-**解析时过滤**而非渲染时隐藏;交接处只写"协作边界"范围说明,不做逐提交归因、不做
-贡献排名(与产品"不作作者归因"的非目标一致)。这同时钉住一条新需求:多作者仓库需要
-`--author` 输入定界(尚待实现,golden 为该特性的前瞻目标)。
+AI 协作正文使用“工作段”表达连续工作过程。每段至少说明：标题、日期级时间范围或覆盖范围、主要活动、文件焦点、命令类别、结果或限制和引用。正文不展示 `read`/`edit`/`bash` 工具次数、工具完成率、AI 与学生贡献比例、完整命令参数、补丁正文、工具输出正文，也不建立 trace 到 Git commit 的因果关系。
 
-输入(过滤前):52 条提交事件(Git 历史截断于最新 50 条)、283 条文档事实、400 条授权轨迹、
-1 条未识别格式测试日志、3 条解析告警;候选 5 条(1 确认、2 补充、2 否认),LLM 模式。
-作者范围过滤后:仅本人名下提交、本人授权轨迹与项目级文档/日志进入档案;
-依据协作方提交的候选(Agent 模块测试两条)在作者范围外,不产生。
+可直接观察的提问、工具错误等节点放在 `observed_touchpoints`；根据授权轨迹的工具、文件焦点、命令类别和时间/会话结构整理的连续过程放在 `work_segments`。自动工作段必须标记：
 
-- `learning-record.md` — 理想渲染版:仅含本人名下工作;阶段按主线合入点划分
-  (first-parent),merge commit 只作锚点,重放副本按内容指纹去重,截断历史
-  显式标注为「阶段 0」;confirmed/supplemented 进正文(以本人纠正为准),
-  作者范围外的候选不入正文、附录注明原因;
-- `learning-record.submitted.md` — 理想上交版:第一人称封面信,两条模拟回答
-  融入叙事(早期实现补充、测试运行结果),被否认线索不含,「这是agent问题」
-  的纠偏在 AI 使用声明中以第一人称澄清;
-- `student-answers.simulated.json` — **模拟**学生回答(非真实材料),只覆盖
-  本人范围内的两条提示(模型分析实现过程、「测试前」后的验证方式);
-- `learning-questions.md` — 可选复盘提示(2 条,证据缺口驱动);
-- `archive-stages.json` — 阶段结构草案,含 author_scope 声明、merge_point_event_ids
-  与去重策略;
-- `narrative-payload.golden.json` — 叙事 payload 金标(含 author_scope 与派生
-  摘要插曲示例)。
-- 合并消息与提交中的协作方用户名一律不写进档案,以"协作方"代称;事件 ID 保持可溯源。
+```json
+{
+  "derived": true,
+  "derivation": "deterministic_trace_grouping",
+  "deniable": true
+}
+```
+
+`derived=true` 只表示派生摘要，不表示学习结论；“未记录”表示证据中没有对应信息。精确事件 ID 只出现在 JSON、脚注定义或机器审计区域，工作段引用必须能回到授权档案中的事件。
+
+## book-manager/
+
+线性历史、单作者的较小样例。它展示“了解结构”“界面与接口联调”“运行与检查”三个工作段，以及一个被否认候选如何留在工作版附录而不进入正文结论。
+
+- `learning-record.md`：未确认工作版。
+- `learning-record.submitted.md`：已确认上交版。
+- `learning-questions.md`：证据缺口驱动的复盘提示。
+- `student-answers.simulated.json`：模拟学生回答，非真实材料。
+- `archive-stages.json`：Git 阶段结构草案，不是 trace episode 结构。
+- `narrative-payload.golden.json`：工作版叙事 payload 目标。
+
+## province-economy/
+
+多分支、PR 合并、历史截断的多人协作样例。golden 使用 `author_scope: "self_only"` 表示只纳入本人名下提交和本人授权轨迹；协作方内容只保留协作边界说明，不做逐提交归因或贡献排名。`--author` 的解析行为由主线实现和对应测试负责，本目录只验证报告如何呈现结果。
+
+- `learning-record.md`：仅含本人范围的未确认工作版。
+- `learning-record.submitted.md`：仅含本人范围的已确认上交版。
+- `learning-questions.md`：证据缺口驱动的复盘提示。
+- `student-answers.simulated.json`：模拟学生回答，非真实材料。
+- `archive-stages.json`：含作者范围、first-parent、合入锚点、去重和截断说明的 Git 阶段草案。
+- `narrative-payload.golden.json`：保留作者范围和工作段边界的叙事 payload 目标。
 
 ## 使用方式
 
-- 渲染重构完成后,以同一输入重跑生成,逐节对照本目录工件;
-- 允许措辞差异,不允许结构回退(内部 ID 进正文、工具计数、缺失证据缺口标注、
-  merge commit 作阶段标题、提交跨阶段重复、上交版残留未确认徽章等视为回归);
-- 两版对照:上交版与工作版的事实层三节(项目概述/开发轨迹/阶段详情)必须
-  逐字一致,差异只允许在叙事层;
-- payload 对照:`narrative-payload.golden.json` 的每个 citations 条目必须能在
-  对应 archive-records.json 解析;derived=true 的条目必须标 deniable;
-- `archive-stages.json` 是目标结构草案,随实现稳定后并入 schema v1 讨论。
+渲染重构完成后，以同一输入重跑并逐节对照本目录。允许自然语言措辞变化，不允许以下回归：内部 ID 进入正文、AI 协作退回工具计数、缺失证据未标注、合并提交被当作阶段内容、提交在多个阶段重复、上交版残留待确认或否认状态、或者自动整理被写成学生结论。
+
+两版对照时，项目概览、开发轨迹、阶段详情三部分事实内容应逐字一致；差异只允许出现在确认、反思、AI 使用声明和附录范围。payload 中的引用必须能在对应报告的脚注或审计文本中找到；派生工作段必须同时标记 `derived`、`derivation` 和 `deniable`。
+
+本目录中的旧事件 ID、事实计数、阶段数量和自然语言措辞来自展示快照，不是新提取层的精确验收结果。重新生成真实样例前，应先完成对应提取和聚合 issue，再整体校准这些展示背景。
