@@ -5,7 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
-from collections.abc import Callable, Iterable
+from collections.abc import Callable
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from enum import Enum
@@ -30,7 +30,6 @@ ARCHIVE_VERSION = "v0"
 
 HASH_ALGORITHM = "sha256"
 MAX_CANDIDATES = 10
-_MAX_TRACE_COMMIT_GAP_SECONDS = 30 * 60
 _MAX_CROSS_SESSION_GAP_SECONDS = 24 * 60 * 60
 _OPENCODE_SESSION_RE = re.compile(r"^trace://opencode/(?P<session>[^/]+)/")
 
@@ -48,22 +47,6 @@ _CONSTRAINT_TERMS = (
     "格式",
     "评分",
     "状态",
-)
-_LOW_SIGNAL_TRACE_TERMS = (
-    "命令类型：git add",
-    "命令类型：git log",
-    "命令类型：git status",
-    "命令类型：kill",
-    "命令类型：ls",
-    "命令类型：node",
-    "命令类型：pgrep",
-    "命令类型：pkill",
-    "命令类型：rm",
-    "命令类型：ss",
-    "工具 ls",
-    "工具 node",
-    "工具 rm",
-    "工具 todowrite",
 )
 _CHANGE_MARKERS = (
     "改",
@@ -302,19 +285,15 @@ class StubCandidateInferencer:
         # semantic project topic. Generic repeated tool names are insufficient.
         drafts.extend(self._cross_session_follow_ups(traces))
 
-        # Revising AI suggestions: an authorized trace followed by a commit.
-        # Bind only to the matching summary pair, and only when the trace
-        # does not provably succeed the commit.
-        for trace in traces:
-            for commit in commits:
-                if self._revise_ai_matches(trace, commit) and precedes(trace, commit):
-                    drafts.append(self._revise_ai_candidate(trace, commit))
-
-        # Minimal Task 3 traces often record only a completed tool operation.
-        # Associate those conservatively with the nearest following commit,
-        # one-to-one and within a bounded time window. This preserves trace
-        # provenance without claiming that a particular AI suggestion was used.
-        drafts.extend(self._trace_commit_follow_ups(traces, commits, drafts))
+        # Note: an AI-suggestion trace followed by a commit is NOT materialized
+        # here. Word similarity plus time proximity is not a legitimate
+        # trace-to-commit correspondence; such a link requires a structured
+        # checkpoint, a semantic judgment made from a fully authorized
+        # conversation, or the student's own confirmation. The deterministic
+        # stub has none of those, so it never emits REVISE_AI_SUGGESTION.
+        # (A host-agent inferencer with full authorization over the
+        # conversation may still propose one; the CLI itself performs no
+        # such inference.)
 
         # Fixes: bind the FAILING log (not an arbitrary first test log) to the
         # commit that follows it.
@@ -415,51 +394,6 @@ class StubCandidateInferencer:
             ),
         )
 
-    def _trace_commit_follow_ups(
-        self,
-        traces: tuple[ObservableEvent, ...],
-        commits: tuple[ObservableEvent, ...],
-        existing_drafts: Iterable[CandidateDraft],
-    ) -> tuple[CandidateDraft, ...]:
-        used_event_ids = {
-            event_id
-            for draft in existing_drafts
-            if draft.node_type == NodeType.REVISE_AI_SUGGESTION
-            for event_id in draft.basis_event_ids
-        }
-        available = [
-            trace
-            for trace in traces
-            if trace.id not in used_event_ids
-            and not _is_low_signal_trace(trace)
-            and _has_trace_learning_signal(trace)
-        ]
-        follow_ups: list[CandidateDraft] = []
-        for commit in commits:
-            if commit.id in used_event_ids:
-                continue
-            preceding: list[tuple[float, ObservableEvent, int]] = []
-            for trace in available:
-                gap_seconds = _trace_commit_gap_seconds(trace, commit)
-                relevance = _topic_match_score(trace.summary, commit.summary)
-                if (
-                    gap_seconds is not None
-                    and gap_seconds <= _MAX_TRACE_COMMIT_GAP_SECONDS
-                    and relevance > 0
-                ):
-                    preceding.append((gap_seconds, trace, relevance))
-            if not preceding:
-                continue
-            _, trace, relevance = min(
-                preceding,
-                key=lambda item: (-item[2], item[0], item[1].id),
-            )
-            available.remove(trace)
-            follow_ups.append(
-                self._trace_commit_follow_up_candidate(trace, commit, relevance=relevance)
-            )
-        return tuple(follow_ups)
-
     @staticmethod
     def _adjust_constraints_match_score(
         document: ObservableEvent,
@@ -472,72 +406,6 @@ class StubCandidateInferencer:
             return len(shared_terms) * 10
 
         return 0
-
-    def _revise_ai_matches(self, trace: ObservableEvent, commit: ObservableEvent) -> bool:
-        """Whether a trace/commit pair is a topical AI-suggestion revision.
-
-        The temporal ordering is applied by the caller (``precedes``); here we
-        only check that the summaries actually correspond, so unrelated nearby
-        commits are not turned into a revision claim.
-        """
-        trace_lowered = trace.summary.casefold()
-        has_explicit_suggestion = any(
-            _marker_present(trace_lowered, term) for term in _AI_SUGGESTION_TERMS
-        )
-        return (
-            has_explicit_suggestion
-            and _topics_related(trace.summary, commit.summary)
-            and _contains_change_marker(_commit_intent_text(commit.summary))
-        )
-
-    def _revise_ai_candidate(
-        self,
-        trace: ObservableEvent,
-        commit: ObservableEvent,
-    ) -> CandidateDraft:
-
-        plausible = _plausibility_is_plausible(_temporally_plausible(trace, commit))
-
-        shared_topics = _semantic_topics(trace.summary) & _semantic_topics(commit.summary)
-        if "parsing" in shared_topics:
-            return CandidateDraft(
-                node_type=NodeType.REVISE_AI_SUGGESTION,
-                statement="学生可能没有直接采用 AI 的数据解析建议，而是选择了另一种解析策略。",
-                basis_event_ids=(trace.id, commit.id),
-                uncertainty=(
-                    "中：AI 建议与代码提交是两条独立记录，系统不预设二者相关；"
-                    "是否参考及修改动机均需学生确认。"
-                    if plausible
-                    else "高：时间顺序无法验证，AI 建议与代码修改的关联性存疑。"
-                ),
-                question_to_student="这次数据解析实现是否参考并调整了 AI 的建议？",
-            )
-
-        if "validation" in shared_topics:
-            return CandidateDraft(
-                node_type=NodeType.REVISE_AI_SUGGESTION,
-                statement="学生可能调整了 AI 建议的输入校验方法，并采用了不同实现。",
-                basis_event_ids=(trace.id, commit.id),
-                uncertainty=(
-                    "中：AI 建议与代码提交是两条独立记录，系统不预设二者相关；"
-                    "两种实现语义相近，是否参考需学生确认。"
-                    if plausible
-                    else "高：时间顺序无法验证，语义近似的修改可能来自其他原因。"
-                ),
-                question_to_student="这次输入校验实现是否参考并调整了 AI 的建议？",
-            )
-
-        return CandidateDraft(
-            node_type=NodeType.REVISE_AI_SUGGESTION,
-            statement="学生可能调整了 AI 给出的实现建议，并采用了不同的落地方案。",
-            basis_event_ids=(trace.id, commit.id),
-            uncertainty=(
-                "中：轨迹建议与代码结果相邻，但系统不能把二者直接当作同一决策链。"
-                if plausible
-                else "高：时间顺序无法验证，轨迹与代码修改之间的因果关系不明。"
-            ),
-            question_to_student="这次实现是否参考并修改了 AI 给出的建议？",
-        )
 
     def _fix_failed_candidate(
         self,
@@ -636,24 +504,6 @@ class StubCandidateInferencer:
                 else "高：时间顺序无法验证，主题连续性可能是偶然。"
             ),
             question_to_student="后续追问是否让你形成了新的理解？",
-        )
-
-    @staticmethod
-    def _trace_commit_follow_up_candidate(
-        trace: ObservableEvent,
-        commit: ObservableEvent,
-        *,
-        relevance: int,
-    ) -> CandidateDraft:
-        return CandidateDraft(
-            node_type=NodeType.FOLLOW_UP,
-            statement="学生可能在使用编码助手完成一项工具操作后继续推进，并形成了后续代码提交。",
-            basis_event_ids=(trace.id, commit.id),
-            uncertainty=(
-                f"高：轨迹与提交具有主题关联（相关性得分 {relevance}）且时间邻近，"
-                "但工具操作目的、提交内容与学习收获仍需学生确认。"
-            ),
-            question_to_student="这次工具操作是否帮助你推进了后续提交？你从中形成了什么新理解？",
         )
 
     def _adjust_constraints_candidate(
@@ -791,11 +641,6 @@ def _opencode_session_ids(event: ObservableEvent) -> frozenset[str]:
         if match is not None:
             sessions.add(match.group("session"))
     return frozenset(sessions)
-
-
-def _is_low_signal_trace(trace: ObservableEvent) -> bool:
-    lowered = trace.summary.casefold()
-    return any(term.casefold() in lowered for term in _LOW_SIGNAL_TRACE_TERMS)
 
 
 def _has_trace_learning_signal(trace: ObservableEvent) -> bool:

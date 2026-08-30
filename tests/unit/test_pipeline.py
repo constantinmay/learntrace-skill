@@ -14,7 +14,11 @@ from learntrace.models import (
     SourceType,
     StudentConfirmation,
 )
-from learntrace.reporting import CandidateDraft, apply_confirmations, build_archive_bundle
+from learntrace.reporting import (
+    CandidateDraft,
+    apply_confirmations,
+    build_archive_bundle,
+)
 from learntrace.reporting.pipeline import (
     MAX_CANDIDATES,
     StubCandidateInferencer,
@@ -761,19 +765,34 @@ def test_stub_rejects_low_signal_and_topically_unrelated_nearby_traces() -> None
         ),
     ],
 )
-def test_revision_heuristic_accepts_synonymous_wording(
+def test_word_similarity_and_time_proximity_alone_create_no_candidate(
     trace_summary: str,
     commit_summary: str,
 ) -> None:
+    """An AI-suggestion trace and a topically similar nearby commit are NOT
+    linked by the deterministic stub: wording similarity plus time proximity
+    is not a legitimate trace-to-commit correspondence. Such a link requires
+    a structured checkpoint, a semantic judgment made from a fully authorized
+    conversation, or the student's own confirmation — none of which the stub
+    has. So no REVISE_AI_SUGGESTION candidate is materialized here."""
     events = (
-        _event("evt-trace", EventKind.TRACE_RECORD, trace_summary),
-        _event("evt-commit", EventKind.GIT_COMMIT, commit_summary),
+        _event(
+            "evt-trace",
+            EventKind.TRACE_RECORD,
+            trace_summary,
+            occurred_at="2026-08-10T09:40:00Z",
+        ),
+        _event(
+            "evt-commit",
+            EventKind.GIT_COMMIT,
+            commit_summary,
+            occurred_at="2026-08-10T09:45:00Z",
+        ),
     )
 
     bundle = build_archive_bundle(events, inferencer=StubCandidateInferencer())
 
-    assert len(bundle.candidates) == 1
-    assert bundle.candidates[0].node_type == NodeType.REVISE_AI_SUGGESTION
+    assert bundle.candidates == ()
 
 
 class ManyCandidateInferencer:
@@ -799,3 +818,32 @@ def test_build_archive_bundle_enforces_candidate_limit() -> None:
     assert len(bundle.candidates) == MAX_CANDIDATES
     assert bundle.warnings[0].code == "candidate_limit_applied"
     assert "省略 10 条" in bundle.warnings[0].message
+
+
+def test_time_proximity_nearby_trace_commit_no_longer_creates_candidate() -> None:
+    """Issue #29 + review: a learning-signal trace within 30 min of a topical
+    commit is NOT materialized as any candidate by the deterministic stub.
+    Time proximity plus wording similarity is not a legitimate
+    trace-to-commit correspondence; such a link requires a structured
+    checkpoint, a semantic judgment made from a fully authorized conversation,
+    or the student's own confirmation — none of which the stub has. (The
+    former proximity reflection question is removed; that question type can
+    only be re-introduced once #28's question/answer model is defined.)"""
+    events = (
+        _event(
+            "evt-trace-parse",
+            EventKind.TRACE_RECORD,
+            "OpenCode 工具 write 已完成，学生决定先修复 CSV 解析失败再提交。路径：parser.py。",
+            occurred_at="2026-08-10T09:40:00Z",
+        ),
+        _event(
+            "evt-commit-parse",
+            EventKind.GIT_COMMIT,
+            '提交 a1b2c3d 的提交信息为"调整解析逻辑"，记录 1 个文件变更（1 个修改）。',
+            occurred_at="2026-08-10T09:45:00Z",
+        ),
+    )
+
+    bundle = build_archive_bundle(events, inferencer=StubCandidateInferencer())
+
+    assert bundle.candidates == ()
