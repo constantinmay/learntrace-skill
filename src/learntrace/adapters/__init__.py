@@ -10,6 +10,7 @@ from learntrace.adapters.types import (
     TraceParseIssue,
     UnsupportedOpenCodeFormatError,
     UnsupportedTraceFormatError,
+    events_conflict,
 )
 
 __all__ = [
@@ -24,5 +25,6 @@ __all__ = [
     "adapt_codex_exports",
     "adapt_opencode_export",
     "adapt_opencode_exports",
+    "events_conflict",
     "write_trace_result",
 ]

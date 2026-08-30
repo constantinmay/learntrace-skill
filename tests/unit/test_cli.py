@@ -1,4 +1,5 @@
 import json
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -9,6 +10,7 @@ from learntrace import cli as cli_module
 from learntrace.archive import build_parser
 from learntrace.cli import main
 from learntrace.models import MissingInfo, NodeType, ObservableEvent
+from learntrace.parsers import ParseResult
 from learntrace.reporting import CandidateDraft
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -163,6 +165,7 @@ def test_discover_command_lists_scope_without_document_content(
     assert payload["documents"] == ["task.md"]
     assert payload["test_logs"] == ["pytest-final.log"]
     assert payload["inventory_counts"]["source_files"] == 1
+    assert "git_authors" not in payload
     assert secret_body not in output
 
 
@@ -265,6 +268,7 @@ def test_run_command_builds_end_to_end_local_outputs(tmp_path: Path) -> None:
         ["--no-git"],
         ["--max-commits", "50"],
         ["--find-copies-harder"],
+        ["--author", "Fixture User"],
         ["--opencode-export", "session.json"],
         ["--authorized"],
         ["--authorize-opencode-export", "session.json"],
@@ -574,6 +578,320 @@ def test_run_does_not_warn_when_only_non_opencode_host_requested(
     captured = capsys.readouterr()
     # No OpenCode export requested → no OpenCode warning.
     assert "produced 0 events" not in captured.err
+
+
+def test_discover_command_reports_git_authors_of_a_real_repository(
+    tmp_path: Path,
+    capsys: CaptureFixture[str],
+) -> None:
+    (tmp_path / "task.md").write_text("# Goal\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(tmp_path), "init", "-q"], check=True, capture_output=True)
+    subprocess.run(
+        ["git", "-C", str(tmp_path), "config", "user.name", "Fixture User"],
+        check=True,
+        capture_output=True,
+    )
+    subprocess.run(
+        ["git", "-C", str(tmp_path), "config", "user.email", "fixture@example.invalid"],
+        check=True,
+        capture_output=True,
+    )
+    subprocess.run(
+        ["git", "-C", str(tmp_path), "add", "task.md"],
+        check=True,
+        capture_output=True,
+    )
+    subprocess.run(
+        ["git", "-C", str(tmp_path), "commit", "-q", "-m", "add task document"],
+        check=True,
+        capture_output=True,
+    )
+
+    assert main(["discover", str(tmp_path)]) == 0
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["git_available"] is True
+    assert payload["git_authors"] == [
+        {"name": "Fixture User", "email": "fixture@example.invalid", "commits": 1}
+    ]
+
+
+def test_parse_command_forwards_author_to_parse_layer(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: CaptureFixture[str],
+) -> None:
+    """--author must reach the parser (parse layer filters, not git --author)."""
+    (tmp_path / "task.md").write_text("# Goal\n\nImplement safely.\n", encoding="utf-8")
+    captured: dict[str, object] = {}
+
+    def fake_parse_static_materials(project_root: Path, **kwargs: object) -> ParseResult:
+        captured.update(kwargs)
+        return ParseResult()
+
+    monkeypatch.setattr(cli_module, "parse_static_materials", fake_parse_static_materials)
+    output = tmp_path / "events.json"
+
+    exit_code = main(
+        ["parse", str(tmp_path), "--no-git", "--author", "Student One", "-o", str(output)]
+    )
+
+    assert exit_code == 0
+    assert captured["git_author"] == "Student One"
+    assert output.is_file()
+
+
+def test_parse_command_leaves_author_unset_by_default(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: CaptureFixture[str],
+) -> None:
+    (tmp_path / "task.md").write_text("# Goal\n\nImplement safely.\n", encoding="utf-8")
+    captured: dict[str, object] = {}
+
+    def fake_parse_static_materials(project_root: Path, **kwargs: object) -> ParseResult:
+        captured.update(kwargs)
+        return ParseResult()
+
+    monkeypatch.setattr(cli_module, "parse_static_materials", fake_parse_static_materials)
+
+    exit_code = main(["parse", str(tmp_path), "--no-git", "-o", str(tmp_path / "events.json")])
+
+    assert exit_code == 0
+    assert captured["git_author"] is None
+
+
+def test_export_evidence_list_prints_empty_index_without_exporting(
+    tmp_path: Path,
+    capsys: CaptureFixture[str],
+) -> None:
+    (tmp_path / "app.py").write_text("VALUE = 1\n", encoding="utf-8")
+
+    exit_code = main(["export-evidence", str(tmp_path), "--list"])
+
+    assert exit_code == 0
+    assert json.loads(capsys.readouterr().out) == []
+    assert not (tmp_path / ".learntrace" / "evidence").exists()
+
+
+def test_export_evidence_rejects_invocation_without_flags(
+    tmp_path: Path,
+    capsys: CaptureFixture[str],
+) -> None:
+    (tmp_path / "app.py").write_text("VALUE = 1\n", encoding="utf-8")
+
+    with pytest.raises(SystemExit) as exc_info:
+        main(["export-evidence", str(tmp_path)])
+
+    assert exc_info.value.code == 1
+    assert "needs one of --git-commit, --file, --session-export, or --list" in (
+        capsys.readouterr().err
+    )
+
+
+def test_export_evidence_cli_exposes_git_commit_export(
+    tmp_path: Path,
+    capsys: CaptureFixture[str],
+) -> None:
+    subprocess.run(["git", "-C", str(tmp_path), "init", "-q"], check=True, capture_output=True)
+    subprocess.run(
+        ["git", "-C", str(tmp_path), "config", "user.name", "Fixture User"],
+        check=True,
+        capture_output=True,
+    )
+    subprocess.run(
+        ["git", "-C", str(tmp_path), "config", "user.email", "fixture@example.invalid"],
+        check=True,
+        capture_output=True,
+    )
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "parser.py").write_text("VALUE = 1\n", encoding="utf-8")
+    subprocess.run(
+        ["git", "-C", str(tmp_path), "add", "src/parser.py"], check=True, capture_output=True
+    )
+    subprocess.run(
+        ["git", "-C", str(tmp_path), "commit", "-q", "-m", "add parser module"],
+        check=True,
+        capture_output=True,
+    )
+    commit_id = subprocess.run(
+        ["git", "-C", str(tmp_path), "rev-parse", "HEAD"],
+        check=True,
+        capture_output=True,
+        encoding="utf-8",
+    ).stdout.strip()
+
+    exit_code = main(["export-evidence", str(tmp_path), "--git-commit", commit_id])
+
+    assert exit_code == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["evidence_dir"] == (tmp_path / ".learntrace" / "evidence").as_posix()
+    (entry,) = payload["exported"]
+    assert entry["path"] == f"git/{commit_id[:12]}.diff.txt"
+    assert entry["kind"] == "git_commit"
+    text = (tmp_path / ".learntrace" / "evidence" / entry["path"]).read_text(encoding="utf-8")
+    assert "add parser module" in text
+
+
+def test_export_evidence_cli_exposes_project_file_export(
+    tmp_path: Path,
+    capsys: CaptureFixture[str],
+) -> None:
+    (tmp_path / "pytest-final.log").write_text("api_key=SECRET123\n1 passed\n", encoding="utf-8")
+
+    exit_code = main(["export-evidence", str(tmp_path), "--file", "pytest-final.log"])
+
+    assert exit_code == 0
+    payload = json.loads(capsys.readouterr().out)
+    (entry,) = payload["exported"]
+    assert entry["path"] == "files/pytest-final.log"
+    assert entry["kind"] == "project_file"
+    text = (tmp_path / ".learntrace" / "evidence" / entry["path"]).read_text(encoding="utf-8")
+    assert "api_key=[REDACTED]" in text
+    assert "1 passed" in text
+    assert "SECRET123" not in text
+
+
+def test_export_evidence_cli_exposes_session_export(
+    tmp_path: Path,
+    capsys: CaptureFixture[str],
+) -> None:
+    export = REPO_ROOT / "tests" / "fixtures" / "opencode" / "authorized-export.json"
+
+    exit_code = main(
+        [
+            "export-evidence",
+            str(tmp_path),
+            "--session-export",
+            str(export),
+            "--source",
+            "opencode",
+        ]
+    )
+
+    assert exit_code == 0
+    payload = json.loads(capsys.readouterr().out)
+    (entry,) = payload["exported"]
+    assert entry["path"] == "sessions/opencode-ses_fixture.minimal.jsonl"
+    assert entry["authorization"] == "minimal"
+    lines = (
+        (tmp_path / ".learntrace" / "evidence" / entry["path"]).read_text(encoding="utf-8").strip()
+    )
+    assert len(lines.splitlines()) == 3
+    assert "FORBIDDEN_CHAT_TEXT" not in lines
+
+
+def test_export_evidence_list_has_no_absolute_session_path(
+    tmp_path: Path,
+    capsys: CaptureFixture[str],
+) -> None:
+    """评审阻塞: --list 输出(index.json)不得泄露本机绝对会话路径。"""
+    export = REPO_ROOT / "tests" / "fixtures" / "opencode" / "authorized-export.json"
+
+    main(
+        [
+            "export-evidence",
+            str(tmp_path),
+            "--session-export",
+            str(export),
+            "--source",
+            "opencode",
+        ]
+    )
+    capsys.readouterr()  # discard export output
+    exit_code = main(["export-evidence", str(tmp_path), "--list"])
+
+    assert exit_code == 0
+    listed = json.loads(capsys.readouterr().out)
+    (entry,) = listed
+    assert entry["source"] == "session export opencode/ses_fixture"
+    listed_text = json.dumps(listed, ensure_ascii=False)
+    index_text = (tmp_path / ".learntrace" / "evidence" / "index.json").read_text(encoding="utf-8")
+    for marker in (str(export.resolve()).replace("\\", "/"), export.resolve().as_posix()):
+        assert marker not in listed_text
+        assert marker not in index_text
+
+
+def test_export_evidence_full_requires_authorize_full_read(
+    tmp_path: Path,
+    capsys: CaptureFixture[str],
+) -> None:
+    """评审阻塞: full 导出须先有逐文件全文授权记录, 仅改参数不能升级权限。"""
+    session = tmp_path / "session.jsonl"
+    session.write_text("api_key=SECRET123 secret tail\n", encoding="utf-8")
+
+    # 无授权: --authorization full 被拒
+    with pytest.raises(SystemExit) as exc_info:
+        main(
+            [
+                "export-evidence",
+                str(tmp_path),
+                "--session-export",
+                str(session),
+                "--source",
+                "codex",
+                "--authorization",
+                "full",
+            ]
+        )
+    assert exc_info.value.code == 1
+    assert "no per-file full-read" in capsys.readouterr().err
+    # 原文未被读取/落盘
+    assert not (tmp_path / ".learntrace" / "evidence" / "sessions").exists()
+
+    # 记录授权后放行
+    exit_code = main(
+        [
+            "authorize-full-read",
+            str(tmp_path),
+            "--session-export",
+            str(session),
+            "--source",
+            "codex",
+            "--authorized-at",
+            "2026-08-20T10:00:00+08:00",
+        ]
+    )
+    assert exit_code == 0
+    capsys.readouterr()
+    exit_code = main(
+        [
+            "export-evidence",
+            str(tmp_path),
+            "--session-export",
+            str(session),
+            "--source",
+            "codex",
+            "--authorization",
+            "full",
+        ]
+    )
+    assert exit_code == 0
+    payload = json.loads(capsys.readouterr().out)
+    (entry,) = payload["exported"]
+    assert entry["authorization"] == "full"
+    assert entry["source"] == "session export codex/session"
+
+
+def test_authorize_full_read_rejects_missing_file(
+    tmp_path: Path,
+    capsys: CaptureFixture[str],
+) -> None:
+    with pytest.raises(SystemExit) as exc_info:
+        main(
+            [
+                "authorize-full-read",
+                str(tmp_path),
+                "--session-export",
+                str(tmp_path / "missing.jsonl"),
+                "--source",
+                "codex",
+                "--authorized-at",
+                "2026-08-20T10:00:00+08:00",
+            ]
+        )
+    assert exc_info.value.code == 1
+    assert "session export not found" in capsys.readouterr().err
 
 
 def test_cli_rejects_confirmation_without_real_timestamp(

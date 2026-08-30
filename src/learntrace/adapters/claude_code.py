@@ -17,6 +17,7 @@ from learntrace.adapters.types import (
     TraceInputStatus,
     TraceParseIssue,
     UnsupportedTraceFormatError,
+    events_conflict,
 )
 from learntrace.models import (
     ContractValidator,
@@ -265,6 +266,7 @@ def _build_event(
     *,
     is_error: bool,
     session_id: str,
+    export_path: Path,
     project_root: Path | None,
     validator: ContractValidator,
 ) -> ObservableEvent:
@@ -283,6 +285,11 @@ def _build_event(
                 type=SourceType.TRACE_RECORD,
                 ref=source_ref,
                 note="claude-code",
+            ),
+            SourceRef(
+                type=SourceType.FILE,
+                ref=export_path.resolve().as_posix(),
+                note="session-export",
             ),
         ),
         occurred_at=pending_call.occurred_at,
@@ -365,6 +372,7 @@ def adapt_claude_code_export(
                     pending_call,
                     is_error=is_error,
                     session_id=resolved_session,
+                    export_path=export_path,
                     project_root=project_root,
                     validator=event_validator,
                 )
@@ -466,7 +474,7 @@ def adapt_claude_code_exports(
             if existing is None:
                 events_by_id[event.id] = event
                 continue
-            if existing.to_dict() != event.to_dict():
+            if events_conflict(existing, event):
                 raise UnsupportedTraceFormatError(
                     "多个 Claude Code 会话包含 ID 相同但内容冲突的工具记录。"
                 )

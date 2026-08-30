@@ -1,5 +1,6 @@
 # Local-only project material
 local/
+.learntrace/
 
 # Python and uv
 .venv/

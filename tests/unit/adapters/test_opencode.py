@@ -134,6 +134,11 @@ def test_completed_file_tool_becomes_a_stable_valid_trace_event(tmp_path: Path) 
     assert event.source_refs[0].type is SourceType.TRACE_RECORD
     assert event.source_refs[0].ref == source_ref
     assert event.source_refs[0].note == "opencode"
+    # 第二个引用指向导出文件本身（证据回读“去哪看原文”的落点）
+    assert len(event.source_refs) == 2
+    assert event.source_refs[1].type is SourceType.FILE
+    assert event.source_refs[1].ref == export_path.resolve().as_posix()
+    assert event.source_refs[1].note == "session-export"
     ContractValidator().validate("observable_event", event.to_dict())
 
 

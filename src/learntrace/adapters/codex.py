@@ -18,6 +18,7 @@ from learntrace.adapters.types import (
     TraceInputStatus,
     TraceParseIssue,
     UnsupportedTraceFormatError,
+    events_conflict,
 )
 from learntrace.models import (
     ContractValidator,
@@ -394,6 +395,11 @@ def adapt_codex_export(
                         ref=source_ref,
                         note="codex",
                     ),
+                    SourceRef(
+                        type=SourceType.FILE,
+                        ref=export_path.resolve().as_posix(),
+                        note="session-export",
+                    ),
                 ),
                 occurred_at=pending_call.occurred_at,
             )
@@ -496,7 +502,7 @@ def adapt_codex_exports(
             if existing is None:
                 events_by_id[event.id] = event
                 continue
-            if existing.to_dict() != event.to_dict():
+            if events_conflict(existing, event):
                 raise UnsupportedTraceFormatError(
                     "多个 Codex 会话包含 ID 相同但内容冲突的工具记录。"
                 )
