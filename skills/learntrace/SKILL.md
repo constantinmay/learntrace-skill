@@ -53,10 +53,15 @@ with three options:
   adapted into v0 events, but only the five retained field categories carry
   forward: time, tool type, normalized relative path, command summary
   (executable name only), and source host. No message or result text.
-- **(b) Full-text read (authorized, full)** — requires full-read authorization
-  (lands with #28). The host agent may read the full text and produce an
-  *auto-organized* summary, marked `自动整理`, with the supporting records
-  listed so the student can deny it.
+- **(b) Full-text read (authorized, full)** — requires a per-file full-read
+  authorization **record** before any raw read. When the student consents to
+  full-text reading of this exact file, record it with
+  `learntrace authorize-full-read <project-dir> --session-export <path>
+  --source <host> --authorized-at <iso-timestamp>`. Only then may the host
+  agent read the full text (and produce an *auto-organized* summary, marked
+  `自动整理`, with the supporting records listed so the student can deny it).
+  Without that record, `export-evidence --authorization full` refuses: passing
+  the `full` flag alone never grants the right to read the raw session.
 - **(c) Not used (the default)** — the file is not read. The report records it
   as an explicit gap (count + category), not as absence of AI use.
 
@@ -249,10 +254,34 @@ evidence location; neither is pre-generated during a first scan.
 
 Session exports follow the authorization level from the consent gate:
 `minimal` writes only the five retained v0 event fields; `full` writes the raw
-file and requires full-read authorization. Every exported file is redacted
-through `redact_sensitive_text` before it is written to disk. `export-evidence`
-never runs as part of a first scan or `run`; it is a deliberate, on-demand step
+file and requires a per-file full-read authorization record (see
+`authorize-full-read`). Every exported file is redacted through
+`redact_sensitive_text` before it is written to disk. The index `source`
+identifier carries only the host name and session id — never the local
+absolute path of the session export, so `index.json` and `--list` output do
+not leak the machine's home directory or username. `export-evidence` never
+runs as part of a first scan or `run`; it is a deliberate, on-demand step
 after a citation needs backing.
+
+### Full-read authorization record
+
+`export-evidence --authorization full` reads the raw session file. That is a
+privilege escalation over minimal retention, so it is gated by a verifiable
+per-file record, not by the flag itself:
+
+1. Obtain the student's explicit full-read consent for this exact file.
+2. Record it: `learntrace authorize-full-read <project-dir>
+   --session-export <path> --source <host> --authorized-at <iso-timestamp>`.
+   This writes one record to `.learntrace/full-read-authorizations.json`
+   (absolute path + host + timestamp; no file content).
+3. Only then does `export-evidence --session-export <same-path>
+   --authorization full` proceed. A record for a different file does not
+   cover this one, and changing `--authorization` to `full` without a record
+   is refused.
+
+The CLI/API contract: the host agent is responsible for obtaining consent and
+calling `authorize-full-read` once per file; the CLI only verifies that a
+matching record exists before performing the full read.
 
 ## Evidence and privacy
 

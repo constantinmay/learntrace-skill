@@ -4,11 +4,14 @@
 由宿主 agent 在需要时显式触发，逐文件导出并维护 index.json。边界约束：
 
 1. 会话导出遵循授权等级——minimal 只导出授权适配后的 v0 事件（时间/宿主/
-   工具类型/归一化路径/命令摘要五类字段），full 导出原文（随全文阅读授权）；
-   evidence 文件不是绕过最小保留的通道。
-2. 所有导出在写盘前经过 ``redact_sensitive_text``（大 limit 只做形态脱敏，
+   工具类型/归一化路径/命令摘要五类字段），full 导出原文（须先有逐文件
+   全文阅读授权记录）；evidence 文件不是绕过最小保留的通道。
+2. full 导出的授权门由逐文件授权记录承担：宿主 agent 在学生明确同意某一份
+   会话导出可全文阅读后，显式记录该文件；export-evidence --authorization full
+   只认这份记录，仅把参数改成 full 不能升级权限。
+3. 所有导出在写盘前经过 ``redact_sensitive_text``（大 limit 只做形态脱敏，
    不做截断）。
-3. ``.learntrace/``（含 evidence/）在 .gitignore 指引内，不进入仓库。
+4. ``.learntrace/``（含 evidence/）在 .gitignore 指引内，不进入仓库。
 """
 
 from __future__ import annotations
@@ -38,6 +41,7 @@ _NO_TRUNCATION_LIMIT = 1_000_000_000
 _REPLACE_RETRY_DELAYS = (0.01, 0.02, 0.04, 0.08, 0.16)
 _WINDOWS_REPLACE_ERRORS = frozenset({5, 32})
 _INDEX_NAME = "index.json"
+_FULL_READ_AUTHORIZATIONS_NAME = "full-read-authorizations.json"
 _SESSION_ID_RE = re.compile(r"^trace://[^/]+/([^/]+)/")
 
 _SESSION_EXPORT_ADAPTERS = {
@@ -193,6 +197,75 @@ def _safe_export_name(value: str) -> str:
     return name or "unnamed"
 
 
+def _full_read_authorizations_path(project_root: Path) -> Path:
+    """逐文件全文阅读授权记录的位置（.learntrace 下，不进入仓库）。"""
+    return repo_root(project_root) / ".learntrace" / _FULL_READ_AUTHORIZATIONS_NAME
+
+
+def _load_full_read_authorizations(project_root: Path) -> list[dict[str, Any]]:
+    path = _full_read_authorizations_path(project_root)
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except (FileNotFoundError, ValueError):
+        return []
+    if not isinstance(raw, list):
+        return []
+    return [
+        cast("dict[str, Any]", item) for item in cast("list[object]", raw) if isinstance(item, dict)
+    ]
+
+
+def _record_entry_sort_key(item: dict[str, Any]) -> str:
+    return str(item.get("path", ""))
+
+
+def record_full_read_authorization(
+    project_root: Path,
+    export_path: Path,
+    *,
+    source: str,
+    authorized_at: str,
+) -> dict[str, Any]:
+    """记录一份会话导出的逐文件全文阅读授权。
+
+    宿主 agent 只在学生对该文件明确同意后调用；一条授权只覆盖
+    ``export_path.resolve()`` 指向的这同一个文件。授权记录本身不含文件
+    内容，只含绝对路径、宿主名与时间戳，供 ``--authorization full`` 校验。
+    """
+    root = repo_root(project_root)
+    if source not in _SESSION_EXPORT_ADAPTERS:
+        msg = f"unsupported session source: {source}"
+        raise ValueError(msg)
+    resolved = export_path.resolve()
+    if not resolved.is_file():
+        msg = f"session export not found: {export_path}"
+        raise FileNotFoundError(msg)
+    record: dict[str, Any] = {
+        "path": resolved.as_posix(),
+        "source": source,
+        "authorized_at": authorized_at,
+    }
+    records = [
+        item for item in _load_full_read_authorizations(root) if item.get("path") != record["path"]
+    ]
+    records.append(record)
+    records.sort(key=_record_entry_sort_key)
+    _atomic_write_text(
+        _full_read_authorizations_path(root),
+        json.dumps(records, ensure_ascii=False, indent=2) + "\n",
+    )
+    return record
+
+
+def is_full_read_authorized(project_root: Path, export_path: Path) -> bool:
+    """该会话导出文件是否已有逐文件全文阅读授权记录（精确路径匹配）。"""
+    resolved = export_path.resolve()
+    return any(
+        item.get("path") == resolved.as_posix()
+        for item in _load_full_read_authorizations(project_root)
+    )
+
+
 def export_git_commit(project_root: Path, commit_id: str) -> EvidenceIndexEntry:
     """导出单个提交的完整文本（提交信息 + diff）到 evidence/git/。"""
     root = repo_root(project_root)
@@ -223,8 +296,10 @@ def export_session_evidence(
 ) -> EvidenceIndexEntry:
     """导出一个已授权会话的证据切片到 evidence/sessions/。
 
-    minimal=只导出授权适配后的 v0 事件（五类字段）；full=导出原文（需全文
-    阅读权限）。一次授权只覆盖一个导出文件，由调用方保证路径精确。
+    minimal=只导出授权适配后的 v0 事件（五类字段）；full=导出原文（须先有
+    指向该文件的逐文件全文阅读授权记录）。一次授权只覆盖一个导出文件，
+    full 导出仅凭 ``--authorization full`` 参数不能升级权限，须
+    ``is_full_read_authorized`` 命中精确路径记录，否则抛 PermissionError。
     """
     if source not in _SESSION_EXPORT_ADAPTERS:
         msg = f"unsupported session source: {source}"
@@ -237,17 +312,30 @@ def export_session_evidence(
         msg = f"session export not found: {export_path}"
         raise FileNotFoundError(msg)
     evidence = evidence_dir(root)
-    export_ref = export_path.resolve().as_posix()
 
     if authorization == "full":
-        text = _redact_full(export_path.read_text(encoding="utf-8", errors="replace"))
+        # 全文导出的授权门：仅凭 --authorization full 这个参数不足以读取原文。
+        # 必须先存在指向这同一份文件的逐文件全文阅读授权记录（宿主 agent 在
+        # 学生明确同意后显式记录），否则拒读——minimal evidence 不是绕过通道。
+        if not is_full_read_authorized(root, export_path):
+            msg = (
+                "full-text session export is blocked: no per-file full-read "
+                "authorization record exists for "
+                f"{export_path.resolve().as_posix()}. Obtain the student's explicit "
+                "full-read consent for this exact file and record it with "
+                "'learntrace authorize-full-read' first; the --authorization full "
+                "flag alone does not grant the right to read the raw session."
+            )
+            raise PermissionError(msg)
         session_id = export_path.stem
+        source_ref = f"session export {source}/{session_id}"
+        text = _redact_full(export_path.read_text(encoding="utf-8", errors="replace"))
         relative = f"sessions/{_safe_export_name(source)}-{_safe_export_name(session_id)}.full.txt"
         _atomic_write_text(evidence / relative, text)
         entry = EvidenceIndexEntry(
             path=relative,
             kind="session_export",
-            source=f"session export {export_ref}",
+            source=source_ref,
             coverage="full session file (redacted)",
             truncated=False,
             authorization="full",
@@ -277,12 +365,14 @@ def export_session_evidence(
         if match:
             session_id = match.group(1)
             break
+    # index 的 source 只含宿主名与会话 id，绝不落本机绝对路径（用户名/home）。
+    source_ref = f"session export {source}/{session_id}"
     relative = f"sessions/{_safe_export_name(source)}-{_safe_export_name(session_id)}.minimal.jsonl"
     _atomic_write_text(evidence / relative, "\n".join(lines) + "\n")
     entry = EvidenceIndexEntry(
         path=relative,
         kind="session_export",
-        source=f"session export {export_ref}",
+        source=source_ref,
         coverage=f"minimal retention: {len(lines)} v0 events (time/host/tool/path/command only)",
         truncated=False,
         authorization="minimal",

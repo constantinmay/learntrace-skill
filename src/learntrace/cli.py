@@ -27,6 +27,7 @@ from learntrace.evidence import (
     export_project_file,
     export_session_evidence,
     load_evidence_index,
+    record_full_read_authorization,
 )
 from learntrace.models import ObservableEvent
 from learntrace.parsers import discover_static_materials, parse_static_materials, write_parse_result
@@ -41,6 +42,7 @@ _COMMANDS = frozenset(
     {
         "adapt",
         "archive",
+        "authorize-full-read",
         "discover",
         "export-evidence",
         "parse",
@@ -169,6 +171,34 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     export_parser.add_argument("--list", action="store_true", help="Print the evidence index.")
+
+    authorize_parser = subparsers.add_parser(
+        "authorize-full-read",
+        help=(
+            "Record a per-file full-read authorization for one session export, "
+            "after the student's explicit consent (required before "
+            "export-evidence --authorization full)."
+        ),
+    )
+    authorize_parser.add_argument("project_dir", type=Path)
+    authorize_parser.add_argument(
+        "--session-export",
+        type=Path,
+        required=True,
+        help="The exact session export file to authorize a full read of.",
+    )
+    authorize_parser.add_argument(
+        "--source",
+        choices=tuple(_TRACE_EXPORT_ADAPTERS),
+        required=True,
+        help="Host for the session export (opencode / claude-code / codex).",
+    )
+    authorize_parser.add_argument(
+        "--authorized-at",
+        type=str,
+        required=True,
+        help="ISO-8601 timestamp of the student's explicit full-read consent.",
+    )
 
     render_parser = subparsers.add_parser(
         "render-narrative",
@@ -425,6 +455,28 @@ def _run_command(args: argparse.Namespace, parser: argparse.ArgumentParser) -> i
                 )
             )
             return 0
+        if args.command == "authorize-full-read":
+            record = record_full_read_authorization(
+                args.project_dir,
+                args.session_export,
+                source=args.source,
+                authorized_at=args.authorized_at,
+            )
+            print(
+                json.dumps(
+                    {
+                        "recorded": record,
+                        "note": (
+                            "Full-read authorization recorded for this exact file. "
+                            "You may now run export-evidence --session-export <path> "
+                            "--source <host> --authorization full."
+                        ),
+                    },
+                    ensure_ascii=False,
+                    indent=2,
+                )
+            )
+            return 0
         if args.command == "parse":
             output = args.output or args.project_dir.resolve() / ".learntrace/task2-result.json"
             events, warnings = _parse_project(args, output)
@@ -614,7 +666,7 @@ def _run_command(args: argparse.Namespace, parser: argparse.ArgumentParser) -> i
         )
         print(f"Wrote learning record: {archive_result.output_path}")
         return 0
-    except (FileNotFoundError, OSError, ValueError) as exc:
+    except (FileNotFoundError, OSError, PermissionError, ValueError) as exc:
         parser.exit(1, f"{parser.prog}: error: {exc}\n")
 
 

@@ -781,6 +781,119 @@ def test_export_evidence_cli_exposes_session_export(
     assert "FORBIDDEN_CHAT_TEXT" not in lines
 
 
+def test_export_evidence_list_has_no_absolute_session_path(
+    tmp_path: Path,
+    capsys: CaptureFixture[str],
+) -> None:
+    """评审阻塞: --list 输出(index.json)不得泄露本机绝对会话路径。"""
+    export = REPO_ROOT / "tests" / "fixtures" / "opencode" / "authorized-export.json"
+
+    main(
+        [
+            "export-evidence",
+            str(tmp_path),
+            "--session-export",
+            str(export),
+            "--source",
+            "opencode",
+        ]
+    )
+    capsys.readouterr()  # discard export output
+    exit_code = main(["export-evidence", str(tmp_path), "--list"])
+
+    assert exit_code == 0
+    listed = json.loads(capsys.readouterr().out)
+    (entry,) = listed
+    assert entry["source"] == "session export opencode/ses_fixture"
+    listed_text = json.dumps(listed, ensure_ascii=False)
+    index_text = (tmp_path / ".learntrace" / "evidence" / "index.json").read_text(encoding="utf-8")
+    for marker in (str(export.resolve()).replace("\\", "/"), export.resolve().as_posix()):
+        assert marker not in listed_text
+        assert marker not in index_text
+
+
+def test_export_evidence_full_requires_authorize_full_read(
+    tmp_path: Path,
+    capsys: CaptureFixture[str],
+) -> None:
+    """评审阻塞: full 导出须先有逐文件全文授权记录, 仅改参数不能升级权限。"""
+    session = tmp_path / "session.jsonl"
+    session.write_text("api_key=SECRET123 secret tail\n", encoding="utf-8")
+
+    # 无授权: --authorization full 被拒
+    with pytest.raises(SystemExit) as exc_info:
+        main(
+            [
+                "export-evidence",
+                str(tmp_path),
+                "--session-export",
+                str(session),
+                "--source",
+                "codex",
+                "--authorization",
+                "full",
+            ]
+        )
+    assert exc_info.value.code == 1
+    assert "no per-file full-read" in capsys.readouterr().err
+    # 原文未被读取/落盘
+    assert not (tmp_path / ".learntrace" / "evidence" / "sessions").exists()
+
+    # 记录授权后放行
+    exit_code = main(
+        [
+            "authorize-full-read",
+            str(tmp_path),
+            "--session-export",
+            str(session),
+            "--source",
+            "codex",
+            "--authorized-at",
+            "2026-08-20T10:00:00+08:00",
+        ]
+    )
+    assert exit_code == 0
+    capsys.readouterr()
+    exit_code = main(
+        [
+            "export-evidence",
+            str(tmp_path),
+            "--session-export",
+            str(session),
+            "--source",
+            "codex",
+            "--authorization",
+            "full",
+        ]
+    )
+    assert exit_code == 0
+    payload = json.loads(capsys.readouterr().out)
+    (entry,) = payload["exported"]
+    assert entry["authorization"] == "full"
+    assert entry["source"] == "session export codex/session"
+
+
+def test_authorize_full_read_rejects_missing_file(
+    tmp_path: Path,
+    capsys: CaptureFixture[str],
+) -> None:
+    with pytest.raises(SystemExit) as exc_info:
+        main(
+            [
+                "authorize-full-read",
+                str(tmp_path),
+                "--session-export",
+                str(tmp_path / "missing.jsonl"),
+                "--source",
+                "codex",
+                "--authorized-at",
+                "2026-08-20T10:00:00+08:00",
+            ]
+        )
+    assert exc_info.value.code == 1
+    assert "session export not found" in capsys.readouterr().err
+
+
 def test_cli_rejects_confirmation_without_real_timestamp(
     tmp_path: Path,
     capsys: CaptureFixture[str],

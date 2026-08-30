@@ -14,7 +14,9 @@ from learntrace.evidence import (
     export_git_commit,
     export_project_file,
     export_session_evidence,
+    is_full_read_authorized,
     load_evidence_index,
+    record_full_read_authorization,
 )
 
 OPENCODE_FIXTURE = Path(__file__).parents[1] / "fixtures" / "opencode" / "authorized-export.json"
@@ -183,11 +185,18 @@ def test_full_session_export_is_redacted_but_not_truncated(tmp_path: Path) -> No
     session = tmp_path / "full-session.jsonl"
     session.write_text(f"api_key=SECRET123 sk-abcdefgh1234567890 {tail}\n", encoding="utf-8")
 
+    # 全文导出前须先记录逐文件全文授权
+    record_full_read_authorization(
+        tmp_path, session, source="codex", authorized_at="2026-08-20T10:05:00+08:00"
+    )
     entry = export_session_evidence(tmp_path, session, source="codex", authorization="full")
 
     assert entry.path == "sessions/codex-full-session.full.txt"
     assert entry.authorization == "full"
     assert entry.coverage == "full session file (redacted)"
+    # index source 只含宿主名与文件名 stem，不落本机绝对路径
+    assert entry.source == "session export codex/full-session"
+    assert str(session.resolve()) not in entry.source
     text = (evidence_dir(tmp_path) / entry.path).read_text(encoding="utf-8")
     assert "api_key=[REDACTED]" in text
     assert "sk-abcdefgh1234567890" not in text
@@ -300,3 +309,110 @@ def test_index_deduplicates_by_path_and_stays_sorted(tmp_path: Path) -> None:
     ]
     index_path = evidence_dir(tmp_path) / "index.json"
     assert index_path.read_text(encoding="utf-8").endswith("\n")
+
+
+def test_minimal_index_json_has_no_absolute_session_path(tmp_path: Path) -> None:
+    """评审阻塞: minimal evidence 的 index.json 不得泄露本机绝对会话路径。
+
+    仅测试 minimal JSONL 内容不够——index.json（及 ``--list`` 输出）也必须是
+    无用户名/home/绝对路径的来源标识。
+    """
+    # 会话导出文件放在一段含「用户名」的深层目录里，放大泄露风险
+    home_like = tmp_path / "Users" / "Fixture Person" / "Sessions"
+    home_like.mkdir(parents=True)
+    session = home_like / "authorized-export.json"
+    (session.write_bytes(OPENCODE_FIXTURE.read_bytes()))
+
+    entry = export_session_evidence(tmp_path, session, source="opencode", authorization="minimal")
+
+    # index.json 落盘内容
+    index_path = evidence_dir(tmp_path) / "index.json"
+    index_text = index_path.read_text(encoding="utf-8")
+    (indexed,) = load_evidence_index(tmp_path)
+    assert indexed["source"] == entry.source
+    assert indexed["source"] == "session export opencode/ses_fixture"
+    # 用户名 / home 片段 / 绝对路径 一律不得出现在 index.json 里
+    for marker in (
+        "Fixture Person",
+        "Users",
+        str(session.resolve()),
+        session.resolve().as_posix(),
+        str(home_like.resolve()),
+    ):
+        assert marker not in index_text
+    # --list 走的是 load_evidence_index，输出与 index.json 同构，同样无路径
+    listed = [item for item in load_evidence_index(tmp_path)]
+    assert listed == json.loads(index_text)
+
+
+def test_full_session_export_requires_per_file_full_read_authorization(
+    tmp_path: Path,
+) -> None:
+    """评审阻塞: full 导出必须有逐文件全文授权记录, 仅改参数不能升级权限。"""
+    session = _codex_session(tmp_path / "session-a.jsonl")
+
+    # ① 无授权记录: 仅凭 --authorization full 不能读原文
+    with pytest.raises(PermissionError, match="no per-file full-read"):
+        export_session_evidence(tmp_path, session, source="codex", authorization="full")
+    # ② 授权的是另一份文件: 不覆盖本文件（逐文件生效, 非全局开关）
+    other = _codex_session(tmp_path / "session-b.jsonl")
+    record_full_read_authorization(
+        tmp_path, other, source="codex", authorized_at="2026-08-20T10:00:00+08:00"
+    )
+    with pytest.raises(PermissionError, match="no per-file full-read"):
+        export_session_evidence(tmp_path, session, source="codex", authorization="full")
+    # ③ 精确命中本文件的授权记录: 放行
+    record_full_read_authorization(
+        tmp_path, session, source="codex", authorized_at="2026-08-20T10:01:00+08:00"
+    )
+    entry = export_session_evidence(tmp_path, session, source="codex", authorization="full")
+    assert entry.authorization == "full"
+    assert entry.path == "sessions/codex-session-a.full.txt"
+
+
+def test_full_read_authorization_is_per_file_and_reusable(tmp_path: Path) -> None:
+    session_a = _codex_session(tmp_path / "a.jsonl")
+    session_b = _codex_session(tmp_path / "b.jsonl")
+
+    assert not is_full_read_authorized(tmp_path, session_a)
+    record_full_read_authorization(
+        tmp_path, session_a, source="codex", authorized_at="2026-08-20T10:00:00+08:00"
+    )
+    # 授权只覆盖记录指向的同一文件, 不波及别的文件
+    assert is_full_read_authorized(tmp_path, session_a)
+    assert not is_full_read_authorized(tmp_path, session_b)
+    # 记录落在 .learntrace 下, 不进入 evidence 索引, 也不含文件内容
+    record_file = tmp_path / ".learntrace" / "full-read-authorizations.json"
+    assert record_file.exists()
+    records = json.loads(record_file.read_text(encoding="utf-8"))
+    assert len(records) == 1
+    assert records[0]["source"] == "codex"
+    assert records[0]["authorized_at"] == "2026-08-20T10:00:00+08:00"
+    # 记录的是绝对路径（本机校验用）, 但 index.json 不受其影响
+    assert records[0]["path"] == session_a.resolve().as_posix()
+    # 重复记录同一文件不产生重复条目
+    record_full_read_authorization(
+        tmp_path, session_a, source="codex", authorized_at="2026-08-20T10:02:00+08:00"
+    )
+    records = json.loads(record_file.read_text(encoding="utf-8"))
+    assert [item["path"] for item in records] == [session_a.resolve().as_posix()]
+
+
+def test_record_full_read_authorization_rejects_missing_and_bad_source(
+    tmp_path: Path,
+) -> None:
+    with pytest.raises(FileNotFoundError, match="session export not found"):
+        record_full_read_authorization(
+            tmp_path,
+            tmp_path / "missing.jsonl",
+            source="codex",
+            authorized_at="2026-08-20T10:00:00+08:00",
+        )
+    session = _codex_session(tmp_path / "session.jsonl")
+    with pytest.raises(ValueError, match="unsupported session source"):
+        record_full_read_authorization(
+            tmp_path,
+            session,
+            source="gitlab",
+            authorized_at="2026-08-20T10:00:00+08:00",
+        )
