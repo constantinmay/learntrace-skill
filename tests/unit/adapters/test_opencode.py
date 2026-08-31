@@ -14,6 +14,7 @@ from learntrace.adapters import (
     UnsupportedOpenCodeFormatError,
     adapt_opencode_export,
     adapt_opencode_exports,
+    trace_result_to_dict,
     write_trace_result,
 )
 from learntrace.adapters.types import session_export_source_ref
@@ -383,6 +384,35 @@ def test_summaries_use_strict_whitelists_and_never_copy_sensitive_fields(
         assert forbidden not in serialized
 
 
+@pytest.mark.parametrize(
+    "unsafe_path",
+    [
+        "file:///home/alice/private.py",
+        " /home/alice/private.py",
+        " C:/Users/Alice/private.py",
+        "%2Fhome%2Falice/private.py",
+    ],
+)
+def test_path_obfuscation_cannot_enter_task3_output(
+    tmp_path: Path,
+    unsafe_path: str,
+) -> None:
+    export_path = _write_export(
+        tmp_path / "export.json",
+        _export(_message(_tool_part(input_data={"filePath": unsafe_path}))),
+    )
+
+    result = adapt_opencode_export(
+        export_path,
+        authorized=True,
+        project_root=Path("D:/repo"),
+    )
+    serialized = json.dumps(trace_result_to_dict(result), ensure_ascii=False)
+
+    assert "alice" not in serialized.casefold()
+    assert "users" not in serialized.casefold()
+
+
 def test_unknown_tool_does_not_read_unapproved_path_fields(tmp_path: Path) -> None:
     marker = "FORBIDDEN_UNKNOWN_TOOL_INPUT"
     export_path = _write_export(
@@ -625,15 +655,22 @@ def test_multiple_sessions_require_authorization_for_each_path(
 
 
 def test_repeated_identical_export_is_deduplicated(tmp_path: Path) -> None:
-    export_path = _write_export(tmp_path / "export.json", _export(_message(_tool_part())))
+    data = _export(_message(_tool_part()))
+    first = _write_export(tmp_path / "a.json", data)
+    second = _write_export(tmp_path / "b.json", data)
 
-    result = adapt_opencode_exports(
-        (export_path, export_path),
-        authorized_paths=(export_path,),
+    forward = adapt_opencode_exports(
+        (first, second),
+        authorized_paths=(first, second),
+    )
+    reverse = adapt_opencode_exports(
+        (second, first),
+        authorized_paths=(first, second),
     )
 
-    assert len(result.events) == 1
-    assert [warning.code for warning in result.warnings] == ["duplicate_export_event"]
+    assert len(forward.events) == 1
+    assert [warning.code for warning in forward.warnings] == ["duplicate_export_event"]
+    assert trace_result_to_dict(forward) == trace_result_to_dict(reverse)
 
 
 def test_ordinary_json_parses_without_hitting_depth_guard(tmp_path: Path) -> None:

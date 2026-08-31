@@ -7,7 +7,6 @@ from pathlib import Path
 from typing import cast
 
 from learntrace.adapters import adapt_codex_export, write_trace_result
-from learntrace.archive import load_project_artifacts
 from learntrace.models import ContractValidator
 
 FIXTURE_PATH = Path(__file__).parents[1] / "fixtures" / "codex" / "authorized-session.jsonl"
@@ -49,19 +48,3 @@ def test_authorized_artificial_session_is_safely_adapted_and_written(tmp_path: P
         "TOKEN=",
     ):
         assert forbidden not in serialized
-
-
-def test_trace_result_warnings_are_loaded_by_task4_loader(tmp_path: Path) -> None:
-    """Task 3 serializes a warning's origin field as ``location``; Task 4's
-    loader models it as ``source``. A written Task 3 result carrying warnings
-    must still load into the archive pipeline."""
-    result = adapt_codex_export(FIXTURE_PATH, authorized=True)
-    output_path = tmp_path / "trace-result.json"
-    write_trace_result(result, output_path)
-
-    loaded = load_project_artifacts(tmp_path)
-
-    assert len(loaded.events) == 3
-    assert loaded.warnings
-    warning_sources = {warning.source for warning in loaded.warnings}
-    assert any(source.startswith("lines[") for source in warning_sources)

@@ -51,9 +51,8 @@ with three options:
 
 - **(a) Minimal retention (authorized, minimal)** — the export is read and
   adapted into v0 events, but only the five retained field categories carry
-  forward: time, tool type, normalized relative path, a safe command summary
-  (an executable and, when allow-listed, a subcommand), and source host. No
-  message or result text.
+  forward: time, tool type, normalized relative path, command summary
+  (executable name only), and source host. No message or result text.
 - **(b) Full-text read (authorized, full)** — requires a per-file full-read
   authorization **record** before any raw read. When the student consents to
   full-text reading of this exact file, record it with
@@ -151,6 +150,7 @@ output locations:
 ```powershell
 New-Item -ItemType Directory -Force .learntrace | Out-Null
 learntrace archive <records-dir> `
+  --trace-result .learntrace/task3-result.json `
   --output learning-record.md `
   --records-output .learntrace/archive-records.json `
   --questions-output .learntrace/learning-questions.md
@@ -210,29 +210,6 @@ authorization for another session, even within the same host. Different hosts
 can be combined in one `run`; each export still needs its own per-path
 authorization flag, and the legacy `--authorized` shortcut only covers a
 single OpenCode export.
-
-When a trace is parsed, the archive also contains an optional `work_segments`
-array. Each item groups existing `trace_record` IDs into one continuous work
-period using deterministic rules: a gap strictly over 30 minutes or a clear
-switch to a disjoint project-object scope starts a new segment. The segment
-contains only the safe time, tool, normalized project-relative path, command
-category, source-host label, and cited event IDs. Session IDs are omitted from
-the minimal Agent projection and are available only in a full projection for
-locating a separately authorized conversation. It never contains
-chat text, tool output, full commands, or a Git association. The five command
-categories are `装依赖`, `跑测试`, `构建部署`, `查文件`, and `其他`.
-
-The host Agent may use a segment's safe projection (`to_agent_input`) when
-preparing a narrative. Minimal authorization permits only those retained
-fields. Full authorization means that a separate, per-file full-read consent
-record exists and the host Agent may re-read the cited conversation; it does
-not put the conversation into the segment. A host-written summary belongs in
-`segment_summaries` and must be marked `derived=true`,
-`derivation=host_agent_episode_digest`, and `deniable=true`. If a student
-denies a summary, hide that summary from the Markdown body while retaining the
-raw events and audit references. If no trace is authorized, produce no
-`trace_record` or segment and report the explicit gap instead of inferring AI
-use.
 
 All first-analysis modes produce:
 
@@ -313,11 +290,6 @@ and `deniable: true`, list the supporting records, and be presented so the
 student can deny it. Episodes are the mechanism for consuming segmented work
 from an authorized full-text session; they never map a conversation onto a
 commit.
-
-For the lower-level Task 3 hand-off, read `work_segments` first and pass only
-the safe projection to the host Agent. Do not make up a label or body when a
-segment has no supporting authorized conversation. A missing or unauthorized
-trace is a documented gap, not evidence that no AI assistance occurred.
 
 ## Evidence read-back
 

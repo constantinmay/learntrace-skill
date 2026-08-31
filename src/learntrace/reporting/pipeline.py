@@ -12,13 +12,7 @@ from enum import Enum
 from typing import Any, Protocol, cast
 
 from learntrace import __version__
-from learntrace.adapters.aggregation import (
-    TraceSegmentSummary,
-    TraceWorkSegment,
-    segment_trace_events,
-    validate_segment_summaries,
-    validate_work_segments,
-)
+from learntrace.adapters.aggregation import canonical_trace_event, events_conflict
 from learntrace.models import (
     SCHEMA_VERSION,
     CandidateStatus,
@@ -190,12 +184,6 @@ class ArchiveBundle:
     inference_mode: str = "stub"
 
     task2_meta: dict[str, Any] = field(default_factory=dict[str, Any])
-
-    # Additive Task 3 views.  They are intentionally after the historical
-    # fields so positional construction of older bundles remains valid.
-    work_segments: tuple[TraceWorkSegment, ...] = ()
-
-    segment_summaries: tuple[TraceSegmentSummary, ...] = ()
 
 
 @dataclass(slots=True)
@@ -813,10 +801,18 @@ def _dedupe_events(events: tuple[ObservableEvent, ...]) -> tuple[ObservableEvent
 
             continue
 
-        if existing.to_dict() != event.to_dict():
+        conflict = (
+            events_conflict(existing, event)
+            if existing.kind == EventKind.TRACE_RECORD and event.kind == EventKind.TRACE_RECORD
+            else existing.to_dict() != event.to_dict()
+        )
+        if conflict:
             msg = f"conflicting observable_event records for id {event.id}"
 
             raise ValueError(msg)
+
+        if existing.kind == EventKind.TRACE_RECORD:
+            by_id[event.id] = canonical_trace_event(existing, event)
 
     return tuple(by_id.values())
 
@@ -878,55 +874,6 @@ def _dedupe_warnings(warnings: tuple[ArchiveWarning, ...]) -> tuple[ArchiveWarni
         unique.append(warning)
 
     return tuple(unique)
-
-
-def _dedupe_work_segments(
-    segments: tuple[TraceWorkSegment, ...],
-) -> tuple[TraceWorkSegment, ...]:
-    """Dedupe additive segment indexes while rejecting conflicting copies."""
-
-    by_id: dict[str, TraceWorkSegment] = {}
-    for segment in segments:
-        existing = by_id.get(segment.id)
-        if existing is None:
-            by_id[segment.id] = segment
-            continue
-        if existing.to_dict() != segment.to_dict():
-            raise ValueError(f"conflicting work segment records for id {segment.id}")
-
-    def sort_key(segment: TraceWorkSegment) -> tuple[bool, datetime, str, str]:
-        start_text = segment.start_time
-        if start_text is None:
-            return (True, datetime.max.replace(tzinfo=UTC), "", segment.id)
-        try:
-            start = datetime.fromisoformat(start_text.replace("Z", "+00:00"))
-            if start.tzinfo is None:
-                raise ValueError
-            start = start.astimezone(UTC)
-        except ValueError:
-            # Invalid external timestamps are still accepted by the additive
-            # parser for backward compatibility; put them after valid values
-            # and use the stable segment ID as a deterministic tie-breaker.
-            return (True, datetime.max.replace(tzinfo=UTC), start_text, segment.id)
-        return (False, start, start_text, segment.id)
-
-    return tuple(sorted(by_id.values(), key=sort_key))
-
-
-def _dedupe_segment_summaries(
-    summaries: tuple[TraceSegmentSummary, ...],
-) -> tuple[TraceSegmentSummary, ...]:
-    """Dedupe host-agent summaries by their segment ID."""
-
-    by_segment: dict[str, TraceSegmentSummary] = {}
-    for summary in summaries:
-        existing = by_segment.get(summary.segment_id)
-        if existing is None:
-            by_segment[summary.segment_id] = summary
-            continue
-        if existing.to_dict() != summary.to_dict():
-            raise ValueError(f"conflicting segment summaries for {summary.segment_id}")
-    return tuple(sorted(by_segment.values(), key=lambda item: item.segment_id))
 
 
 def stable_candidate_id(
@@ -1074,9 +1021,6 @@ def validate_bundle(
     for confirmation in bundle.confirmations:
         contract_validator.validate("student_confirmation", confirmation.to_dict())
 
-    validate_work_segments(bundle.work_segments, bundle.events)
-    validate_segment_summaries(bundle.segment_summaries, bundle.work_segments, bundle.events)
-
     all_ids = [record.id for record in (*bundle.events, *bundle.candidates, *bundle.confirmations)]
 
     duplicate_ids = sorted({record_id for record_id in all_ids if all_ids.count(record_id) > 1})
@@ -1129,23 +1073,12 @@ def build_archive_bundle(
     *,
     confirmations: tuple[StudentConfirmation, ...] = (),
     warnings: tuple[ArchiveWarning, ...] = (),
-    work_segments: tuple[TraceWorkSegment, ...] = (),
-    segment_summaries: tuple[TraceSegmentSummary, ...] = (),
     validator: ContractValidator | None = None,
     inferencer: CandidateInferencer | None = None,
     task2_meta: dict[str, object] | None = None,
 ) -> ArchiveBundle:
 
     deduped_events = _dedupe_events(events)
-
-    # A caller may provide segments read from a Task 3 result.  When an older
-    # result has no such field, derive the same deterministic view locally so
-    # archive/report consumers get one consistent shape.
-    if work_segments:
-        deduped_segments = _dedupe_work_segments(work_segments)
-    else:
-        deduped_segments = segment_trace_events(deduped_events)
-    deduped_summaries = _dedupe_segment_summaries(segment_summaries)
 
     sorted_confirmations = _dedupe_confirmations(confirmations)
 
@@ -1192,8 +1125,6 @@ def build_archive_bundle(
         warnings=_dedupe_warnings(effective_warnings),
         inference_mode=configured_inference_mode,
         task2_meta=dict(task2_meta) if task2_meta is not None else {},
-        work_segments=deduped_segments,
-        segment_summaries=deduped_summaries,
     )
 
     validate_bundle(bundle, validator=validator)
@@ -1384,14 +1315,6 @@ def archive_manifest(bundle: ArchiveBundle) -> dict[str, object]:
         "student_confirmation": [confirmation.to_dict() for confirmation in bundle.confirmations],
         "warnings": [warning.to_dict() for warning in bundle.warnings],
     }
-    # Keep old no-trace fingerprints stable while making the new additive
-    # views auditable whenever they are present.
-    if bundle.work_segments:
-        record_sets["work_segments"] = [segment.to_dict() for segment in bundle.work_segments]
-    if bundle.segment_summaries:
-        record_sets["segment_summaries"] = [
-            summary.to_dict() for summary in bundle.segment_summaries
-        ]
 
     manifest: dict[str, object] = {
         "tool": "learntrace",
@@ -1447,8 +1370,6 @@ def bundle_to_dict(
             "observable_fact": len(bundle.events),
             "candidate_inference": len(bundle.candidates),
             "student_confirmation": len(bundle.confirmations),
-            "work_segments": len(bundle.work_segments),
-            "segment_summaries": len(bundle.segment_summaries),
             "missing_info": missing_info_count,
             "warnings": len(bundle.warnings),
             "pending_questions": len(pending_questions),
@@ -1471,6 +1392,4 @@ def bundle_to_dict(
         "pending_questions": pending_questions,
         "source_index": _source_index(bundle),
         "candidate_links": _candidate_links(bundle),
-        "work_segments": [segment.to_dict() for segment in bundle.work_segments],
-        "segment_summaries": [summary.to_dict() for summary in bundle.segment_summaries],
     }

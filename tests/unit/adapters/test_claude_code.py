@@ -14,6 +14,7 @@ from learntrace.adapters import (
     UnsupportedTraceFormatError,
     adapt_claude_code_export,
     adapt_claude_code_exports,
+    trace_result_to_dict,
 )
 from learntrace.models import ContractValidator, EventKind, SourceType
 
@@ -540,6 +541,11 @@ def test_exports_merge_and_dedup_overlapping_sessions(tmp_path: Path) -> None:
     assert any(warning.code == "duplicate_export_event" for warning in result.warnings)
     notes = {event.source_refs[0].note for event in result.events}
     assert notes == {"claude-code"}
+    reverse = adapt_claude_code_exports(
+        (overlap, second, first),
+        authorized_paths=(first, second, overlap),
+    )
+    assert trace_result_to_dict(result) == trace_result_to_dict(reverse)
 
 
 def test_large_session_streams_in_seconds(tmp_path: Path) -> None:

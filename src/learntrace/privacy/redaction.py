@@ -11,6 +11,8 @@ _REDACTED = "[REDACTED]"
 _CONTROL_RE = re.compile(r"[\x00-\x1f\x7f]")
 _WINDOWS_DRIVE_RE = re.compile(r"^[A-Za-z]:")
 _WINDOWS_ABSOLUTE_RE = re.compile(r"^[A-Za-z]:[\\/]")
+_URI_SCHEME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9+.-]*:")
+_PERCENT_ESCAPE_RE = re.compile(r"%[0-9A-Fa-f]{2}")
 _SAFE_EXECUTABLE_RE = re.compile(r"^[A-Za-z0-9_.+-]{1,64}$")
 _ENV_ASSIGNMENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=.*$", re.DOTALL)
 _HOME_PREFIX_RE = re.compile(
@@ -67,7 +69,7 @@ def _path_style(value: str) -> str | None:
 def _normalized_parts(value: str) -> tuple[str, ...] | None:
     normalized = value.replace("\\", "/")
     parts = tuple(part for part in normalized.split("/") if part not in ("", "."))
-    if not parts or ".." in parts:
+    if not parts or ".." in parts or any(part != part.strip() for part in parts):
         return None
     return parts
 
@@ -82,8 +84,11 @@ def normalize_project_path(value: str, project_root: Path | None) -> str:
 
     if (
         not value
+        or value != value.strip()
         or _CONTROL_RE.search(value)
         or _HOME_PREFIX_RE.match(value)
+        or _PERCENT_ESCAPE_RE.search(value)
+        or (_URI_SCHEME_RE.match(value) and not _WINDOWS_ABSOLUTE_RE.match(value))
         or (_WINDOWS_DRIVE_RE.match(value) and not _WINDOWS_ABSOLUTE_RE.match(value))
     ):
         return "[unsafe-path]"
@@ -91,6 +96,8 @@ def normalize_project_path(value: str, project_root: Path | None) -> str:
     value_style = _path_style(value)
     value_parts = _normalized_parts(value)
     if value_parts is None:
+        return "[unsafe-path]"
+    if value_style is None and _URI_SCHEME_RE.match(value_parts[0]):
         return "[unsafe-path]"
 
     if value_style is None:
@@ -131,31 +138,11 @@ def _command_tokens(value: str) -> list[str]:
 
 
 def summarize_command(value: str) -> str:
-    """Keep a conservative executable/subcommand label, never arguments.
+    """Keep only a conservative executable/subcommand label, never arguments."""
 
-    A shell prefix such as ``cd frontend &&`` is navigation rather than the
-    operation we want to describe, so a later command in the chain may be
-    selected.  Only a small allow-list of safe subcommands is retained; all
-    other arguments (including paths and option values) are discarded.
-    """
-
-    # Choose the first non-navigation command in a simple shell chain.  This
-    # lets the segment classifier recognize ``cd frontend && npm run build``
-    # without persisting ``frontend`` or any later arguments.  Quoted shell
-    # operators are uncommon in adapter input and remain part of their token.
-    command_parts = re.split(r"(?:&&|\|\||[;|])", value)
-    tokens: list[str] = []
-    for part in command_parts:
-        candidate = _command_tokens(part)
-        while candidate and _ENV_ASSIGNMENT_RE.fullmatch(candidate[0]):
-            candidate.pop(0)
-        if not candidate:
-            continue
-        executable_candidate = candidate[0].replace("\\", "/").rsplit("/", maxsplit=1)[-1]
-        if executable_candidate.casefold() in {"cd", "pushd", "popd"} and len(command_parts) > 1:
-            continue
-        tokens = candidate
-        break
+    tokens = _command_tokens(value)
+    while tokens and _ENV_ASSIGNMENT_RE.fullmatch(tokens[0]):
+        tokens.pop(0)
     if not tokens:
         return "unknown-command"
 
@@ -169,51 +156,11 @@ def summarize_command(value: str) -> str:
         subcommand = tokens[1].casefold()
         if _SAFE_EXECUTABLE_RE.fullmatch(subcommand) and not subcommand.startswith("-"):
             return f"git {subcommand}"
-    if (
-        executable == "uv"
-        and len(tokens) > 2
-        and [token.casefold() for token in tokens[1:3]]
-        == [
-            "run",
-            "pytest",
-        ]
-    ):
+    if executable == "uv" and len(tokens) > 2 and tokens[1:3] == ["run", "pytest"]:
         return "uv run pytest"
-    if executable == "uv" and len(tokens) > 1:
-        if tokens[1].casefold() == "sync":
-            return "uv sync"
-        if len(tokens) > 2 and tokens[1].casefold() == "pip" and tokens[2].casefold() == "install":
-            return "uv pip install"
-    if executable in {"pip", "pip3", "pipx"} and len(tokens) > 1:
-        subcommand = tokens[1].casefold()
-        if subcommand in {"install", "sync"}:
-            return f"{executable} {subcommand}"
     if executable in {"npm", "pnpm", "yarn"} and len(tokens) > 1:
         subcommand = tokens[1].casefold()
-        if subcommand in {"install", "i", "add", "ci"}:
-            return f"{executable} install"
-        if subcommand == "run" and len(tokens) > 2:
-            script = tokens[2].casefold()
-            if script in {"test", "build", "bundle", "deploy", "release"}:
-                return f"{executable} run {script}"
         if subcommand in {"test", "run"}:
-            return f"{executable} {subcommand}"
-    if (
-        executable in {"make", "cargo", "go", "mvn", "gradle", "docker", "podman"}
-        and len(tokens) > 1
-    ):
-        subcommand = tokens[1].casefold()
-        if subcommand in {
-            "test",
-            "build",
-            "package",
-            "assemble",
-            "install",
-            "compose",
-            "push",
-            "get",
-            "add",
-        }:
             return f"{executable} {subcommand}"
     return executable
 

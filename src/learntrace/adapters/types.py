@@ -5,9 +5,14 @@ from __future__ import annotations
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
-from typing import Any
 
-from learntrace.adapters.aggregation import TraceWorkSegment
+from learntrace.adapters.aggregation import (
+    TraceEventMetadata,
+    TraceWorkSegment,
+    canonical_trace_event,
+    event_merge_key,
+    events_conflict,
+)
 from learntrace.models import ObservableEvent, SourceRef, SourceType
 from learntrace.privacy import normalize_project_path
 
@@ -43,12 +48,7 @@ class TraceAdapterResult:
     events: tuple[ObservableEvent, ...] = ()
     warnings: tuple[TraceParseIssue, ...] = ()
     work_segments: tuple[TraceWorkSegment, ...] = ()
-
-    @property
-    def segments(self) -> tuple[TraceWorkSegment, ...]:
-        """Short alias retained for consumers that call them ``segments``."""
-
-        return self.work_segments
+    trace_metadata: tuple[TraceEventMetadata, ...] = ()
 
 
 def session_export_source_ref(
@@ -72,28 +72,22 @@ def session_export_source_ref(
     )
 
 
-def event_merge_key(event: ObservableEvent) -> dict[str, Any]:
-    """事件合并比较键：忽略「会话导出文件路径」参考（note="session-export"）。
-
-    同一条工具记录出现在不同导出文件中（重叠会话）时仍视为相同重复
-    （去重并产生 duplicate_export_event 警告）；真正的内容冲突（不同
-    message/part）仍会被显式拒绝。
-    """
-    data = event.to_dict()
-    data["source_refs"] = [
-        ref for ref in data["source_refs"] if ref.get("note") != "session-export"
-    ]
-    return data
-
-
-def events_conflict(left: ObservableEvent, right: ObservableEvent) -> bool:
-    """判断两条同 ID 事件的真正内容是否冲突（比较规则见 ``event_merge_key``）。"""
-    return event_merge_key(left) != event_merge_key(right)
-
-
 class UnsupportedOpenCodeFormatError(ValueError):
     """The supplied file is not a supported OpenCode JSON export."""
 
 
 class UnsupportedTraceFormatError(ValueError):
     """The supplied file is not a supported Claude Code or Codex JSONL trace."""
+
+
+__all__ = [
+    "TraceAdapterResult",
+    "TraceInputStatus",
+    "TraceParseIssue",
+    "UnsupportedOpenCodeFormatError",
+    "UnsupportedTraceFormatError",
+    "canonical_trace_event",
+    "event_merge_key",
+    "events_conflict",
+    "session_export_source_ref",
+]

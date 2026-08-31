@@ -12,12 +12,17 @@ from pathlib import Path
 from typing import TypeGuard, cast
 from urllib.parse import quote
 
-from learntrace.adapters.aggregation import segment_trace_events
+from learntrace.adapters.aggregation import (
+    TraceEventMetadata,
+    build_trace_event_metadata,
+    segment_trace_events,
+)
 from learntrace.adapters.types import (
     TraceAdapterResult,
     TraceInputStatus,
     TraceParseIssue,
     UnsupportedOpenCodeFormatError,
+    canonical_trace_event,
     events_conflict,
     session_export_source_ref,
 )
@@ -260,6 +265,7 @@ def adapt_opencode_export(
 
     event_validator = validator if validator is not None else ContractValidator()
     events: list[ObservableEvent] = []
+    metadata: list[TraceEventMetadata] = []
     seen_parts: set[tuple[str, str, str]] = set()
 
     for message_index, message_value in enumerate(messages):
@@ -382,16 +388,39 @@ def adapt_opencode_export(
             )
             event_validator.validate("observable_event", event.to_dict())
             events.append(event)
+            safe_tool = _safe_tool_name(tool)
+            raw_paths: tuple[str, ...] = ()
+            command: str | None = None
+            if safe_tool == "bash":
+                command_value = input_data.get("command")
+                command = command_value if isinstance(command_value, str) else None
+            elif safe_tool in _FILE_TOOLS:
+                path_value = input_data.get("filePath")
+                if not isinstance(path_value, str):
+                    path_value = input_data.get("path")
+                if isinstance(path_value, str):
+                    raw_paths = (path_value,)
+            metadata.append(
+                build_trace_event_metadata(
+                    event.id,
+                    tool=tool,
+                    paths=raw_paths,
+                    command=command,
+                    project_root=project_root,
+                )
+            )
 
     events.sort(key=_event_sort_key)
     warnings.sort(key=lambda issue: (issue.location, issue.code, issue.message))
     result_status = TraceInputStatus.PARSED if events else TraceInputStatus.AUTHORIZED_NOT_FOUND
     event_tuple = tuple(events)
+    metadata_tuple = tuple(metadata)
     return TraceAdapterResult(
         status=result_status,
         events=event_tuple,
         warnings=tuple(warnings),
-        work_segments=segment_trace_events(event_tuple),
+        work_segments=segment_trace_events(event_tuple, metadata=metadata_tuple),
+        trace_metadata=metadata_tuple,
     )
 
 
@@ -423,6 +452,7 @@ def adapt_opencode_exports(
         return TraceAdapterResult(status=TraceInputStatus.NOT_AUTHORIZED)
 
     events_by_id: dict[str, ObservableEvent] = {}
+    metadata_by_id: dict[str, TraceEventMetadata] = {}
     warnings: list[TraceParseIssue] = []
     any_authorized = False
     for export_index, export_path in enumerate(export_paths):
@@ -457,7 +487,15 @@ def adapt_opencode_exports(
                 raise UnsupportedOpenCodeFormatError(
                     "多个 OpenCode 导出包含 ID 相同但内容冲突的工具记录。"
                 )
+            events_by_id[event.id] = canonical_trace_event(existing, event)
             duplicate_count += 1
+        for item in result.trace_metadata:
+            existing_metadata = metadata_by_id.get(item.event_id)
+            if existing_metadata is not None and existing_metadata != item:
+                raise UnsupportedOpenCodeFormatError(
+                    "多个 OpenCode 导出包含 ID 相同但元数据冲突的工具记录。"
+                )
+            metadata_by_id[item.event_id] = item
         if duplicate_count:
             warnings.append(
                 _issue(
@@ -473,10 +511,12 @@ def adapt_opencode_exports(
             warnings=tuple(warnings),
         )
     events = tuple(sorted(events_by_id.values(), key=_event_sort_key))
+    metadata = tuple(metadata_by_id[event.id] for event in events)
     warnings.sort(key=lambda issue: (issue.location, issue.code, issue.message))
     return TraceAdapterResult(
         status=(TraceInputStatus.PARSED if events else TraceInputStatus.AUTHORIZED_NOT_FOUND),
         events=events,
         warnings=tuple(warnings),
-        work_segments=segment_trace_events(events),
+        work_segments=segment_trace_events(events, metadata=metadata),
+        trace_metadata=metadata,
     )

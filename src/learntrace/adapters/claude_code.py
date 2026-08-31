@@ -12,12 +12,17 @@ from typing import TypeGuard, cast
 from urllib.parse import quote
 
 from learntrace.adapters._jsonl import WarningLog, iter_jsonl_records
-from learntrace.adapters.aggregation import segment_trace_events
+from learntrace.adapters.aggregation import (
+    TraceEventMetadata,
+    build_trace_event_metadata,
+    segment_trace_events,
+)
 from learntrace.adapters.types import (
     TraceAdapterResult,
     TraceInputStatus,
     TraceParseIssue,
     UnsupportedTraceFormatError,
+    canonical_trace_event,
     events_conflict,
     session_export_source_ref,
 )
@@ -326,6 +331,7 @@ def adapt_claude_code_export(
     warnings = WarningLog()
     event_validator = validator if validator is not None else ContractValidator()
     events: list[ObservableEvent] = []
+    metadata: list[TraceEventMetadata] = []
     pending: dict[str, _PendingCall] = {}
     seen_calls: set[tuple[str, str, str]] = set()
     resolved_session: str | None = None
@@ -365,14 +371,34 @@ def adapt_claude_code_export(
             if len(events) >= _MAX_EVENTS_PER_SESSION:
                 dropped_events += 1
                 continue
-            events.append(
-                _build_event(
-                    pending_call,
-                    is_error=is_error,
-                    session_id=resolved_session,
-                    export_path=export_path,
+            event = _build_event(
+                pending_call,
+                is_error=is_error,
+                session_id=resolved_session,
+                export_path=export_path,
+                project_root=project_root,
+                validator=event_validator,
+            )
+            events.append(event)
+            safe_tool = _safe_tool_name(pending_call.tool)
+            raw_paths: tuple[str, ...] = ()
+            command: str | None = None
+            if safe_tool == "bash":
+                command_value = pending_call.input_data.get("command")
+                command = command_value if isinstance(command_value, str) else None
+            elif safe_tool in _FILE_TOOLS:
+                path_value = pending_call.input_data.get("file_path")
+                if not isinstance(path_value, str):
+                    path_value = pending_call.input_data.get("path")
+                if isinstance(path_value, str):
+                    raw_paths = (path_value,)
+            metadata.append(
+                build_trace_event_metadata(
+                    event.id,
+                    tool=pending_call.tool,
+                    paths=raw_paths,
+                    command=command,
                     project_root=project_root,
-                    validator=event_validator,
                 )
             )
 
@@ -405,11 +431,13 @@ def adapt_claude_code_export(
     issues = _sorted_issues(warnings.finalize())
     result_status = TraceInputStatus.PARSED if events else TraceInputStatus.AUTHORIZED_NOT_FOUND
     event_tuple = tuple(events)
+    metadata_tuple = tuple(metadata)
     return TraceAdapterResult(
         status=result_status,
         events=event_tuple,
         warnings=tuple(issues),
-        work_segments=segment_trace_events(event_tuple),
+        work_segments=segment_trace_events(event_tuple, metadata=metadata_tuple),
+        trace_metadata=metadata_tuple,
     )
 
 
@@ -442,6 +470,7 @@ def adapt_claude_code_exports(
         return TraceAdapterResult(status=TraceInputStatus.NOT_AUTHORIZED)
 
     events_by_id: dict[str, ObservableEvent] = {}
+    metadata_by_id: dict[str, TraceEventMetadata] = {}
     warnings = WarningLog()
     any_authorized = False
     for export_index, export_path in enumerate(export_paths):
@@ -478,7 +507,15 @@ def adapt_claude_code_exports(
                 raise UnsupportedTraceFormatError(
                     "多个 Claude Code 会话包含 ID 相同但内容冲突的工具记录。"
                 )
+            events_by_id[event.id] = canonical_trace_event(existing, event)
             duplicate_count += 1
+        for item in result.trace_metadata:
+            existing_metadata = metadata_by_id.get(item.event_id)
+            if existing_metadata is not None and existing_metadata != item:
+                raise UnsupportedTraceFormatError(
+                    "多个 Claude Code 会话包含 ID 相同但元数据冲突的工具记录。"
+                )
+            metadata_by_id[item.event_id] = item
         if duplicate_count:
             warnings.add(
                 "duplicate_export_event",
@@ -492,11 +529,13 @@ def adapt_claude_code_exports(
             warnings=tuple(_sorted_issues(warnings.finalize())),
         )
     events = tuple(sorted(events_by_id.values(), key=_event_sort_key))
+    metadata = tuple(metadata_by_id[event.id] for event in events)
     return TraceAdapterResult(
         status=(TraceInputStatus.PARSED if events else TraceInputStatus.AUTHORIZED_NOT_FOUND),
         events=events,
         warnings=tuple(_sorted_issues(warnings.finalize())),
-        work_segments=segment_trace_events(events),
+        work_segments=segment_trace_events(events, metadata=metadata),
+        trace_metadata=metadata,
     )
 
 

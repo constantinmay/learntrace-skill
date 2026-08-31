@@ -136,7 +136,7 @@ Agent 一次读入全部内容；Agent 应先检索索引，再按提交和文�
 - `.learntrace/learning-questions.md`：只保存需要学生本人确认、补充或否认
   的问题。
 
-授权轨迹如何按工作过程分段、怎样归类命令以及宿主 Agent 如何写可否认摘要，见
+授权轨迹如何按工作过程确定性分段、怎样归类命令，见
 [AI 轨迹分段说明](docs/trace-segmentation.md)。
 
 如需纳入 OpenCode 轨迹，首次运行时显式提供导出与授权：
@@ -213,10 +213,14 @@ Markdown 的路径识别采用隐私优先策略：明确的 `/api` 和版本化
 ```powershell
 New-Item -ItemType Directory -Force .learntrace | Out-Null
 learntrace archive <records-dir> `
+  --trace-result .learntrace/task3-result.json `
   --output learning-record.md `
   --records-output .learntrace/archive-records.json `
   --questions-output .learntrace/learning-questions.md
 ```
+
+`--trace-result` 必须明确指向本轮逐来源授权后生成的 Task 3 文件；普通目录扫描不会把
+裸 `trace_record` 或恰好位于目录中的 Task 3 文件自动视为已授权输入。
 
 命令成功后直接读取 `.learntrace/learning-questions.md`，不要重复执行首次归档。
 确认阶段对同一个 `records-dir` 使用 `.learntrace/archive-records.json` 快照。

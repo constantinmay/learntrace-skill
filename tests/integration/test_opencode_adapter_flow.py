@@ -11,7 +11,6 @@ from learntrace.adapters import (
     adapt_opencode_export,
     write_trace_result,
 )
-from learntrace.archive import load_project_artifacts
 from learntrace.models import ContractValidator
 
 
@@ -102,24 +101,3 @@ def test_authorized_artificial_export_is_safely_adapted_and_written(tmp_path: Pa
 
     assert no_tool_result.status is TraceInputStatus.AUTHORIZED_NOT_FOUND
     assert no_tool_result.events == ()
-
-
-def test_trace_result_warnings_are_loaded_by_task4_loader(tmp_path: Path) -> None:
-    """Task 3 serializes a warning's origin field as ``location``, but Task 4's
-    loader models it as ``source``. A written Task 3 result carrying a warning
-    must still load into the archive pipeline instead of failing on a missing
-    ``source`` key."""
-    fixture_path = Path(__file__).parents[1] / "fixtures" / "opencode" / "authorized-export.json"
-    result = adapt_opencode_export(
-        fixture_path,
-        authorized=True,
-        project_root=Path("D:/repo"),
-    )
-    output_path = tmp_path / "trace-result.json"
-    write_trace_result(result, output_path)
-
-    loaded = load_project_artifacts(tmp_path)
-
-    assert len(loaded.events) == 3
-    assert loaded.warnings and loaded.warnings[0].code == "invalid_tool_part"
-    assert loaded.warnings[0].source == "messages[0].parts[4]"
