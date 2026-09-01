@@ -35,6 +35,23 @@ Optional: `schema_note` (draft note), `author_scope` (currently only
 `submitted`), `ai_statement` (AI-use declaration, **required** for
 `submitted`), `diagram` (mermaid source for the turning-point section).
 
+### `author_scope` — use only for a genuinely multi-author repo
+
+`author_scope` takes the single value `"self_only"`. **Add it if and only
+if** the consent gate's multi-author scope-selection step actually ran — i.e.
+`discover` reported more than one entry in `git_authors` *and* the student
+chose to scope this portfolio to their own commits. For a **single-author**
+repository there is no scope to narrow, so **omit it**. Omit it too whenever
+the student did not narrow the scope.
+
+Why this matters: the renderer prints a "multi-author collaboration" range
+note (`本仓库为多人协作项目…`) verbatim for `author_scope: "self_only"`. On a
+single-author repo that sentence is false and misleads the reader into
+thinking collaborators were excluded. Check the `git_authors` count from
+`discover` before deciding, not the presence of a `git_author_filtered`
+warning (that warning can appear for reasons other than a multi-author scope
+choice).
+
 ## `meta`
 
 ```json
