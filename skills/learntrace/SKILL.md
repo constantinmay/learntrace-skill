@@ -257,7 +257,11 @@ null (e.g. `gap-learning-reflection`, shown when inference produced no
 candidates). These are not candidates: `--confirmations` rejects them by
 design. Ask them anyway, and carry the student's verbatim answer into the
 narrative layer yourself — the `reflection` / `takeaways` fields of a
-`submitted` payload are where those words belong.
+`submitted` payload are where those words belong. The two question kinds
+have two channels: candidate questions are answered through
+`--confirmations` and become archive records; gap/reflection questions are
+asked by you and their answers live only in the narrative layer — they are
+never archived, and no confirmation-model change is needed for them.
 
 For a project analyzed with `learntrace run`, apply the confirmation with:
 
@@ -299,7 +303,11 @@ carry an `evidence_location` so a person or agent can re-read the exact
 source (a source file + line range, a Git commit hash, or a session export +
 session id + message range). Verify with
 `learntrace verify-narrative <payload> <archive>` and render with
-`learntrace render-narrative <payload> <archive>`.
+`learntrace render-narrative <payload> <archive>`. Rendering registers its
+output as a generated artifact so a later `run` will not ingest it — but
+only when the archive lives at the standard `<project>/.learntrace/`
+location; with a custom archive path, register or exclude the output
+yourself.
 
 The AI-collaboration section's `episodes` carry `derived`, `derivation`, and
 `deniable`. A `derived: true` episode is a host-agent digest of a fully

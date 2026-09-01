@@ -190,12 +190,20 @@ Five required parts:
 - `verification`: factual bullets about how claims were checked (e.g. test
   logs observed, or the explicit statement that no test log exists).
 - `evidence_gaps`: one string per gap; the count feeds `meta.evidence_gaps`.
+  A gap is evidence whose absence weakens a conclusion the report wants to
+  make — e.g. no test log exists, so verification stays unobserved. Archive
+  warnings (unrecognized log formats, skipped records) are already visible
+  in the evidence account and do not need to be repeated here; repeat one
+  only when it actually blocks a claim.
 
 ## Verify red lines
 
 `learntrace verify-narrative <payload> <archive>` rejects the payload when:
 
-1. **红线 1** — any citation does not resolve to an archive observable event.
+1. **红线 1** — any citation does not resolve to an archive observable event;
+   and no event ID (`evt-…`) may appear in reader-facing `key_changes`
+   text (string form or object `text`), whether bare, wrapped in whitespace
+   or backticks, or embedded in a sentence — IDs belong in `citations`.
 2. **红线 2** — any body citation (overview/stages/key_changes/merge_anchor/
    turning point/AI episode) references a basis event of a candidate the
    student denied, or a `submitted` payload keeps a

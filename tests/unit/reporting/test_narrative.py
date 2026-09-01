@@ -404,6 +404,30 @@ def test_red_line_1_string_key_change_must_not_be_event_id(
     assert verify_payload(good, archive) == []
 
 
+@pytest.mark.parametrize(
+    "change",
+    [
+        # 对象形式:text 为裸事件 ID。
+        {"kind": "Added", "text": "evt-git-deadbeef", "citations": []},
+        # 空白与 Markdown 反引号包裹。
+        "  `evt-git-deadbeef`  ",
+        # 事件 ID 嵌入描述句中。
+        "完成 evt-git-deadbeef 对应的重构并补测试",
+    ],
+    ids=["object-text", "wrapped", "embedded"],
+)
+def test_red_line_1_event_id_in_key_change_text(
+    golden_sample: tuple[str, dict[str, Any], dict[str, Any]],
+    change: Any,
+) -> None:
+    """事件 ID 以任何形态出现在关键变更文本中都必须被拒绝。"""
+    _, payload, archive = golden_sample
+    bad = copy.deepcopy(payload)
+    bad["stages"][0]["key_changes"] = [change]
+    violations = verify_payload(bad, archive)
+    assert any("红线1:stages[0].key_changes[0]" in violation for violation in violations)
+
+
 def test_malformed_citation_is_rejected(
     golden_sample: tuple[str, dict[str, Any], dict[str, Any]],
 ) -> None:
