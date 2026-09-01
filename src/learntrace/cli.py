@@ -12,12 +12,15 @@ from pathlib import Path
 from learntrace import __version__
 from learntrace.adapters import (
     TraceAdapterResult,
+    TraceEventMetadata,
     TraceInputStatus,
     TraceParseIssue,
     adapt_claude_code_exports,
     adapt_codex_exports,
     adapt_opencode_exports,
+    canonical_trace_event,
     events_conflict,
+    segment_trace_events,
     write_trace_result,
 )
 from learntrace.archive import main as archive_main
@@ -439,6 +442,7 @@ def _merge_trace_results(
     ]
     multi_host = len(contributing_hosts) > 1
     events_by_id: dict[str, ObservableEvent] = {}
+    metadata_by_id: dict[str, TraceEventMetadata] = {}
     warnings: list[TraceParseIssue] = []
     statuses: list[TraceInputStatus] = []
     for host, result in results:
@@ -479,6 +483,13 @@ def _merge_trace_results(
                 events_by_id[event.id] = event
             elif events_conflict(existing, event):
                 raise ValueError("多个轨迹来源包含 ID 相同但内容冲突的工具记录。")
+            else:
+                events_by_id[event.id] = canonical_trace_event(existing, event)
+        for item in result.trace_metadata:
+            existing_metadata = metadata_by_id.get(item.event_id)
+            if existing_metadata is not None and existing_metadata != item:
+                raise ValueError("多个轨迹来源包含 ID 相同但元数据冲突的工具记录。")
+            metadata_by_id[item.event_id] = item
 
     events = sorted(events_by_id.values(), key=_trace_event_sort_key)
     skipped = len(events) - _MAX_TOTAL_TRACE_EVENTS
@@ -495,6 +506,7 @@ def _merge_trace_results(
             )
         )
     warnings.sort(key=lambda issue: (issue.location, issue.code, issue.message))
+    metadata = tuple(metadata_by_id[event.id] for event in events)
     if TraceInputStatus.PARSED in statuses and events:
         status = TraceInputStatus.PARSED
     elif TraceInputStatus.AUTHORIZED_NOT_FOUND in statuses:
@@ -507,6 +519,8 @@ def _merge_trace_results(
         status=status,
         events=tuple(events),
         warnings=tuple(warnings),
+        work_segments=segment_trace_events(tuple(events), metadata=metadata),
+        trace_metadata=metadata,
     )
 
 
@@ -844,6 +858,7 @@ def _run_command(args: argparse.Namespace, parser: argparse.ArgumentParser) -> i
             questions_output_path=work_dir / "learning-questions.md",
             confirmation_paths=tuple(args.confirmations),
             artifact_registry_root=root,
+            trace_result=trace_result,
         )
         print(f"Wrote parse result: {parse_output} (events={events}, warnings={warnings})")
         print(

@@ -19,7 +19,13 @@ from referencing import Registry, Resource
 from referencing.jsonschema import DRAFT202012
 
 RecordType = Literal[
-    "observable_event", "learning_node_candidate", "student_confirmation", "narrative_payload"
+    "observable_event",
+    "learning_node_candidate",
+    "student_confirmation",
+    "narrative_payload",
+    "trace_event_metadata",
+    "trace_work_segment",
+    "trace_result",
 ]
 
 SCHEMA_FILES: dict[RecordType, str] = {
@@ -27,6 +33,9 @@ SCHEMA_FILES: dict[RecordType, str] = {
     "learning_node_candidate": "learning-node-candidate.schema.json",
     "student_confirmation": "student-confirmation.schema.json",
     "narrative_payload": "narrative-payload.schema.json",
+    "trace_event_metadata": "trace-event-metadata.schema.json",
+    "trace_work_segment": "trace-work-segment.schema.json",
+    "trace_result": "trace-result.schema.json",
 }
 
 _COMMON_SCHEMA_FILE = "common.schema.json"

@@ -150,6 +150,7 @@ output locations:
 ```powershell
 New-Item -ItemType Directory -Force .learntrace | Out-Null
 learntrace archive <records-dir> `
+  --trace-result .learntrace/task3-result.json `
   --output learning-record.md `
   --records-output .learntrace/archive-records.json `
   --questions-output .learntrace/learning-questions.md

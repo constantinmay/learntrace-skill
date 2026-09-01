@@ -30,6 +30,10 @@ learntrace adapt <session-1.jsonl> <session-2.jsonl> `
 与 OpenCode 适配器一致：`not_provided`、`not_authorized`、`authorized_not_found`、
 `parsed`。
 
+成功结果还会附带可选的 `work_segments`，用于把原子 `trace_record` 按时间和项目对象
+范围整理成连续工作过程；这是 Task 3 的附加索引，不会替代 `events`。统一字段见
+[AI 轨迹分段说明](trace-segmentation.md)。
+
 ## 会保留什么
 
 - `function_call` / `local_shell_call` 与后续 `function_call_output` 配对成功的调用，

@@ -1,0 +1,23 @@
+{
+  "$id": "trace-event-metadata.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "TraceEventMetadata",
+  "description": "Task 3 适配器从已授权工具记录直接提取的最小化结构化字段，用于确定性分段。",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "event_id", "paths"],
+  "properties": {
+    "schema_version": { "$ref": "common.schema.json#/$defs/schema_version" },
+    "event_id": { "$ref": "common.schema.json#/$defs/record_id" },
+    "tool": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9_.-]{1,64}$"
+    },
+    "paths": {
+      "$ref": "trace-work-segment.schema.json#/properties/paths"
+    },
+    "command_category": {
+      "enum": ["装依赖", "跑测试", "构建部署", "查文件", "其他"]
+    }
+  }
+}

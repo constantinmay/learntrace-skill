@@ -4,12 +4,15 @@ from __future__ import annotations
 
 import re
 import shlex
+from enum import StrEnum
 from pathlib import Path
 
 _REDACTED = "[REDACTED]"
 _CONTROL_RE = re.compile(r"[\x00-\x1f\x7f]")
 _WINDOWS_DRIVE_RE = re.compile(r"^[A-Za-z]:")
 _WINDOWS_ABSOLUTE_RE = re.compile(r"^[A-Za-z]:[\\/]")
+_URI_SCHEME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9+.-]*:")
+_PERCENT_ESCAPE_RE = re.compile(r"%[0-9A-Fa-f]{2}")
 _SAFE_EXECUTABLE_RE = re.compile(r"^[A-Za-z0-9_.+-]{1,64}$")
 _ENV_ASSIGNMENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=.*$", re.DOTALL)
 _HOME_PREFIX_RE = re.compile(
@@ -66,7 +69,7 @@ def _path_style(value: str) -> str | None:
 def _normalized_parts(value: str) -> tuple[str, ...] | None:
     normalized = value.replace("\\", "/")
     parts = tuple(part for part in normalized.split("/") if part not in ("", "."))
-    if not parts or ".." in parts:
+    if not parts or ".." in parts or any(part != part.strip() for part in parts):
         return None
     return parts
 
@@ -81,8 +84,11 @@ def normalize_project_path(value: str, project_root: Path | None) -> str:
 
     if (
         not value
+        or value != value.strip()
         or _CONTROL_RE.search(value)
         or _HOME_PREFIX_RE.match(value)
+        or _PERCENT_ESCAPE_RE.search(value)
+        or (_URI_SCHEME_RE.match(value) and not _WINDOWS_ABSOLUTE_RE.match(value))
         or (_WINDOWS_DRIVE_RE.match(value) and not _WINDOWS_ABSOLUTE_RE.match(value))
     ):
         return "[unsafe-path]"
@@ -90,6 +96,8 @@ def normalize_project_path(value: str, project_root: Path | None) -> str:
     value_style = _path_style(value)
     value_parts = _normalized_parts(value)
     if value_parts is None:
+        return "[unsafe-path]"
+    if value_style is None and _URI_SCHEME_RE.match(value_parts[0]):
         return "[unsafe-path]"
 
     if value_style is None:
@@ -155,3 +163,92 @@ def summarize_command(value: str) -> str:
         if subcommand in {"test", "run"}:
             return f"{executable} {subcommand}"
     return executable
+
+
+class CommandCategory(StrEnum):
+    """Small, human-readable command groups used by work-segment summaries."""
+
+    INSTALL = "装依赖"
+    TEST = "跑测试"
+    BUILD_DEPLOY = "构建部署"
+    INSPECT = "查文件"
+    OTHER = "其他"
+
+
+def classify_command(value: str) -> CommandCategory:
+    """Classify a command without retaining its arguments or paths.
+
+    Classification is intentionally conservative and deterministic.  It is
+    applied to the already minimized command label when possible (for example
+    ``uv run pytest`` or ``git status``), but also accepts a raw command for
+    callers that classify before minimization.  When several shell commands
+    are chained, the first matching category by the documented priority is
+    returned; no command text is returned by this helper.
+    """
+
+    if not value.strip():
+        return CommandCategory.OTHER
+    lowered = value.casefold().strip()
+    direct_labels = {
+        CommandCategory.INSTALL.value.casefold(): CommandCategory.INSTALL,
+        CommandCategory.TEST.value.casefold(): CommandCategory.TEST,
+        CommandCategory.BUILD_DEPLOY.value.casefold(): CommandCategory.BUILD_DEPLOY,
+        CommandCategory.INSPECT.value.casefold(): CommandCategory.INSPECT,
+        CommandCategory.OTHER.value.casefold(): CommandCategory.OTHER,
+    }
+    if lowered in direct_labels:
+        return direct_labels[lowered]
+    tokens = _command_tokens(lowered)
+    while tokens and _ENV_ASSIGNMENT_RE.fullmatch(tokens[0]):
+        tokens.pop(0)
+    compact = " ".join(tokens)
+
+    # Dependency installation/update commands.
+    if (
+        re.search(r"\b(?:pip|pip3|pipx)\s+(?:install|sync)", compact)
+        or re.search(r"\buv\s+(?:pip\s+)?(?:install|sync)", compact)
+        or re.search(r"\b(?:npm|pnpm|yarn)\s+(?:install|i|add|ci)\b", compact)
+        or re.search(r"\b(?:poetry|conda|mamba|apt|apt-get|apk|brew|gem)\s+.*\binstall\b", compact)
+        or re.search(r"\b(?:cargo)\s+add\b", compact)
+        or re.search(r"\bgo\s+get\b", compact)
+    ):
+        return CommandCategory.INSTALL
+
+    # Test commands.  Match both direct runners and common package-manager
+    # wrappers (``npm run test`` / ``python -m pytest``).
+    if (
+        re.search(r"\bpytest\b", compact)
+        or re.search(r"\b(?:unittest|nose|tox|vitest|jest)\b", compact)
+        or re.search(r"\b(?:go|cargo|mvn|gradle)\s+test\b", compact)
+        or re.search(r"\b(?:npm|pnpm|yarn)\s+(?:run\s+)?test\b", compact)
+        or re.search(r"\bmake\s+test\b", compact)
+    ):
+        return CommandCategory.TEST
+
+    # Build/deploy commands.  ``npm run`` without a script remains OTHER;
+    # only an explicit build/deploy verb is classified here.
+    if (
+        re.search(r"\b(?:npm|pnpm|yarn)\s+run\s+(?:build|bundle|deploy|release)\b", compact)
+        or re.search(r"\b(?:vite|webpack|rollup|tsc)\s+(?:build|compile)\b", compact)
+        or re.search(r"\b(?:cargo|go)\s+build\b", compact)
+        or re.search(r"\b(?:mvn|gradle)\s+(?:package|install|assemble)\b", compact)
+        or re.search(r"\b(?:docker|podman)\s+(?:build|compose|push|run)\b", compact)
+        or re.search(r"\b(?:kubectl|helm|terraform)\s+(?:apply|upgrade|deploy|install)\b", compact)
+        or re.search(r"\b(?:make|vercel|netlify)\s+(?:build|deploy)\b", compact)
+        or re.search(r"\b(?:build|bundle|deploy|release)\b", compact)
+    ):
+        return CommandCategory.BUILD_DEPLOY
+
+    # Read-only inspection commands.  Git mutating commands are deliberately
+    # not called "查文件"; they fall through to OTHER.
+    if (
+        re.search(
+            r"(?:^|\s)(?:ls|dir|find|rg|grep|cat|type|pwd|tree|head|tail|sed|less|more|file)(?:\s|$)",
+            compact,
+        )
+        or re.search(r"\bgit\s+(?:status|log|diff|show)\b", compact)
+        or re.search(r"\bget-content\b", compact)
+    ):
+        return CommandCategory.INSPECT
+
+    return CommandCategory.OTHER

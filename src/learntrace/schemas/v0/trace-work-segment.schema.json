@@ -1,0 +1,85 @@
+{
+  "$id": "trace-work-segment.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "TraceWorkSegment",
+  "description": "Task 3 对已授权原子 trace_record 的确定性分组；它是索引，不是新的证据事实或学习结论。",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "id",
+    "event_ids",
+    "time_range",
+    "tools",
+    "paths",
+    "command_categories",
+    "source_hosts",
+    "session_ids"
+  ],
+  "properties": {
+    "schema_version": { "$ref": "common.schema.json#/$defs/schema_version" },
+    "id": { "$ref": "common.schema.json#/$defs/record_id" },
+    "event_ids": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": { "$ref": "common.schema.json#/$defs/record_id" }
+    },
+    "time_range": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["start", "end"],
+      "properties": {
+        "start": {
+          "anyOf": [
+            { "type": "string", "format": "date-time" },
+            { "type": "null" }
+          ]
+        },
+        "end": {
+          "anyOf": [
+            { "type": "string", "format": "date-time" },
+            { "type": "null" }
+          ]
+        }
+      }
+    },
+    "tools": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": { "type": "string", "pattern": "^[A-Za-z0-9_.-]{1,64}$" }
+    },
+    "paths": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "allOf": [
+          { "not": { "pattern": "^(?:/|~|[A-Za-z]:[\\\\/]|\\\\\\\\|\\[)" } },
+          { "not": { "pattern": "(?:^|/)[A-Za-z][A-Za-z0-9+.-]*:" } },
+          { "not": { "pattern": "(?:^|/)\\s|\\s(?:/|$)" } },
+          { "not": { "pattern": "%[0-9A-Fa-f]{2}" } },
+          { "not": { "pattern": "(?:^|/)\\.\\.(?:/|$)" } },
+          { "not": { "pattern": "\\\\" } }
+        ]
+      }
+    },
+    "command_categories": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": { "enum": ["装依赖", "跑测试", "构建部署", "查文件", "其他"] }
+    },
+    "source_hosts": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._~-]{0,127}$" }
+    },
+    "session_ids": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._~-]{0,127}$" }
+    },
+    "boundary_before": { "enum": ["time_gap", "object_switch"] }
+  }
+}

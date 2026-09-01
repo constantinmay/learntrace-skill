@@ -14,6 +14,7 @@ from learntrace.adapters import (
     UnsupportedTraceFormatError,
     adapt_claude_code_export,
     adapt_claude_code_exports,
+    trace_result_to_dict,
 )
 from learntrace.models import ContractValidator, EventKind, SourceType
 
@@ -142,7 +143,7 @@ def test_completed_tool_pair_becomes_a_stable_valid_trace_event(tmp_path: Path) 
     # 第二个引用指向会话导出文件本身（证据回读“去哪看原文”的落点）
     assert len(event.source_refs) == 2
     assert event.source_refs[1].type is SourceType.FILE
-    assert event.source_refs[1].ref == session_path.resolve().as_posix()
+    assert event.source_refs[1].ref == "[outside-project]"
     assert event.source_refs[1].note == "session-export"
     assert event.kind is EventKind.TRACE_RECORD
     assert event.id == f"evt-trace-{hashlib.sha256(expected_ref.encode()).hexdigest()[:16]}"
@@ -540,6 +541,11 @@ def test_exports_merge_and_dedup_overlapping_sessions(tmp_path: Path) -> None:
     assert any(warning.code == "duplicate_export_event" for warning in result.warnings)
     notes = {event.source_refs[0].note for event in result.events}
     assert notes == {"claude-code"}
+    reverse = adapt_claude_code_exports(
+        (overlap, second, first),
+        authorized_paths=(first, second, overlap),
+    )
+    assert trace_result_to_dict(result) == trace_result_to_dict(reverse)
 
 
 def test_large_session_streams_in_seconds(tmp_path: Path) -> None:

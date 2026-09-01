@@ -35,6 +35,9 @@ _REQUIRED_SCHEMA_FILES = (
     "learntrace/schemas/v0/observable-event.schema.json",
     "learntrace/schemas/v0/learning-node-candidate.schema.json",
     "learntrace/schemas/v0/student-confirmation.schema.json",
+    "learntrace/schemas/v0/trace-event-metadata.schema.json",
+    "learntrace/schemas/v0/trace-result.schema.json",
+    "learntrace/schemas/v0/trace-work-segment.schema.json",
 )
 
 

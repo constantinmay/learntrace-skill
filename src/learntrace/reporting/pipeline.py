@@ -12,6 +12,7 @@ from enum import Enum
 from typing import Any, Protocol, cast
 
 from learntrace import __version__
+from learntrace.adapters.aggregation import canonical_trace_event, events_conflict
 from learntrace.models import (
     SCHEMA_VERSION,
     CandidateStatus,
@@ -800,10 +801,18 @@ def _dedupe_events(events: tuple[ObservableEvent, ...]) -> tuple[ObservableEvent
 
             continue
 
-        if existing.to_dict() != event.to_dict():
+        conflict = (
+            events_conflict(existing, event)
+            if existing.kind == EventKind.TRACE_RECORD and event.kind == EventKind.TRACE_RECORD
+            else existing.to_dict() != event.to_dict()
+        )
+        if conflict:
             msg = f"conflicting observable_event records for id {event.id}"
 
             raise ValueError(msg)
+
+        if existing.kind == EventKind.TRACE_RECORD:
+            by_id[event.id] = canonical_trace_event(existing, event)
 
     return tuple(by_id.values())
 

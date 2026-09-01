@@ -15,6 +15,9 @@ from typing import Any, cast
 import jsonschema
 
 from learntrace import __version__
+from learntrace.adapters.aggregation import canonical_trace_event, events_conflict
+from learntrace.adapters.serialization import read_trace_result, trace_result_to_dict
+from learntrace.adapters.types import TraceAdapterResult, TraceInputStatus
 from learntrace.artifacts import register_generated_artifacts
 from learntrace.models import (
     SCHEMA_VERSION,
@@ -135,6 +138,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--snapshot",
         type=Path,
         help="Existing archive-records.json whose candidates must be reused.",
+    )
+    parser.add_argument(
+        "--trace-result",
+        type=Path,
+        help="Explicit validated Task 3 result JSON to include (never discovered by scanning).",
     )
     parser.add_argument(
         "--strict-inputs",
@@ -262,6 +270,12 @@ def _looks_like_generated_archive_json(data: JsonObject) -> bool:
     if data.get(_LEARNTRACE_BUNDLE_MARKER) is True:
         return True
     return "events" in data and "candidates" in data
+
+
+def _looks_like_task3_result(data: JsonObject) -> bool:
+    """Recognize Task 3 output so generic directory scans never ingest it."""
+
+    return data.get("artifact_type") == "learntrace_task3_result"
 
 
 def _looks_like_learntrace_json(data: JsonObject) -> bool:
@@ -592,6 +606,8 @@ def _collect_records_from_json(
     raw: JsonObject,
     path: Path,
     validator: ContractValidator,
+    *,
+    strict_inputs: bool,
 ) -> tuple[
     list[ObservableEvent],
     list[StudentConfirmation],
@@ -601,6 +617,18 @@ def _collect_records_from_json(
     events: list[ObservableEvent] = []
     confirmations: list[StudentConfirmation] = []
     warnings: list[ArchiveWarning] = []
+    ignored_trace_count = 0
+
+    def append_event(event: ObservableEvent) -> None:
+        nonlocal ignored_trace_count
+        if event.kind != EventKind.TRACE_RECORD:
+            events.append(event)
+            return
+        if strict_inputs:
+            raise ValueError(
+                f"{path}: trace_record requires an explicitly authorized Task 3 result"
+            )
+        ignored_trace_count += 1
 
     task2_meta: dict[str, object] = {}
     for key in ("parser_version", "analysis_scope", "inventory"):
@@ -610,7 +638,7 @@ def _collect_records_from_json(
     evidence_level = raw.get("evidence_level")
     if evidence_level == ObservableEvent.EVIDENCE_LEVEL:
         _validate_record(validator, "observable_event", raw, path)
-        events.append(_parse_event(raw, path))
+        append_event(_parse_event(raw, path))
     elif evidence_level == StudentConfirmation.EVIDENCE_LEVEL:
         _validate_record(validator, "student_confirmation", raw, path)
         confirmations.append(_parse_confirmation(raw, path))
@@ -620,7 +648,7 @@ def _collect_records_from_json(
         for index, item in enumerate(_require_list(raw, "events", path), start=1):
             event = _require_object(item, f"events[{index}]", path)
             _validate_record(validator, "observable_event", event, path)
-            events.append(_parse_event(event, path))
+            append_event(_parse_event(event, path))
 
     raw_confirmations = raw.get("confirmations")
     if raw_confirmations is not None:
@@ -633,14 +661,24 @@ def _collect_records_from_json(
     if raw_warnings is not None:
         warnings.extend(_parse_warning(item, path) for item in _require_list(raw, "warnings", path))
 
+    if ignored_trace_count:
+        warnings.append(
+            ArchiveWarning(
+                code="unbound_trace_record_ignored",
+                source=path.name,
+                message=(f"已忽略 {ignored_trace_count} 条未绑定显式 Task 3 授权结果的轨迹记录。"),
+            )
+        )
+
     return events, confirmations, warnings, task2_meta
 
 
-def load_project_artifacts(
+def _load_project_artifacts(
     project_dir: Path,
     *,
     validator: ContractValidator | None = None,
     strict_inputs: bool = False,
+    allow_empty: bool = False,
 ) -> LoadedProjectRecords:
     root = project_dir.resolve()
     if not root.is_dir():
@@ -653,6 +691,7 @@ def load_project_artifacts(
     warnings: list[ArchiveWarning] = []
     task2_meta: dict[str, object] = {}
     event_sources: dict[str, tuple[ObservableEvent, Path]] = {}
+    event_positions: dict[str, int] = {}
     confirmation_sources: dict[str, tuple[StudentConfirmation, Path]] = {}
 
     for path in _iter_json_files(root):
@@ -666,6 +705,8 @@ def load_project_artifacts(
         if raw is None:
             continue
         if _looks_like_generated_archive_json(raw):
+            continue
+        if _looks_like_task3_result(raw):
             continue
         if not _looks_like_learntrace_json(raw):
             if strict_inputs:
@@ -682,6 +723,7 @@ def load_project_artifacts(
                 raw,
                 path,
                 contract_validator,
+                strict_inputs=strict_inputs,
             )
         except ValueError as exc:
             if strict_inputs:
@@ -693,15 +735,27 @@ def load_project_artifacts(
             existing = event_sources.get(event.id)
             if existing is None:
                 event_sources[event.id] = (event, path)
+                event_positions[event.id] = len(events)
                 events.append(event)
                 continue
             existing_event, existing_path = existing
-            if existing_event.to_dict() != event.to_dict():
+            conflict = (
+                events_conflict(existing_event, event)
+                if existing_event.kind == EventKind.TRACE_RECORD
+                and event.kind == EventKind.TRACE_RECORD
+                else existing_event.to_dict() != event.to_dict()
+            )
+            if conflict:
                 msg = (
                     f"conflicting observable_event records for id {event.id}: "
                     f"{existing_path} vs {path}"
                 )
                 raise ValueError(msg)
+            if existing_event.kind == EventKind.TRACE_RECORD:
+                representative = canonical_trace_event(existing_event, event)
+                if representative is event:
+                    event_sources[event.id] = (event, path)
+                    events[event_positions[event.id]] = event
         for confirmation in loaded_confirmations:
             existing = confirmation_sources.get(confirmation.id)
             if existing is None:
@@ -717,7 +771,7 @@ def load_project_artifacts(
                 raise ValueError(msg)
         warnings.extend(loaded_warnings)
 
-    if not events and not confirmations:
+    if not events and not confirmations and not allow_empty:
         msg = (
             f"no observable_event records found under {root}; "
             "expected LearnTrace record JSON or a Task2 parse-result JSON with an events list"
@@ -732,13 +786,30 @@ def load_project_artifacts(
     )
 
 
+def load_project_artifacts(
+    project_dir: Path,
+    *,
+    validator: ContractValidator | None = None,
+    strict_inputs: bool = False,
+) -> LoadedProjectRecords:
+    return _load_project_artifacts(
+        project_dir,
+        validator=validator,
+        strict_inputs=strict_inputs,
+    )
+
+
 def load_project_records(
     project_dir: Path,
     *,
     validator: ContractValidator | None = None,
     strict_inputs: bool = False,
 ) -> tuple[tuple[ObservableEvent, ...], tuple[StudentConfirmation, ...]]:
-    loaded = load_project_artifacts(project_dir, validator=validator, strict_inputs=strict_inputs)
+    loaded = load_project_artifacts(
+        project_dir,
+        validator=validator,
+        strict_inputs=strict_inputs,
+    )
     return loaded.events, loaded.confirmations
 
 
@@ -754,8 +825,11 @@ def write_learning_record_result(
     confirmation_paths: Iterable[Path] = (),
     snapshot_path: Path | None = None,
     artifact_registry_root: Path | None = None,
+    trace_result: TraceAdapterResult | None = None,
 ) -> LearningRecordWriteResult:
     contract_validator = validator if validator is not None else ContractValidator()
+    if snapshot_path is not None and trace_result is not None:
+        raise ValueError("trace_result cannot be combined with an archive snapshot")
     explicit_confirmations = tuple(
         confirmation
         for path in confirmation_paths
@@ -769,21 +843,43 @@ def write_learning_record_result(
             validator=contract_validator,
         )
     else:
-        loaded = load_project_artifacts(
+        loaded = _load_project_artifacts(
             project_dir,
             validator=contract_validator,
             strict_inputs=strict_inputs,
+            allow_empty=trace_result is not None,
         )
-        if not loaded.events:
+        authorized_trace_events: tuple[ObservableEvent, ...] = ()
+        trace_warnings: tuple[ArchiveWarning, ...] = ()
+        if trace_result is not None:
+            if trace_result.status is TraceInputStatus.PARSED:
+                if not trace_result.events:
+                    raise ValueError("parsed Task 3 result must contain trace events")
+            elif trace_result.events or trace_result.work_segments:
+                raise ValueError("non-parsed Task 3 result must not contain events or segments")
+            # Validate the whole batch (status, provenance and deterministic
+            # segments), not only the individual observable events.
+            trace_result_to_dict(trace_result, validator=contract_validator)
+            authorized_trace_events = trace_result.events
+            trace_warnings = tuple(
+                ArchiveWarning(
+                    code=warning.code,
+                    source=warning.location,
+                    message=warning.message,
+                )
+                for warning in trace_result.warnings
+            )
+        all_events = (*loaded.events, *authorized_trace_events)
+        if not all_events:
             msg = (
                 f"no observable_event records found under {project_dir.resolve()}; "
                 "expected LearnTrace record JSON or a Task2 parse-result JSON with an events list"
             )
             raise ValueError(msg)
         bundle = build_archive_bundle(
-            loaded.events,
+            all_events,
             confirmations=(*loaded.confirmations, *explicit_confirmations),
-            warnings=loaded.warnings,
+            warnings=(*loaded.warnings, *trace_warnings),
             validator=contract_validator,
             inferencer=inferencer,
             task2_meta=loaded.task2_meta,
@@ -832,6 +928,7 @@ def write_learning_record(
     strict_inputs: bool = False,
     confirmation_paths: Iterable[Path] = (),
     snapshot_path: Path | None = None,
+    trace_result: TraceAdapterResult | None = None,
 ) -> Path:
     result = write_learning_record_result(
         project_dir,
@@ -843,6 +940,7 @@ def write_learning_record(
         strict_inputs=strict_inputs,
         confirmation_paths=confirmation_paths,
         snapshot_path=snapshot_path,
+        trace_result=trace_result,
     )
     return result.output_path
 
@@ -878,6 +976,9 @@ def main(argv: list[str] | tuple[str, ...] | None = None) -> int:
 
     project_dir = Path(args.project_dir)
     try:
+        trace_result = (
+            read_trace_result(args.trace_result) if args.trace_result is not None else None
+        )
         result = write_learning_record_result(
             project_dir,
             output_path=args.output,
@@ -886,6 +987,7 @@ def main(argv: list[str] | tuple[str, ...] | None = None) -> int:
             strict_inputs=args.strict_inputs,
             confirmation_paths=tuple(args.confirmations),
             snapshot_path=args.snapshot,
+            trace_result=trace_result,
         )
     except (FileNotFoundError, ValueError) as exc:
         parser.exit(1, f"{parser.prog}: error: {exc}\n")

@@ -14,8 +14,10 @@ from learntrace.adapters import (
     UnsupportedOpenCodeFormatError,
     adapt_opencode_export,
     adapt_opencode_exports,
+    trace_result_to_dict,
     write_trace_result,
 )
+from learntrace.adapters.types import session_export_source_ref
 from learntrace.models import ContractValidator, EventKind, SourceType
 
 
@@ -137,9 +139,23 @@ def test_completed_file_tool_becomes_a_stable_valid_trace_event(tmp_path: Path) 
     # 第二个引用指向导出文件本身（证据回读“去哪看原文”的落点）
     assert len(event.source_refs) == 2
     assert event.source_refs[1].type is SourceType.FILE
-    assert event.source_refs[1].ref == export_path.resolve().as_posix()
+    assert event.source_refs[1].ref == "export.json"
     assert event.source_refs[1].note == "session-export"
     ContractValidator().validate("observable_event", event.to_dict())
+
+
+def test_session_export_source_ref_redacts_host_absolute_path() -> None:
+    """Export provenance must not copy a Windows username into trace output."""
+
+    source_ref = session_export_source_ref(
+        Path(r"C:\Users\Alice\sessions\session.json"),
+        Path(r"D:\repo"),
+    )
+
+    assert source_ref.type is SourceType.FILE
+    assert source_ref.ref == "[outside-project]"
+    assert "Users" not in source_ref.to_dict()["ref"]
+    assert "Alice" not in source_ref.to_dict()["ref"]
 
 
 def test_malformed_sibling_is_skipped_with_a_safe_warning(tmp_path: Path) -> None:
@@ -366,6 +382,35 @@ def test_summaries_use_strict_whitelists_and_never_copy_sensitive_fields(
         "Alice",
     ):
         assert forbidden not in serialized
+
+
+@pytest.mark.parametrize(
+    "unsafe_path",
+    [
+        "file:///home/alice/private.py",
+        " /home/alice/private.py",
+        " C:/Users/Alice/private.py",
+        "%2Fhome%2Falice/private.py",
+    ],
+)
+def test_path_obfuscation_cannot_enter_task3_output(
+    tmp_path: Path,
+    unsafe_path: str,
+) -> None:
+    export_path = _write_export(
+        tmp_path / "export.json",
+        _export(_message(_tool_part(input_data={"filePath": unsafe_path}))),
+    )
+
+    result = adapt_opencode_export(
+        export_path,
+        authorized=True,
+        project_root=Path("D:/repo"),
+    )
+    serialized = json.dumps(trace_result_to_dict(result), ensure_ascii=False)
+
+    assert "alice" not in serialized.casefold()
+    assert "users" not in serialized.casefold()
 
 
 def test_unknown_tool_does_not_read_unapproved_path_fields(tmp_path: Path) -> None:
@@ -610,15 +655,22 @@ def test_multiple_sessions_require_authorization_for_each_path(
 
 
 def test_repeated_identical_export_is_deduplicated(tmp_path: Path) -> None:
-    export_path = _write_export(tmp_path / "export.json", _export(_message(_tool_part())))
+    data = _export(_message(_tool_part()))
+    first = _write_export(tmp_path / "a.json", data)
+    second = _write_export(tmp_path / "b.json", data)
 
-    result = adapt_opencode_exports(
-        (export_path, export_path),
-        authorized_paths=(export_path,),
+    forward = adapt_opencode_exports(
+        (first, second),
+        authorized_paths=(first, second),
+    )
+    reverse = adapt_opencode_exports(
+        (second, first),
+        authorized_paths=(first, second),
     )
 
-    assert len(result.events) == 1
-    assert [warning.code for warning in result.warnings] == ["duplicate_export_event"]
+    assert len(forward.events) == 1
+    assert [warning.code for warning in forward.warnings] == ["duplicate_export_event"]
+    assert trace_result_to_dict(forward) == trace_result_to_dict(reverse)
 
 
 def test_ordinary_json_parses_without_hitting_depth_guard(tmp_path: Path) -> None:

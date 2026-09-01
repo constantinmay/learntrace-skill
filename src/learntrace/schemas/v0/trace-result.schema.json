@@ -1,0 +1,146 @@
+{
+  "$id": "trace-result.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "TraceAdapterResult",
+  "description": "由 Task 3 适配器在逐来源显式授权后生成的批次结果。",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "artifact_type",
+    "adapter_version",
+    "status",
+    "events",
+    "warnings",
+    "trace_metadata",
+    "work_segments"
+  ],
+  "properties": {
+    "artifact_type": { "const": "learntrace_task3_result" },
+    "adapter_version": { "const": "v0" },
+    "status": {
+      "enum": ["not_provided", "not_authorized", "authorized_not_found", "parsed"]
+    },
+    "events": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "allOf": [
+          { "$ref": "observable-event.schema.json" },
+          {
+            "properties": {
+              "kind": { "const": "trace_record" },
+              "source_refs": {
+                "allOf": [
+                  {
+                    "contains": {
+                      "type": "object",
+                      "required": ["type", "ref", "note"],
+                      "oneOf": [
+                        {
+                          "properties": {
+                            "type": { "const": "trace_record" },
+                            "ref": { "type": "string", "pattern": "^trace://opencode/" },
+                            "note": { "const": "opencode" }
+                          }
+                        },
+                        {
+                          "properties": {
+                            "type": { "const": "trace_record" },
+                            "ref": { "type": "string", "pattern": "^trace://claude-code/" },
+                            "note": { "const": "claude-code" }
+                          }
+                        },
+                        {
+                          "properties": {
+                            "type": { "const": "trace_record" },
+                            "ref": { "type": "string", "pattern": "^trace://codex/" },
+                            "note": { "const": "codex" }
+                          }
+                        }
+                      ]
+                    }
+                  },
+                  {
+                    "contains": {
+                      "type": "object",
+                      "required": ["type", "ref", "note"],
+                      "properties": {
+                        "type": { "const": "file" },
+                        "ref": {
+                          "anyOf": [
+                            {
+                              "enum": [
+                                "[absolute-path]",
+                                "[outside-project]",
+                                "[unsafe-path]"
+                              ]
+                            },
+                            {
+                              "type": "string",
+                              "minLength": 1,
+                              "allOf": [
+                                { "not": { "pattern": "^(?:/|~|[A-Za-z]:[\\\\/]|\\\\\\\\|\\[)" } },
+                                { "not": { "pattern": "(?:^|/)[A-Za-z][A-Za-z0-9+.-]*:" } },
+                                { "not": { "pattern": "(?:^|/)\\s|\\s(?:/|$)" } },
+                                { "not": { "pattern": "%[0-9A-Fa-f]{2}" } },
+                                { "not": { "pattern": "(?:^|/)\\.\\.(?:/|$)" } },
+                                { "not": { "pattern": "\\\\" } }
+                              ]
+                            }
+                          ]
+                        },
+                        "note": { "const": "session-export" }
+                      }
+                    }
+                  }
+                ]
+              }
+            }
+          }
+        ]
+      }
+    },
+    "warnings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["code", "location", "message"],
+        "properties": {
+          "code": { "type": "string", "minLength": 1 },
+          "location": { "type": "string", "minLength": 1 },
+          "message": { "type": "string", "minLength": 1 }
+        }
+      }
+    },
+    "trace_metadata": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": { "$ref": "trace-event-metadata.schema.json" }
+    },
+    "work_segments": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": { "$ref": "trace-work-segment.schema.json" }
+    }
+  },
+  "allOf": [
+    {
+      "if": { "properties": { "status": { "const": "parsed" } } },
+      "then": {
+        "properties": {
+          "events": { "minItems": 1 },
+          "trace_metadata": { "minItems": 1 },
+          "work_segments": { "minItems": 1 }
+        }
+      },
+      "else": {
+        "properties": {
+          "events": { "maxItems": 0 },
+          "trace_metadata": { "maxItems": 0 },
+          "work_segments": { "maxItems": 0 }
+        }
+      }
+    }
+  ]
+}

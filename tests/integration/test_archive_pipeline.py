@@ -8,6 +8,12 @@ from typing import Any, cast
 
 import pytest
 
+from learntrace.adapters import (
+    TraceAdapterResult,
+    TraceEventMetadata,
+    TraceInputStatus,
+    segment_trace_events,
+)
 from learntrace.archive import (
     load_archive_snapshot,
     load_project_artifacts,
@@ -162,10 +168,97 @@ def _seeded_inferencer_for(
     return _SeededCandidateInferencer(drafts)
 
 
+def _golden_records(
+    scenario_dir: Path,
+    *,
+    validator: ContractValidator | None = None,
+) -> tuple[tuple[ObservableEvent, ...], tuple[StudentConfirmation, ...]]:
+    """Load frozen downstream fixtures without weakening production authorization."""
+
+    contract_validator = validator if validator is not None else ContractValidator()
+    events: list[ObservableEvent] = []
+    for path in sorted(scenario_dir.glob("observable-event*.json")):
+        raw = cast(dict[str, Any], _load_json(path))
+        contract_validator.validate("observable_event", raw)
+        refs = tuple(
+            SourceRef(
+                type=SourceType(str(item["type"])),
+                ref=str(item["ref"]),
+                note=str(item["note"]) if "note" in item else None,
+            )
+            for item in cast(list[dict[str, Any]], raw["source_refs"])
+        )
+        occurred_at = raw.get("occurred_at")
+        events.append(
+            ObservableEvent(
+                id=str(raw["id"]),
+                kind=EventKind(str(raw["kind"])),
+                summary=str(raw["summary"]),
+                source_refs=refs,
+                occurred_at=str(occurred_at) if occurred_at is not None else None,
+            )
+        )
+
+    confirmations: list[StudentConfirmation] = []
+    for path in sorted(scenario_dir.glob("student-confirmation*.json")):
+        raw = cast(dict[str, Any], _load_json(path))
+        contract_validator.validate("student_confirmation", raw)
+        statement_raw = raw["student_statement"]
+        statement = (
+            str(statement_raw)
+            if isinstance(statement_raw, str)
+            else MissingInfo(note=cast(dict[str, Any], statement_raw).get("note"))
+        )
+        confirmed_at = raw.get("confirmed_at")
+        confirmations.append(
+            StudentConfirmation(
+                id=str(raw["id"]),
+                candidate_id=str(raw["candidate_id"]),
+                decision=ConfirmationDecision(str(raw["decision"])),
+                student_statement=statement,
+                confirmed_at=str(confirmed_at) if confirmed_at is not None else None,
+            )
+        )
+    return tuple(events), tuple(confirmations)
+
+
+def _authorized_trace_result_for(scenario_dir: Path) -> TraceAdapterResult | None:
+    """Wrap frozen golden trace fixtures in the explicit Task 3 boundary."""
+
+    events, _ = _golden_records(scenario_dir)
+    traces = tuple(
+        replace(
+            event,
+            source_refs=(
+                *event.source_refs,
+                SourceRef(
+                    type=SourceType.FILE,
+                    ref="[absolute-path]",
+                    note="session-export",
+                ),
+            ),
+        )
+        for event in events
+        if event.kind == EventKind.TRACE_RECORD
+    )
+    if not traces:
+        return None
+    metadata = tuple(TraceEventMetadata(event_id=event.id) for event in traces)
+    return TraceAdapterResult(
+        status=TraceInputStatus.PARSED,
+        events=traces,
+        work_segments=segment_trace_events(traces, metadata=metadata),
+        trace_metadata=metadata,
+    )
+
+
 @pytest.mark.parametrize("scenario_dir", SCENARIO_DIRS, ids=lambda path: path.name)
 def test_archive_bundle_matches_golden_scenarios(scenario_dir: Path) -> None:
     validator = ContractValidator(schema_dir=SCHEMA_DIR)
-    events, confirmations = load_project_records(scenario_dir, validator=validator)
+    events, confirmations = _golden_records(
+        scenario_dir,
+        validator=validator,
+    )
 
     bundle = build_archive_bundle(
         events,
@@ -186,7 +279,10 @@ def test_archive_bundle_matches_golden_scenarios(scenario_dir: Path) -> None:
 @pytest.mark.parametrize("scenario_dir", SCENARIO_DIRS, ids=lambda path: path.name)
 def test_render_markdown_contains_required_sections(scenario_dir: Path) -> None:
     validator = ContractValidator(schema_dir=SCHEMA_DIR)
-    events, confirmations = load_project_records(scenario_dir, validator=validator)
+    events, confirmations = _golden_records(
+        scenario_dir,
+        validator=validator,
+    )
     bundle = build_archive_bundle(
         events,
         confirmations=confirmations,
@@ -488,7 +584,7 @@ def test_ai_collaboration_does_not_count_incomplete_tool_as_completed() -> None:
 
 def test_human_learning_label_reflects_denied_confirmation() -> None:
     scenario = SCENARIOS_DIR / "02-revise-ai-suggestion-denied"
-    events, confirmations = load_project_records(scenario)
+    events, confirmations = _golden_records(scenario)
 
     bundle = build_archive_bundle(
         events,
@@ -504,7 +600,7 @@ def test_human_learning_label_reflects_denied_confirmation() -> None:
 
 def test_reflection_is_an_editable_student_field_not_confirmation_echo() -> None:
     scenario = SCENARIOS_DIR / "01-revise-ai-suggestion-confirmed"
-    events, confirmations = load_project_records(scenario)
+    events, confirmations = _golden_records(scenario)
     bundle = build_archive_bundle(
         events,
         confirmations=confirmations,
@@ -526,6 +622,7 @@ def test_cli_writes_learning_record(tmp_path: Path) -> None:
         output_path=output_path,
         validator=ContractValidator(schema_dir=SCHEMA_DIR),
         inferencer=_seeded_inferencer_for(scenario),
+        trace_result=_authorized_trace_result_for(scenario),
     )
 
     assert output_path.exists()
@@ -918,7 +1015,10 @@ def test_stable_candidate_id_regardless_of_order() -> None:
     validator = ContractValidator(schema_dir=SCHEMA_DIR)
 
     scenario_01 = SCENARIOS_DIR / "01-revise-ai-suggestion-confirmed"
-    events_01, confirmations_01 = load_project_records(scenario_01, validator=validator)
+    events_01, confirmations_01 = _golden_records(
+        scenario_01,
+        validator=validator,
+    )
     inferencer_01 = _seeded_inferencer_for(scenario_01)
 
     # Build bundle with events in original order

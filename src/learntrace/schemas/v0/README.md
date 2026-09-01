@@ -19,6 +19,14 @@ M1 冻结的公共骨架字段：
 | `learning-node-candidate.schema.json` | `candidate_inference` | 系统提出的候选学习节点，必须带 `basis_event_ids` 和 `uncertainty` |
 | `student-confirmation.schema.json` | `student_confirmation` | 学生对候选的确认、补充或否认，独立成记录 |
 
+Task 3 另有两个批次/索引契约，它们不是新的证据等级：
+
+| Schema | 含义 |
+| --- | --- |
+| `trace-event-metadata.schema.json` | 适配器从已授权工具记录直接提取的安全结构化字段；用于重算分段，不读取自然语言摘要 |
+| `trace-work-segment.schema.json` | 由已授权 `trace_record` 确定性计算出的工作段索引；它引用原子事件，不新增事实 |
+| `trace-result.schema.json` | 一次 Task 3 适配结果的授权边界；Schema 约束字段形状和授权状态，serializer/loader 的确定性重算约束跨对象一致性 |
+
 ## 关键约束
 
 - 候选的 `status` 只有 `proposed` / `resolved` 两种生命周期状态；`resolved` 仅表示存在对应的确认记录，**不得**在候选记录中书写学生的确认、补充或否认决定。
@@ -26,5 +34,7 @@ M1 冻结的公共骨架字段：
 - 证据缺失（如无授权轨迹）时不产生对应事实记录，相关字段使用 `missing_info`，不得推断 AI 协作。
 - 跨文件引用：`$ref` 使用相对路径（如 `common.schema.json#/$defs/...`），校验器需以 `schemas/v0/` 目录构建 `referencing.Registry` 并启用 `FormatChecker`（否则 `date-time` 等 format 不生效）。
 - 只有 `observable_fact` 强制 `source_refs`；学生确认的来源是与学生的对话本身，不强制来源引用，但确认记录必须与候选记录分别保存。
+- 普通目录扫描不得把裸 `trace_record` 当成已授权输入；轨迹只能由本轮显式授权并通过 `trace-result.schema.json` 与确定性重算校验的 Task 3 结果进入归档。
+- Task 3 结果读取器保证 schema 合规和事件、结构化元数据、分段之间的内部一致性；它不是数字签名，显式选择来源不可信或被整体改写的文件不在该保证内。
 
 金标样例与预期结果清单见 `tests/fixtures/golden/`，契约回归见 `tests/contract/`。
