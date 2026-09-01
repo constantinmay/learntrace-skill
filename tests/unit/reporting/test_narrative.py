@@ -389,6 +389,21 @@ def test_red_line_1_unresolvable_citation(
     assert any("红线1" in violation for violation in violations)
 
 
+def test_red_line_1_string_key_change_must_not_be_event_id(
+    golden_sample: tuple[str, dict[str, Any], dict[str, Any]],
+) -> None:
+    """字符串形式的关键变更会原样渲染给读者,不允许直接写事件 ID。"""
+    _, payload, archive = golden_sample
+    bad = copy.deepcopy(payload)
+    event_id = payload["overview"]["citations"][0]
+    bad["stages"][0]["key_changes"] = [event_id]
+    violations = verify_payload(bad, archive)
+    assert any("红线1:stages[0].key_changes[0]" in violation for violation in violations)
+    good = copy.deepcopy(payload)
+    good["stages"][0]["key_changes"] = ["搭建仓库骨架并补充 README"]
+    assert verify_payload(good, archive) == []
+
+
 def test_malformed_citation_is_rejected(
     golden_sample: tuple[str, dict[str, Any], dict[str, Any]],
 ) -> None:

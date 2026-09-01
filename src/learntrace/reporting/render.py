@@ -200,7 +200,16 @@ def _project_goal_lines(bundle: ArchiveBundle) -> list[str]:
 
 
 def _trace_search_text(event: ObservableEvent) -> str:
-    refs = " ".join(f"{source.ref} {source.note or ''}" for source in event.source_refs)
+    # Only content-bearing text decides whether a trace is about the student
+    # project. The ``session-export`` ref records where the export file lived,
+    # and an export stored outside the project normalizes to
+    # ``[outside-project]`` — a provenance marker that must not make every
+    # event match the exclusion terms.
+    refs = " ".join(
+        f"{source.ref} {source.note or ''}"
+        for source in event.source_refs
+        if source.note != "session-export"
+    )
     return f"{event.summary} {refs}".casefold()
 
 
@@ -500,5 +509,9 @@ def render_questions_markdown(bundle: ArchiveBundle) -> str:
         lines.append(f"- 类型：{question['question_type']}")
         lines.append(f"- 问题：{_render_safe_text(str(question['question_to_student']))}")
         lines.append(f"- 说明：{_render_safe_text(str(question['uncertainty']))}")
+        lines.append(
+            "- 提交方式：该问题没有对应候选，不通过 `--confirmations` 提交；"
+            "请把学生的原话保留到叙事层的反思/学习收获字段（submitted 版）。"
+        )
         lines.append("")
     return "\n".join(lines)

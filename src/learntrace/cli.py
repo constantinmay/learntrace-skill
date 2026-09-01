@@ -729,6 +729,11 @@ def _run_command(args: argparse.Namespace, parser: argparse.ArgumentParser) -> i
             if args.output is not None:
                 args.output.parent.mkdir(parents=True, exist_ok=True)
                 args.output.write_text(markdown, encoding="utf-8")
+                # Register the render so a later `run` does not re-ingest it as
+                # project documentation; the archive location names the project.
+                archive_parent = args.archive_path.resolve().parent
+                if archive_parent.name == ".learntrace":
+                    register_generated_artifacts(archive_parent.parent, (args.output,))
                 print(f"Wrote narrative render: {args.output}")
             else:
                 print(markdown, end="")
@@ -739,6 +744,13 @@ def _run_command(args: argparse.Namespace, parser: argparse.ArgumentParser) -> i
         parse_output = work_dir / "task2-result.json"
         output = args.output or root / "learning-record.md"
         archive_snapshot = work_dir / "archive-records.json"
+        # The documented flow writes the confirmation file into the project
+        # directory, so anchor relative paths there instead of the caller's
+        # working directory.
+        confirmation_paths = tuple(
+            path.expanduser() if path.expanduser().is_absolute() else root / path
+            for path in args.confirmations
+        )
         if args.confirmations:
             conflicting_options: list[str] = []
             if args.document is not None:
@@ -778,7 +790,7 @@ def _run_command(args: argparse.Namespace, parser: argparse.ArgumentParser) -> i
                 output_path=output,
                 records_output_path=archive_snapshot,
                 questions_output_path=work_dir / "learning-questions.md",
-                confirmation_paths=tuple(args.confirmations),
+                confirmation_paths=confirmation_paths,
                 snapshot_path=archive_snapshot,
                 artifact_registry_root=root,
             )
@@ -856,7 +868,7 @@ def _run_command(args: argparse.Namespace, parser: argparse.ArgumentParser) -> i
             output_path=output,
             records_output_path=archive_snapshot,
             questions_output_path=work_dir / "learning-questions.md",
-            confirmation_paths=tuple(args.confirmations),
+            confirmation_paths=confirmation_paths,
             artifact_registry_root=root,
             trace_result=trace_result,
         )

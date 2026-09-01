@@ -421,6 +421,61 @@ def test_run_with_confirmations_reuses_first_analysis_snapshot(
     assert second_archive["confirmations"][0]["candidate_id"] == candidate_id
 
 
+def test_run_confirmations_relative_path_resolves_against_project_dir(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The documented flow writes student-confirmations.json into the project
+    # directory; a bare filename must resolve there even when the caller runs
+    # the CLI from a different working directory.
+    class SingleCandidateInferencer:
+        inference_mode = "test"
+
+        def infer(self, events: tuple[ObservableEvent, ...]) -> tuple[CandidateDraft, ...]:
+            document = next(event for event in events if event.kind.value == "document")
+            return (
+                CandidateDraft(
+                    node_type=NodeType.ADD_TESTS,
+                    statement="学生可能复盘了项目目标文档。",
+                    basis_event_ids=(document.id,),
+                    uncertainty="中：需学生确认。",
+                    question_to_student=MissingInfo(note="请由学生确认。"),
+                ),
+            )
+
+    monkeypatch.setattr(
+        "learntrace.reporting.pipeline.StubCandidateInferencer",
+        SingleCandidateInferencer,
+    )
+    (tmp_path / "task.md").write_text("# Goal\n\nInspect safely.\n", encoding="utf-8")
+    assert main(["run", str(tmp_path), "--no-git"]) == 0
+    archive_path = tmp_path / ".learntrace" / "archive-records.json"
+    candidate_id = json.loads(archive_path.read_text(encoding="utf-8"))["candidates"][0]["id"]
+    (tmp_path / "student-confirmations.json").write_text(
+        json.dumps(
+            {
+                "confirmations": [
+                    {
+                        "candidate_id": candidate_id,
+                        "decision": "confirmed",
+                        "confirmed_at": "2026-08-20T10:30:00+08:00",
+                    }
+                ]
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    monkeypatch.chdir(elsewhere)
+
+    assert main(["run", str(tmp_path), "--confirmations", "student-confirmations.json"]) == 0
+
+    archive = json.loads(archive_path.read_text(encoding="utf-8"))
+    assert archive["confirmations"][0]["candidate_id"] == candidate_id
+
+
 def test_run_multiple_exports_keeps_unauthorized_session_unread(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -956,3 +1011,113 @@ def test_cli_rejects_confirmation_without_real_timestamp(
 
     assert exc_info.value.code == 1
     assert "confirmed_at" in capsys.readouterr().err
+
+
+def test_render_narrative_registers_output_as_generated_artifact(tmp_path: Path) -> None:
+    """render-narrative 的输出必须注册,否则下次 run 会把它当项目文档解析。"""
+    project = tmp_path / "proj"
+    work_dir = project / ".learntrace"
+    work_dir.mkdir(parents=True)
+    archive_path = work_dir / "archive-records.json"
+    archive_path.write_text(
+        json.dumps(
+            {
+                "learntrace_bundle": True,
+                "record_counts": {
+                    "observable_fact": 2,
+                    "candidate_inference": 0,
+                    "student_confirmation": 0,
+                    "missing_info": 0,
+                    "warnings": 0,
+                    "pending_questions": 0,
+                },
+                "events": [
+                    {
+                        "id": "evt-git-abc1234",
+                        "kind": "git",
+                        "summary": "初始化仓库。",
+                        "source_refs": [{"type": "git", "ref": "abc1234"}],
+                    },
+                    {
+                        "id": "evt-trace-abc1234abcd",
+                        "kind": "trace_record",
+                        "summary": "OpenCode 工具 write 已完成。",
+                        "source_refs": [{"type": "session-export", "ref": "session.json"}],
+                    },
+                ],
+                "candidates": [],
+                "confirmations": [],
+                "pending_questions": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+    payload_path = project / "narrative-payload.json"
+    payload_path.write_text(
+        json.dumps(
+            {
+                "layer": "narrative_payload",
+                "variant": "working",
+                "meta": {
+                    "project": "demo",
+                    "evidence_window": "窗口",
+                    "status": "未确认版",
+                    "pending_questions": 0,
+                    "evidence_gaps": 0,
+                },
+                "overview": {"text": "概述。", "citations": ["evt-git-abc1234"]},
+                "stages": [
+                    {
+                        "stage_id": "stage-1",
+                        "title": "初始化",
+                        "goal": "搭建仓库。",
+                        "key_changes": [
+                            {
+                                "kind": "Added",
+                                "text": "初始化仓库",
+                                "citations": ["evt-git-abc1234"],
+                            }
+                        ],
+                        "citations": ["evt-git-abc1234"],
+                    }
+                ],
+                "turning_points": [],
+                "ai_collaboration": {
+                    "coverage": "一份授权导出。",
+                    "shape": "最小保留。",
+                    "focus": "项目根目录。",
+                    "episodes": [
+                        {
+                            "label": "写入",
+                            "body": "最小保留记录显示执行了写入。",
+                            "citations": ["evt-trace-abc1234abcd"],
+                            "derived": False,
+                        }
+                    ],
+                    "boundary": "不建立对应关系。",
+                },
+                "verification": ["通过 verify-narrative 检查引用。"],
+                "reflection": {"status": "student_authored_only", "text": None},
+                "takeaways": [],
+                "evidence_gaps": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+    output = project / "narrative-rendered.md"
+
+    assert (
+        main(
+            [
+                "render-narrative",
+                str(payload_path),
+                str(archive_path),
+                "--output",
+                str(output),
+            ]
+        )
+        == 0
+    )
+
+    registry = json.loads((work_dir / "generated-artifacts.json").read_text(encoding="utf-8"))
+    assert "narrative-rendered.md" in registry["paths"]

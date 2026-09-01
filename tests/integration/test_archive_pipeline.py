@@ -38,6 +38,7 @@ from learntrace.reporting import (
     build_archive_bundle,
     bundle_to_dict,
     render_markdown,
+    render_questions_markdown,
 )
 from learntrace.reporting.pipeline import StubCandidateInferencer
 
@@ -306,6 +307,24 @@ def test_render_markdown_contains_required_sections(scenario_dir: Path) -> None:
         assert heading in markdown
 
 
+def test_fallback_questions_carry_submission_guidance() -> None:
+    """无候选时的兜底问题必须说明答案不经 --confirmations 提交。"""
+    event = ObservableEvent(
+        id="evt-fallback-guidance",
+        kind=EventKind.DOCUMENT,
+        summary="记录了实现目标。",
+        source_refs=(SourceRef(type=SourceType.DOCUMENT, ref="task.md:1-2"),),
+    )
+    bundle = build_archive_bundle((event,))
+    assert not [c for c in bundle.candidates if c.status.value == "proposed"]
+
+    markdown = render_questions_markdown(bundle)
+
+    assert "gap-learning-reflection" in markdown
+    assert "不通过 `--confirmations` 提交" in markdown
+    assert "反思/学习收获" in markdown
+
+
 def test_render_markdown_does_not_expose_source_directory(tmp_path: Path) -> None:
     event = ObservableEvent(
         id="evt-source-dir-privacy",
@@ -567,6 +586,33 @@ def test_generic_traces_are_summarized_without_claiming_no_trace_exists() -> Non
     assert "授权轨迹仅包含通用工具操作" in markdown
     assert "未见与本项目范围相关的授权轨迹" not in markdown
     assert "待确认问题：3 条" in markdown
+
+
+def test_session_export_location_does_not_exclude_trace_events() -> None:
+    # A session export handed over from outside the project (the normal
+    # consent-gate flow) normalizes its provenance ref to "[outside-project]".
+    # That marker describes where the export file lived, not what the student
+    # did, so it must not trip the content-based exclusion terms.
+    traces = (
+        ObservableEvent(
+            id="evt-export-outside",
+            kind=EventKind.TRACE_RECORD,
+            summary="OpenCode 工具 write 已完成。路径：src/app.py。",
+            source_refs=(
+                SourceRef(type=SourceType.TRACE_RECORD, ref="trace://session/1"),
+                SourceRef(
+                    type=SourceType.FILE,
+                    ref="[outside-project]",
+                    note="session-export",
+                ),
+            ),
+        ),
+    )
+
+    markdown = render_markdown(build_archive_bundle(traces))
+
+    assert "write：共 1 次，完成 1 次" in markdown
+    assert "未见与本项目范围相关的授权 AI 工具轨迹" not in markdown
 
 
 def test_ai_collaboration_does_not_count_incomplete_tool_as_completed() -> None:

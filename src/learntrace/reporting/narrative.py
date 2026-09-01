@@ -241,6 +241,18 @@ def verify_payload(payload: NarrativeDict, archive: ArchiveDict) -> list[str]:
             continue
         if event_id not in event_ids:
             violations.append(f"红线1:{location}: 引用 {event_id} 无法解析到档案事件")
+    # 字符串形式的关键变更是面向读者的描述文本,不是引用位置;
+    # 出现事件 ID 说明引用被错写进内容,渲染会把裸 ID 直接呈现给读者。
+    for s_index, stage in enumerate(payload.get("stages") or []):
+        stage_dict = _as_dict(stage)
+        if stage_dict is None:
+            continue
+        for c_index, change in enumerate(_list_field(stage_dict, "key_changes")):
+            if isinstance(change, str) and change.startswith("evt-"):
+                violations.append(
+                    f"红线1:stages[{s_index}].key_changes[{c_index}]: "
+                    f"字符串形式的关键变更必须是描述文本,事件 ID {change} 请移入 citations"
+                )
 
     # 红线 2:被否认线索不入正文。
     denied = _denied_basis_event_ids(archive)
