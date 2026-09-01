@@ -1013,9 +1013,8 @@ def test_cli_rejects_confirmation_without_real_timestamp(
     assert "confirmed_at" in capsys.readouterr().err
 
 
-def test_render_narrative_registers_output_as_generated_artifact(tmp_path: Path) -> None:
-    """render-narrative 的输出必须注册,否则下次 run 会把它当项目文档解析。"""
-    project = tmp_path / "proj"
+def _write_minimal_narrative_fixture(project: Path) -> tuple[Path, Path]:
+    """在项目目录写入最小合法 narrative payload 与配套 archive,返回两者路径。"""
     work_dir = project / ".learntrace"
     work_dir.mkdir(parents=True)
     archive_path = work_dir / "archive-records.json"
@@ -1104,6 +1103,13 @@ def test_render_narrative_registers_output_as_generated_artifact(tmp_path: Path)
         ),
         encoding="utf-8",
     )
+    return payload_path, archive_path
+
+
+def test_render_narrative_registers_output_as_generated_artifact(tmp_path: Path) -> None:
+    """render-narrative 的输出必须注册,否则下次 run 会把它当项目文档解析。"""
+    project = tmp_path / "proj"
+    payload_path, archive_path = _write_minimal_narrative_fixture(project)
     output = project / "narrative-rendered.md"
 
     assert (
@@ -1119,5 +1125,40 @@ def test_render_narrative_registers_output_as_generated_artifact(tmp_path: Path)
         == 0
     )
 
-    registry = json.loads((work_dir / "generated-artifacts.json").read_text(encoding="utf-8"))
+    registry = json.loads(
+        (project / ".learntrace" / "generated-artifacts.json").read_text(encoding="utf-8")
+    )
     assert "narrative-rendered.md" in registry["paths"]
+
+
+def test_render_narrative_registers_cwd_relative_output_consistently(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """相对输出路径按调用者 cwd 写文件;登记必须指向同一实际位置。
+
+    从项目父目录运行并传入 ``proj/report.md``:生成物落在项目根下的
+    ``report.md``,注册值也必须是 ``report.md``,否则后续 run 不会排除
+    真实生成物,还会错误排除无关的嵌套路径。
+    """
+    project = tmp_path / "proj"
+    payload_path, archive_path = _write_minimal_narrative_fixture(project)
+    monkeypatch.chdir(tmp_path)
+
+    assert (
+        main(
+            [
+                "render-narrative",
+                str(payload_path),
+                str(archive_path),
+                "--output",
+                "proj/report.md",
+            ]
+        )
+        == 0
+    )
+
+    assert (project / "report.md").exists()
+    registry = json.loads(
+        (project / ".learntrace" / "generated-artifacts.json").read_text(encoding="utf-8")
+    )
+    assert registry["paths"] == ["report.md"]

@@ -404,28 +404,38 @@ def test_red_line_1_string_key_change_must_not_be_event_id(
     assert verify_payload(good, archive) == []
 
 
-@pytest.mark.parametrize(
-    "change",
-    [
-        # 对象形式:text 为裸事件 ID。
-        {"kind": "Added", "text": "evt-git-deadbeef", "citations": []},
-        # 空白与 Markdown 反引号包裹。
-        "  `evt-git-deadbeef`  ",
-        # 事件 ID 嵌入描述句中。
-        "完成 evt-git-deadbeef 对应的重构并补测试",
-    ],
-    ids=["object-text", "wrapped", "embedded"],
-)
+@pytest.mark.parametrize("shape", ["object-text", "wrapped", "embedded"])
 def test_red_line_1_event_id_in_key_change_text(
     golden_sample: tuple[str, dict[str, Any], dict[str, Any]],
-    change: Any,
+    shape: str,
 ) -> None:
-    """事件 ID 以任何形态出现在关键变更文本中都必须被拒绝。"""
+    """档案内真实事件 ID 以任何形态出现在关键变更文本中都必须被拒绝。"""
     _, payload, archive = golden_sample
+    event_id = payload["overview"]["citations"][0]
+    change: Any
+    if shape == "object-text":
+        # 对象形式:text 为裸事件 ID。
+        change = {"kind": "Added", "text": event_id, "citations": []}
+    elif shape == "wrapped":
+        # 空白与 Markdown 反引号包裹。
+        change = f"  `{event_id}`  "
+    else:
+        # 事件 ID 嵌入描述句中。
+        change = f"完成 {event_id} 对应的重构并补测试"
     bad = copy.deepcopy(payload)
     bad["stages"][0]["key_changes"] = [change]
     violations = verify_payload(bad, archive)
     assert any("红线1:stages[0].key_changes[0]" in violation for violation in violations)
+
+
+def test_red_line_1_domain_identifier_lookalike_is_allowed(
+    golden_sample: tuple[str, dict[str, Any], dict[str, Any]],
+) -> None:
+    """外形相似但不在档案中的领域标识(如项目自定义事件名)不得误拦。"""
+    _, payload, archive = golden_sample
+    good = copy.deepcopy(payload)
+    good["stages"][0]["key_changes"] = ["新增领域事件 evt-order-created 的处理器"]
+    assert verify_payload(good, archive) == []
 
 
 def test_malformed_citation_is_rejected(

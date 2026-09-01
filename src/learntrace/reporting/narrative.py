@@ -31,8 +31,9 @@ from learntrace.reporting.render import render_safe_text
 NarrativeDict = dict[str, Any]
 ArchiveDict = dict[str, Any]
 # 事件 ID 形如 evt-<来源>-<标识>(如 evt-git-1c6bb73e、evt-trace-177ed54bffeYQO)。
-# 面向读者的描述文本中任何位置出现该形态(包括空白/反引号包裹或嵌入句中),
-# 都说明引用被错写进内容,渲染会把裸 ID 直接呈现给读者。
+# 面向读者的描述文本中出现档案内真实事件 ID(包括空白/反引号包裹或嵌入句中),
+# 说明引用被错写进内容,渲染会把裸 ID 直接呈现给读者。外形相似但不在档案中的
+# 领域标识(如项目自定义的 evt-order-created)不属于内部 ID,不得误拦。
 _EVENT_ID_IN_TEXT_RE = re.compile(r"evt-[A-Za-z]+-[0-9A-Za-z]+")
 
 
@@ -262,11 +263,13 @@ def verify_payload(payload: NarrativeDict, archive: ArchiveDict) -> list[str]:
                 text = change_dict["text"]
             else:
                 continue
-            match = _EVENT_ID_IN_TEXT_RE.search(text)
-            if match is not None:
+            mentioned = [
+                event_id for event_id in _EVENT_ID_IN_TEXT_RE.findall(text) if event_id in event_ids
+            ]
+            if mentioned:
                 violations.append(
                     f"红线1:stages[{s_index}].key_changes[{c_index}]: "
-                    f"关键变更必须是描述文本,事件 ID {match.group(0)} 请移入 citations"
+                    f"关键变更必须是描述文本,事件 ID {mentioned[0]} 请移入 citations"
                 )
 
     # 红线 2:被否认线索不入正文。

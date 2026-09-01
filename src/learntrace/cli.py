@@ -727,14 +727,18 @@ def _run_command(args: argparse.Namespace, parser: argparse.ArgumentParser) -> i
                 return 0
             markdown = render_narrative_markdown(final_payload, archive)
             if args.output is not None:
-                args.output.parent.mkdir(parents=True, exist_ok=True)
-                args.output.write_text(markdown, encoding="utf-8")
+                # Resolve against the caller's cwd first: writing interprets a
+                # relative path at cwd while registration would re-anchor it at
+                # the project root, so both must share one absolute path.
+                output_path = args.output.expanduser().resolve()
+                output_path.parent.mkdir(parents=True, exist_ok=True)
+                output_path.write_text(markdown, encoding="utf-8")
                 # Register the render so a later `run` does not re-ingest it as
                 # project documentation; the archive location names the project.
                 archive_parent = args.archive_path.resolve().parent
                 if archive_parent.name == ".learntrace":
-                    register_generated_artifacts(archive_parent.parent, (args.output,))
-                print(f"Wrote narrative render: {args.output}")
+                    register_generated_artifacts(archive_parent.parent, (output_path,))
+                print(f"Wrote narrative render: {output_path}")
             else:
                 print(markdown, end="")
             return 0
