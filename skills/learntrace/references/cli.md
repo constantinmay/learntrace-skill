@@ -37,9 +37,9 @@ infer candidates, build the archive, render the report.
 | `--confirmations F` | apply a confirmations JSON (repeatable); the CLI rejects combining it with document / test-log / Git-scope / export options |
 | `-o OUT` | output path override |
 
-Outputs at the project root: `learning-record.md`,
-`learning-questions.md`; under `.learntrace/`: `task2-result.json`,
-`task3-result.json`, `archive-records.json`, `generated-artifacts.json`.
+Outputs at the project root: `learning-record.md`; under `.learntrace/`:
+`learning-questions.md`, `task2-result.json`, `task3-result.json`,
+`archive-records.json`, `generated-artifacts.json`.
 
 ### `learntrace parse <project_dir> [options]`
 
@@ -76,8 +76,11 @@ do not load it wholesale into the conversation.
 
 ### `learntrace git-tree <project_dir> <revision> [-o OUT]`
 
-Top-level layout of a revision's tree (`revision` = commit hash, `index`, or
-`worktree`).
+Full recursive tracked tree of a reachable commit, plus per-top-level-entry
+counts. `revision` must resolve to a commit reachable from HEAD (commit hash
+or ref); the `index` / `worktree` special values are **not** accepted here —
+use `git-file` to read index/worktree file contents, and `git-worktree` to
+inspect uncommitted state.
 
 ### `learntrace git-evidence <project_dir> <commit> [--path P]... [--max-chars N] [-o OUTDIR]`
 
