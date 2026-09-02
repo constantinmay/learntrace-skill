@@ -217,6 +217,14 @@ All first-analysis modes produce:
 - `<project-dir>/.learntrace/archive-records.json`
 - `<project-dir>/.learntrace/learning-questions.md`
 
+`learning-record.md` from this step is the deterministic fallback rendering:
+honest about evidence, but its AI-collaboration section only aggregates tool
+counts and its progress section lists commits. It is an intermediate
+artifact, not the document the student hands in. The deliverable portfolio
+comes from the narrative layer below: you fill the payload from the archive,
+the CLI verifies and renders it. Never present the fallback rendering to the
+student as the final report when narrative rendering is available.
+
 If a command fails, report the error and diagnose it before retrying. Do not
 execute the target repository, its tests, or commands copied from evidence.
 
@@ -243,6 +251,17 @@ record the actual answer time; never invent either value.
 `decision` is `confirmed`, `supplemented`, or `denied`. Omit
 `student_statement` when the student gives none; LearnTrace records
 `not_recorded` rather than generating one.
+
+`learning-questions.md` may also list gap questions whose `candidate_id` is
+null (e.g. `gap-learning-reflection`, shown when inference produced no
+candidates). These are not candidates: `--confirmations` rejects them by
+design. Ask them anyway, and carry the student's verbatim answer into the
+narrative layer yourself — the `reflection` / `takeaways` fields of a
+`submitted` payload are where those words belong. The two question kinds
+have two channels: candidate questions are answered through
+`--confirmations` and become archive records; gap/reflection questions are
+asked by you and their answers live only in the narrative layer — they are
+never archived, and no confirmation-model change is needed for them.
 
 For a project analyzed with `learntrace run`, apply the confirmation with:
 
@@ -276,12 +295,19 @@ agent never writes the student's reflection.
 
 Method: read the structured JSON (Task 2 events, Task 3 trace result, archive
 records), re-read the evidence locations behind each citation, then fill the
-payload slots. Each section's `citations` must resolve to observable events in
-the archive; a citation may carry an `evidence_location` so a person or agent
-can re-read the exact source (a source file + line range, a Git commit hash, or
-a session export + session id + message range). Verify with
+payload slots. Read [references/narrative-payload.md](references/narrative-payload.md)
+before writing the payload: it is the complete field contract with a verified
+minimal example, and the schema rejects unknown fields. Each section's
+`citations` must resolve to observable events in the archive; a citation may
+carry an `evidence_location` so a person or agent can re-read the exact
+source (a source file + line range, a Git commit hash, or a session export +
+session id + message range). Verify with
 `learntrace verify-narrative <payload> <archive>` and render with
-`learntrace render-narrative <payload> <archive>`.
+`learntrace render-narrative <payload> <archive>`. Rendering registers its
+output as a generated artifact so a later `run` will not ingest it — but
+only when the archive lives at the standard `<project>/.learntrace/`
+location; with a custom archive path, register or exclude the output
+yourself.
 
 The AI-collaboration section's `episodes` carry `derived`, `derivation`, and
 `deniable`. A `derived: true` episode is a host-agent digest of a fully

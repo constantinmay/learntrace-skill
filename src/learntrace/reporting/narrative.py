@@ -20,6 +20,7 @@
 from __future__ import annotations
 
 import json
+import re
 from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import Any, cast
@@ -29,6 +30,11 @@ from learntrace.reporting.render import render_safe_text
 
 NarrativeDict = dict[str, Any]
 ArchiveDict = dict[str, Any]
+# 事件 ID 形如 evt-<来源>-<标识>(如 evt-git-1c6bb73e、evt-trace-177ed54bffeYQO)。
+# 面向读者的描述文本中出现档案内真实事件 ID(包括空白/反引号包裹或嵌入句中),
+# 说明引用被错写进内容,渲染会把裸 ID 直接呈现给读者。外形相似但不在档案中的
+# 领域标识(如项目自定义的 evt-order-created)不属于内部 ID,不得误拦。
+_EVENT_ID_IN_TEXT_RE = re.compile(r"evt-[A-Za-z]+-[0-9A-Za-z]+")
 
 
 def _as_dict(value: Any) -> NarrativeDict | None:
@@ -241,6 +247,30 @@ def verify_payload(payload: NarrativeDict, archive: ArchiveDict) -> list[str]:
             continue
         if event_id not in event_ids:
             violations.append(f"红线1:{location}: 引用 {event_id} 无法解析到档案事件")
+    # 字符串形式的关键变更是面向读者的描述文本,不是引用位置;
+    # 出现事件 ID 说明引用被错写进内容,渲染会把裸 ID 直接呈现给读者。
+    for s_index, stage in enumerate(payload.get("stages") or []):
+        stage_dict = _as_dict(stage)
+        if stage_dict is None:
+            continue
+        for c_index, change in enumerate(_list_field(stage_dict, "key_changes")):
+            # 字符串形式与对象形式的 text 都是面向读者的描述文本,不是引用位置。
+            if isinstance(change, str):
+                text = change
+            elif (change_dict := _as_dict(change)) is not None and isinstance(
+                change_dict.get("text"), str
+            ):
+                text = change_dict["text"]
+            else:
+                continue
+            mentioned = [
+                event_id for event_id in _EVENT_ID_IN_TEXT_RE.findall(text) if event_id in event_ids
+            ]
+            if mentioned:
+                violations.append(
+                    f"红线1:stages[{s_index}].key_changes[{c_index}]: "
+                    f"关键变更必须是描述文本,事件 ID {mentioned[0]} 请移入 citations"
+                )
 
     # 红线 2:被否认线索不入正文。
     denied = _denied_basis_event_ids(archive)
