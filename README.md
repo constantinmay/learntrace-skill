@@ -43,6 +43,11 @@ learntrace --version
 只复制 Skill 目录不会自动安装 Python CLI。OpenCode 当前的 Skill 发现路径参见
 [官方 Agent Skills 文档](https://opencode.ai/docs/skills)。
 
+LearnTrace 有两种并列入口。把 Skill 安装到 Codex、Claude Code、OpenCode 等宿主
+Agent 时，模型登录、API 和交互界面均由宿主 Agent 管理，只需要 Python 3.11+
+和 LearnTrace CLI，不需要 LearnTrace UI、Pi CLI 或 Node.js。`learntrace ui` 是可选的
+本地 Web 产品入口，供希望直接使用 LearnTrace 自带交互界面的用户选择。
+
 ## 推荐使用方式
 
 在待分析项目中启动 OpenCode，并要求它使用 `$learntrace`。Skill 会先检查 CLI，
@@ -58,6 +63,92 @@ OpenCode 轨迹。
 Skill 是宿主 Agent 的工作流约束，不是操作系统沙箱。实际联调已验证授权前
 停止、单次归档和归档后优先提问；宿主模型仍可能产生多余的元数据查询，最终
 的工具权限边界应由 OpenCode 配置和用户审批共同保证。
+
+## 本地 Web 界面
+
+安装 LearnTrace 后，可以在需要分析的项目上启动本地界面：
+
+```powershell
+learntrace ui <project-dir>
+```
+
+界面只监听本机回环地址，不对局域网或公网提供服务。LearnTrace
+直接启动产品内的 Pi SDK Agent，不扫描本机的 Agent，也不要求用户另行安装
+或登录 Pi CLI。使用这一入口需要本机安装 Node.js 22.19 或更高版本；Pi Agent
+服务和网页静态资源随 LearnTrace Python 包提供，不需要用户运行 `npm install`
+或单独启动前后端。该 Agent 使用仓库中未经改写的 LearnTrace Skill 调查当前项目。
+开始分析前，用户在网页中配置模型服务：
+
+- API 地址；
+- 模型 ID；
+- Anthropic Messages、OpenAI Chat Completions 或 OpenAI Responses 协议；
+- API Key；
+- 思考强度。
+
+配置保存在 LearnTrace 的本地应用数据目录，API Key 单独保存到操作系统
+凭据库，不写入目标项目、浏览器存储、SQLite 会话库或普通 JSON 配置文件。
+下次打开时会恢复 API 地址、模型、协议和思考强度；API Key 输入框保持空白，
+但可继续使用系统凭据库中已保存的 Key。
+
+对话、工具活动、授权请求、用户确认和报告状态会流式显示。会话元数据保存在
+系统应用数据目录的 SQLite 中，分析产物仍保存在目标项目的 `.learntrace/` 下；
+隐藏推理和未授权的历史会话正文不会写入 UI 数据库。Python 后端只负责
+HTTP/SSE、本地会话和产物管理；内置 Node 服务使用 Pi SDK 运行实际 Agent，
+Windows 与 Linux 使用同一套交互协议。网页中的“保存设置”只校验配置格式，
+“测试连接”会通过 Pi SDK 发起一次极小模型请求，实际检查 API 地址、协议、
+API Key 和模型 ID；不需要全局安装 Pi CLI。
+
+本地服务重启后，历史消息和报告仍可查看；选择“恢复并继续”会重新打开同一份
+Pi 会话记录，而不是用几条网页消息伪造上下文。Task 4 的项目级中间产物会在
+每次会话中保存不可变快照，因此后续再次分析同一项目不会篡改旧会话所展示的
+报告或审计引用。同一项目同一时间只允许一项分析写入产物。
+
+分析过程中，Agent 发起的澄清和反思问题会显示为网页中的结构化问题卡片，
+用户回答会返回同一个 Agent 会话。工具执行区只保留当前调查活动，
+不在对话里堆叠命令。首页选择项目目录后即进入普通对话，第一条用户消息
+才会触发 Skill 调查；生成的报告在可展开或收起的右侧阅读面板中渲染。
+
+如果没有自动打开浏览器，可复制终端打印的本地地址；服务器不应监听公网地址：
+
+```powershell
+learntrace ui <project-dir> --no-open
+```
+
+### 从源码启动与验收
+
+在 LearnTrace 仓库内开发或验收 Web 界面时，先准备 Python 与前端依赖：
+
+```powershell
+uv sync --locked
+cd web; npm ci; npm run build
+cd ..; cd agent; npm ci; npm run build
+```
+
+`web` 的构建把页面写入 `src/learntrace/ui/static/`，`agent` 的构建重新打包
+`src/learntrace/ui/agent-service.mjs`；两者都是随 Python 包分发的产物，改动
+`web/src` 或 `agent/src` 后需要重新构建，只改源码不会反映到界面。从源码启动：
+
+```powershell
+uv run python -m learntrace ui <project-dir>
+```
+
+需要 Node.js 22.19 或更高版本；启动行为与安装版 `learntrace ui` 一致。
+前后端热更新联调时，让后端固定监听 `8765`，再启动 `vite` 开发服务器（其把
+`/api`、`/auth` 代理到 `http://127.0.0.1:8765`）：
+
+```powershell
+uv run python -m learntrace ui <project-dir> --port 8765 --no-open
+cd web; npm run dev
+```
+
+### 模型服务偏慢时的判断
+
+分析中感觉“慢”时，先区分慢在模型服务还是本地产品：点击「测试连接」发起一次
+极小模型请求，若该请求本身明显耗时或超时，说明慢在 API 服务或网络，与界面无关。
+正常分析的首字延迟与思考强度、模型排队和流式速度直接相关——思考强度越高、工具
+调用越多，整体耗时越长，这并不代表页面失去响应。若「测试连接」瞬时完成，但页面
+出现布局错乱、按钮无响应或流式中断，才属于本地产品缺陷，请附带浏览器控制台与
+后端输出一起反馈。
 
 ## 本地 CLI
 
