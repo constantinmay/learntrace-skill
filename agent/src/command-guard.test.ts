@@ -3,7 +3,7 @@ import { QuestionBridge, type UserQuestion } from './question-tool.js'
 import { classifyCommand, createCommandTool } from './command-guard.js'
 import { join, resolve, sep } from 'node:path'
 
-const TEST_CWD = process.platform === 'win32' ? 'C:\learn\project' : '/learn/project'
+const TEST_CWD = process.platform === 'win32' ? 'C:\\learn\\project' : '/learn/project'
 const OUTSIDE_ABS = resolve(TEST_CWD, '..', 'other-project')
 const ESCAPE_REL = `..${sep}other-project`
 const OUTSIDE_FILE = resolve(TEST_CWD, '..', 'outside.txt')

@@ -12112,7 +12112,7 @@ function init_overflow() {
 function buildProviderErrorPattern$1(patterns) {
 	return new RegExp(patterns.join("|"), "i");
 }
-function sleep$7(ms, signal) {
+function sleep$8(ms, signal) {
 	return new Promise((resolve, reject) => {
 		if (signal?.aborted) {
 			reject(new RetrySleepAbortError$1());
@@ -12169,7 +12169,7 @@ async function retryAssistantCall$1(produce, policy, signal, callbacks) {
 		const delayMs = policy.baseDelayMs * 2 ** (attempt - 1);
 		await callbacks?.onRetryScheduled?.(attempt, maxAttempts, delayMs, lastRetry.errorMessage);
 		try {
-			await sleep$7(delayMs, signal);
+			await sleep$8(delayMs, signal);
 		} catch (error) {
 			await callbacks?.onRetryFinished?.(false, attempt, lastRetry.errorMessage);
 			if (error instanceof RetrySleepAbortError$1) return {
@@ -19369,9 +19369,9 @@ var init_values$1 = __esmMin((() => {
 }));
 //#endregion
 //#region node_modules/@earendil-works/pi-coding-agent/node_modules/@anthropic-ai/sdk/internal/utils/sleep.mjs
-var sleep$6;
+var sleep$7;
 var init_sleep$1 = __esmMin((() => {
-	sleep$6 = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+	sleep$7 = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 }));
 //#endregion
 //#region node_modules/@earendil-works/pi-coding-agent/node_modules/@anthropic-ai/sdk/version.mjs
@@ -24910,7 +24910,7 @@ var init_client$1 = __esmMin((() => {
 				const maxRetries = options.maxRetries ?? this.maxRetries;
 				timeoutMillis = this.calculateDefaultRetryTimeoutMillis(retriesRemaining, maxRetries);
 			}
-			await sleep$6(timeoutMillis);
+			await sleep$7(timeoutMillis);
 			return this.makeRequest(options, retriesRemaining - 1, requestLogID);
 		}
 		calculateDefaultRetryTimeoutMillis(retriesRemaining, maxRetries) {
@@ -26816,9 +26816,9 @@ var init_values = __esmMin((() => {
 }));
 //#endregion
 //#region node_modules/@earendil-works/pi-coding-agent/node_modules/openai/internal/utils/sleep.mjs
-var sleep$5;
+var sleep$6;
 var init_sleep = __esmMin((() => {
-	sleep$5 = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+	sleep$6 = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 }));
 //#endregion
 //#region node_modules/@earendil-works/pi-coding-agent/node_modules/openai/version.mjs
@@ -33337,7 +33337,7 @@ var init_runs$1 = __esmMin((() => {
 								if (!isNaN(headerIntervalMs)) sleepInterval = headerIntervalMs;
 							}
 						}
-						await sleep$5(sleepInterval);
+						await sleep$6(sleepInterval);
 						break;
 					case "requires_action":
 					case "incomplete":
@@ -34075,7 +34075,7 @@ var init_files$1 = __esmMin((() => {
 			const start = Date.now();
 			let file = await this.retrieve(id);
 			while (!file.status || !TERMINAL_STATES.has(file.status)) {
-				await sleep$5(pollInterval);
+				await sleep$6(pollInterval);
 				file = await this.retrieve(id);
 				if (Date.now() - start > maxWait) throw new APIConnectionTimeoutError$1({ message: `Giving up on waiting for file ${id} to finish processing after ${maxWait} milliseconds.` });
 			}
@@ -35592,7 +35592,7 @@ var init_file_batches = __esmMin((() => {
 								if (!isNaN(headerIntervalMs)) sleepInterval = headerIntervalMs;
 							}
 						}
-						await sleep$5(sleepInterval);
+						await sleep$6(sleepInterval);
 						break;
 					case "failed":
 					case "cancelled":
@@ -35733,7 +35733,7 @@ var init_files = __esmMin((() => {
 								if (!isNaN(headerIntervalMs)) sleepInterval = headerIntervalMs;
 							}
 						}
-						await sleep$5(sleepInterval);
+						await sleep$6(sleepInterval);
 						break;
 					case "failed":
 					case "completed": return file;
@@ -36567,7 +36567,7 @@ var init_client = __esmMin((() => {
 				const maxRetries = options.maxRetries ?? this.maxRetries;
 				timeoutMillis = this.calculateDefaultRetryTimeoutMillis(retriesRemaining, maxRetries);
 			}
-			await sleep$5(timeoutMillis);
+			await sleep$6(timeoutMillis);
 			return this.makeRequest(options, retriesRemaining - 1, requestLogID);
 		}
 		calculateDefaultRetryTimeoutMillis(retriesRemaining, maxRetries) {
@@ -64689,7 +64689,7 @@ async function uploadBlobInternal(file, uploadUrl, apiClient, httpOptions) {
 			});
 			if ((_b = response === null || response === void 0 ? void 0 : response.headers) === null || _b === void 0 ? void 0 : _b[X_GOOG_UPLOAD_STATUS_HEADER_FIELD]) break;
 			retryCount++;
-			await sleep$4(currentDelayMs);
+			await sleep$5(currentDelayMs);
 			currentDelayMs = currentDelayMs * DELAY_MULTIPLIER;
 		}
 		offset += chunkSize;
@@ -64704,7 +64704,7 @@ async function getBlobStat(file) {
 		type: file.type
 	};
 }
-function sleep$4(ms) {
+function sleep$5(ms) {
 	return new Promise((resolvePromise) => setTimeout(resolvePromise, ms));
 }
 /**
@@ -72396,7 +72396,7 @@ var init_node = __esmMin((() => {
 						});
 						if ((_b = response === null || response === void 0 ? void 0 : response.headers) === null || _b === void 0 ? void 0 : _b[X_GOOG_UPLOAD_STATUS_HEADER_FIELD]) break;
 						retryCount++;
-						await sleep$4(currentDelayMs);
+						await sleep$5(currentDelayMs);
 						currentDelayMs = currentDelayMs * DELAY_MULTIPLIER;
 					}
 					offset += bytesRead;
@@ -74418,7 +74418,7 @@ function validateRetryDelayMs(delayMs, options) {
 	if (maxRetryDelayMs > 0 && delayMs > maxRetryDelayMs) throw new RetryDelayExceededError(`Server requested ${Math.ceil(delayMs / 1e3)}s retry delay (max: ${Math.ceil(maxRetryDelayMs / 1e3)}s)`);
 	return delayMs;
 }
-function sleep$3(ms, signal) {
+function sleep$4(ms, signal) {
 	return new Promise((resolve, reject) => {
 		if (signal?.aborted) {
 			reject(/* @__PURE__ */ new Error("Request was aborted"));
@@ -75356,7 +75356,7 @@ var init_openai_codex_responses = __esmMin((() => {
 						const errorText = await response.text();
 						if (attempt < maxRetries && isRetryableError(response.status, errorText)) {
 							const retryAfterDelayMs = getRetryAfterDelayMs(response.headers);
-							await sleep$3(retryAfterDelayMs === void 0 ? BASE_DELAY_MS * 2 ** attempt : validateRetryDelayMs(retryAfterDelayMs, options), options?.signal);
+							await sleep$4(retryAfterDelayMs === void 0 ? BASE_DELAY_MS * 2 ** attempt : validateRetryDelayMs(retryAfterDelayMs, options), options?.signal);
 							continue;
 						}
 						const info = await parseErrorResponse(new Response(errorText, {
@@ -75370,7 +75370,7 @@ var init_openai_codex_responses = __esmMin((() => {
 						}
 						lastError = error instanceof Error ? error : new Error(String(error));
 						if (attempt < maxRetries && !(lastError instanceof RetryDelayExceededError) && !lastError.message.includes("usage limit")) {
-							await sleep$3(BASE_DELAY_MS * 2 ** attempt, options?.signal);
+							await sleep$4(BASE_DELAY_MS * 2 ** attempt, options?.signal);
 							continue;
 						}
 						throw lastError;
@@ -160850,7 +160850,7 @@ function init_frontmatter() {
 /**
 * Sleep helper that respects abort signal.
 */
-function sleep$2(ms, signal) {
+function sleep$3(ms, signal) {
 	return new Promise((resolve, reject) => {
 		if (signal?.aborted) {
 			reject(/* @__PURE__ */ new Error("Aborted"));
@@ -231547,7 +231547,7 @@ function init_agent_session() {
 				if (messages.length > 0 && messages[messages.length - 1].role === "assistant") this.agent.state.messages = messages.slice(0, -1);
 				this._retryAbortController = new AbortController();
 				try {
-					await sleep$2(delayMs, this._retryAbortController.signal);
+					await sleep$3(delayMs, this._retryAbortController.signal);
 				} catch {
 					const attempt = this._retryAttempt;
 					this._retryAttempt = 0;
@@ -273044,7 +273044,7 @@ function linkSignal(source, target) {
 	source.addEventListener("abort", abort, { once: true });
 	return () => source.removeEventListener("abort", abort);
 }
-function sleep$1(ms, signal) {
+function sleep$2(ms, signal) {
 	return new Promise((resolve, reject) => {
 		if (signal?.aborted) {
 			reject(signal.reason ?? /* @__PURE__ */ new Error("Cancelled"));
@@ -273182,7 +273182,7 @@ function init_client$2() {
 				while (true) {
 					const entry = (await this.list({ signal })).find((candidate) => candidate.id === model);
 					if (!entry || entry.status.value === "unloaded") return;
-					await sleep$1(100, signal);
+					await sleep$2(100, signal);
 				}
 			}
 			async download(model, signal) {
@@ -273246,7 +273246,7 @@ function init_client$2() {
 							status: { value: "loaded" }
 						};
 						if (entry?.status.failed || eventError) throw new Error(entry?.status.exit_code === void 0 ? eventError ?? "Model failed to load" : `Model exited with code ${entry.status.exit_code}`);
-						await sleep$1(250, signal);
+						await sleep$2(250, signal);
 					}
 				} finally {
 					unlink();
@@ -273287,7 +273287,7 @@ function init_client$2() {
 							reload: true,
 							signal
 						});
-						await sleep$1(500, signal);
+						await sleep$2(500, signal);
 					}
 				} finally {
 					unlink();
@@ -303563,43 +303563,6 @@ function minimalEnvironment(source) {
 	}
 	return result;
 }
-async function terminateTree(child) {
-	if (!child.pid) return;
-	if (process.platform === "win32") {
-		const taskkill = join$1(process.env.SystemRoot ?? "C:Windows", "System32", "taskkill.exe");
-		const alreadyExited = () => child.exitCode !== null || child.signalCode !== null;
-		await new Promise((resolve, reject) => {
-			let stderr = "";
-			const killer = spawn(taskkill, [
-				"/PID",
-				String(child.pid),
-				"/T",
-				"/F"
-			], {
-				windowsHide: true,
-				stdio: [
-					"ignore",
-					"ignore",
-					"pipe"
-				]
-			});
-			killer.stderr?.on("data", (chunk) => {
-				stderr += chunk.toString("utf8");
-			});
-			killer.on("error", reject);
-			killer.on("close", async (code) => {
-				if (code === 0 || alreadyExited()) return resolve();
-				if (await waitForExit(child, 2e3)) return resolve();
-				const reason = stderr.trim() || `taskkill exited with code ${code}`;
-				reject(/* @__PURE__ */ new Error(`无法终止命令进程树：${reason}`));
-			});
-		});
-	} else try {
-		process.kill(-child.pid, "SIGKILL");
-	} catch (error) {
-		if (error.code !== "ESRCH") throw error;
-	}
-}
 function waitForExit(child, timeoutMs) {
 	return new Promise((resolve) => {
 		if (child.exitCode !== null || child.signalCode !== null) return resolve(true);
@@ -303613,6 +303576,69 @@ function waitForExit(child, timeoutMs) {
 		};
 		child.once("exit", onExit);
 	});
+}
+function runTaskkill(taskkillPath, pid, timeoutMs) {
+	return new Promise((resolve) => {
+		let killer;
+		let done = false;
+		const settle = (ok) => {
+			if (done) return;
+			done = true;
+			clearTimeout(timer);
+			resolve(ok);
+		};
+		const timer = setTimeout(() => {
+			settle(false);
+			if (killer) {
+				try {
+					killer.kill();
+				} catch {}
+				try {
+					killer.unref();
+				} catch {}
+			}
+		}, timeoutMs);
+		killer = spawn(taskkillPath, [
+			"/PID",
+			String(pid),
+			"/T",
+			"/F"
+		], {
+			windowsHide: true,
+			stdio: "ignore"
+		});
+		killer.on("error", () => settle(false));
+		killer.on("close", (code) => settle(code === 0));
+	});
+}
+async function terminateTree(child) {
+	if (!child.pid) return true;
+	const exited = () => child.exitCode !== null || child.signalCode !== null;
+	if (exited()) return true;
+	if (process.platform === "win32") {
+		const taskkill = join$1(process.env.SystemRoot ?? "C:Windows", "System32", "taskkill.exe");
+		for (let attempt = 0; attempt < 3 && !exited(); attempt += 1) {
+			if (await runTaskkill(taskkill, child.pid, 2e3)) {
+				if (await waitForExit(child, 1500)) return true;
+			}
+			if (exited()) return true;
+			await sleep(100);
+		}
+		if (exited()) return true;
+		try {
+			child.kill();
+		} catch {}
+		await waitForExit(child, 2e3);
+		return false;
+	}
+	try {
+		process.kill(-child.pid, "SIGKILL");
+	} catch (error) {
+		if (error.code !== "ESRCH") try {
+			child.kill("SIGKILL");
+		} catch {}
+	}
+	return waitForExit(child, 2e3);
 }
 function runCommand(command, cwd, signal, timeoutMs = 12e4) {
 	signal?.throwIfAborted();
@@ -303634,15 +303660,56 @@ function runCommand(command, cwd, signal, timeoutMs = 12e4) {
 		let truncated = false;
 		let cancelled = false;
 		let timedOut = false;
+		let stopFailed = false;
 		let stopping;
-		let stopError;
+		let settled = false;
 		let spawnError;
-		const stop = () => {
+		let closedExitCode = null;
+		const stillAlive = () => child.exitCode === null && child.signalCode === null;
+		const cleanup = () => {
 			clearTimeout(timer);
-			stopping ??= terminateTree(child).catch((error) => {
-				stopError = error;
-				child.kill("SIGKILL");
+			signal?.removeEventListener("abort", abort);
+		};
+		const abandon = () => {
+			for (const stream of [child.stdout, child.stderr]) {
+				if (!stream) continue;
+				stream.removeAllListeners("data");
+				stream.on("error", () => {});
+				stream.destroy();
+			}
+			if (stillAlive()) try {
+				child.unref();
+			} catch {}
+		};
+		const finish = () => {
+			if (settled) return;
+			settled = true;
+			cleanup();
+			abandon();
+			resolve({
+				exitCode: closedExitCode ?? child.exitCode,
+				output: buffer.subarray(0, size).toString("utf8"),
+				truncated,
+				cancelled,
+				timedOut,
+				...stopFailed ? { stopFailed: true } : {}
 			});
+		};
+		const stop = () => {
+			if (stopping) return;
+			clearTimeout(timer);
+			stopping = (async () => {
+				let ok = false;
+				try {
+					ok = await terminateTree(child);
+				} catch {
+					ok = false;
+				}
+				if (ok) return;
+				stopFailed = true;
+				await sleep(500);
+				if (!settled) finish();
+			})();
 		};
 		const abort = () => {
 			cancelled = true;
@@ -303666,27 +303733,26 @@ function runCommand(command, cwd, signal, timeoutMs = 12e4) {
 		child.stderr.on("data", collect);
 		child.on("error", (error) => {
 			spawnError = error;
+			if (!settled) {
+				settled = true;
+				cleanup();
+				reject(error);
+			}
 		});
 		child.on("close", (exitCode) => {
-			clearTimeout(timer);
-			signal?.removeEventListener("abort", abort);
+			closedExitCode = exitCode;
 			(async () => {
 				await stopping;
-				if (stopError) throw stopError;
-				if (spawnError) throw spawnError;
-				resolve({
-					exitCode,
-					output: buffer.subarray(0, size).toString("utf8"),
-					truncated,
-					cancelled,
-					timedOut
-				});
+				if (!settled) {
+					if (spawnError) reject(spawnError);
+					else finish();
+				}
 			})().catch(reject);
 		});
 		if (signal?.aborted) abort();
 	});
 }
-var OUTPUT_LIMIT_BYTES, ENV_ALLOWLIST;
+var OUTPUT_LIMIT_BYTES, ENV_ALLOWLIST, sleep;
 function init_process_runner() {
 	return (init_process_runner = __esmMin((() => {
 		OUTPUT_LIMIT_BYTES = 65536;
@@ -303703,6 +303769,7 @@ function init_process_runner() {
 			"HOMEDRIVE",
 			"USERNAME"
 		]);
+		sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 	})))();
 }
 //#endregion
@@ -303834,8 +303901,9 @@ function createCommandTool(bridge, cwd) {
 			signal?.throwIfAborted();
 			const result = await runCommand(command, cwd, signal);
 			signal?.throwIfAborted();
-			if (result.truncated) throw new Error(`输出已截断（stdout/stderr 合计超过64 KiB），命令及其进程树已终止；请缩小范围或分页。\n${result.output}`);
-			if (result.timedOut) throw new Error(`命令超时，命令及其进程树已终止。\n${result.output}`);
+			const stopNote = result.stopFailed ? "；注意：未能确认其进程树已完全终止（可能被系统权限或安全软件拦截），如有残留进程请手动结束" : "，命令及其进程树已终止";
+			if (result.truncated) throw new Error(`输出已截断（stdout/stderr 合计超过64 KiB）${stopNote}；请缩小范围或分页。\n${result.output}`);
+			if (result.timedOut) throw new Error(`命令超时${stopNote}。\n${result.output}`);
 			if (result.exitCode !== 0) throw new Error(`命令执行失败（退出码 ${result.exitCode ?? "未知"}）：${result.output}`);
 			return {
 				content: [{

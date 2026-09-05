@@ -3,7 +3,15 @@ import { join } from 'node:path'
 
 export const OUTPUT_LIMIT_BYTES = 64 * 1024
 export type CommandSpec = { executable: string; args: readonly string[] }
-export type RunOutcome = { exitCode: number | null; output: string; truncated: boolean; cancelled: boolean; timedOut: boolean }
+export type RunOutcome = {
+  exitCode: number | null
+  output: string
+  truncated: boolean
+  cancelled: boolean
+  timedOut: boolean
+  /** True when tree termination could not be confirmed (denied/blocked by the OS); a controlled degradation result. */
+  stopFailed?: boolean
+}
 
 const ENV_ALLOWLIST = new Set([
   'PATH', 'PATHEXT', 'SYSTEMROOT', 'WINDIR', 'HOME', 'USERPROFILE',
@@ -22,31 +30,7 @@ export function minimalEnvironment(source: NodeJS.ProcessEnv): Record<string, st
   return result
 }
 
-async function terminateTree(child: ChildProcess): Promise<void> {
-  if (!child.pid) return
-  if (process.platform === 'win32') {
-    const taskkill = join(process.env.SystemRoot ?? 'C:\Windows', 'System32', 'taskkill.exe')
-    const alreadyExited = () => child.exitCode !== null || child.signalCode !== null
-    await new Promise<void>((resolve, reject) => {
-      let stderr = ''
-      const killer = spawn(taskkill, ['/PID', String(child.pid), '/T', '/F'], { windowsHide: true, stdio: ['ignore', 'ignore', 'pipe'] })
-      killer.stderr?.on('data', chunk => { stderr += chunk.toString('utf8') })
-      killer.on('error', reject)
-      killer.on('close', async code => {
-        if (code === 0 || alreadyExited()) return resolve()
-        // taskkill can report failure because the tree already exited between
-        // the kill request and its exit-code read; only give up once the
-        // child confirms it is really gone.
-        if (await waitForExit(child, 2000)) return resolve()
-        const reason = stderr.trim() || `taskkill exited with code ${code}`
-        reject(new Error(`无法终止命令进程树：${reason}`))
-      })
-    })
-  } else {
-    try { process.kill(-child.pid, 'SIGKILL') }
-    catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ESRCH') throw error }
-  }
-}
+const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms))
 
 function waitForExit(child: ChildProcess, timeoutMs: number): Promise<boolean> {
   return new Promise(resolve => {
@@ -56,6 +40,66 @@ function waitForExit(child: ChildProcess, timeoutMs: number): Promise<boolean> {
     child.once('exit', onExit)
   })
 }
+
+// Runs one taskkill attempt against the whole tree. Never throws and never
+// hangs: the timer bounds the wait even if taskkill itself wedges, and the
+// killer is released afterwards so a stuck taskkill cannot stall the caller.
+function runTaskkill(taskkillPath: string, pid: number, timeoutMs: number): Promise<boolean> {
+  return new Promise(resolve => {
+    let killer: ChildProcess | undefined
+    let done = false
+    const settle = (ok: boolean) => {
+      if (done) return
+      done = true
+      clearTimeout(timer)
+      resolve(ok)
+    }
+    const timer = setTimeout(() => {
+      settle(false)
+      if (killer) {
+        try { killer.kill() } catch { /* ignore */ }
+        try { killer.unref() } catch { /* ignore */ }
+      }
+    }, timeoutMs)
+    killer = spawn(taskkillPath, ['/PID', String(pid), '/T', '/F'], { windowsHide: true, stdio: 'ignore' })
+    killer.on('error', () => settle(false))
+    killer.on('close', code => settle(code === 0))
+  })
+}
+
+// Never throws. Resolves true only when the whole tree is confirmed gone.
+// Denied or raced taskkill calls are retried within a bounded budget; if the OS
+// or an EDR still refuses to terminate the tree, the leader is taken down
+// directly (so its pipes close) but false is returned: descendants may survive
+// and callers must report a controlled stopFailed instead of a clean stop.
+async function terminateTree(child: ChildProcess): Promise<boolean> {
+  if (!child.pid) return true
+  const exited = () => child.exitCode !== null || child.signalCode !== null
+  if (exited()) return true
+  if (process.platform === 'win32') {
+    const taskkill = join(process.env.SystemRoot ?? 'C:\Windows', 'System32', 'taskkill.exe')
+    for (let attempt = 0; attempt < 3 && !exited(); attempt += 1) {
+      if (await runTaskkill(taskkill, child.pid, 2000)) {
+        if (await waitForExit(child, 1500)) return true
+      }
+      if (exited()) return true
+      await sleep(100)
+    }
+    if (exited()) return true
+    try { child.kill() } catch { /* ignore */ }
+    await waitForExit(child, 2000)
+    return false
+  }
+  try {
+    process.kill(-child.pid, 'SIGKILL')
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ESRCH') {
+      try { child.kill('SIGKILL') } catch { /* ignore */ }
+    }
+  }
+  return waitForExit(child, 2000)
+}
+
 export function runCommand(command: CommandSpec, cwd: string, signal?: AbortSignal, timeoutMs = 120_000): Promise<RunOutcome> {
   signal?.throwIfAborted()
   return new Promise((resolve, reject) => {
@@ -68,16 +112,60 @@ export function runCommand(command: CommandSpec, cwd: string, signal?: AbortSign
     let truncated = false
     let cancelled = false
     let timedOut = false
+    let stopFailed = false
     let stopping: Promise<void> | undefined
-    let stopError: unknown
+    let settled = false
     let spawnError: Error | undefined
-    const stop = () => {
+    let closedExitCode: number | null = null
+    const stillAlive = () => child.exitCode === null && child.signalCode === null
+
+    const cleanup = () => {
       clearTimeout(timer)
-      stopping ??= terminateTree(child).catch(error => { stopError = error; child.kill('SIGKILL') })
+      signal?.removeEventListener('abort', abort)
+    }
+    // Releases the pipe handles after the promise settles so a process that the
+    // OS refuses to kill cannot keep this service's event loop alive or keep
+    // accumulating buffered output.
+    const abandon = () => {
+      for (const stream of [child.stdout, child.stderr]) {
+        if (!stream) continue
+        stream.removeAllListeners('data')
+        stream.on('error', () => { /* swallow errors raised by destroy() */ })
+        stream.destroy()
+      }
+      if (stillAlive()) { try { child.unref() } catch { /* ignore */ } }
+    }
+    const finish = () => {
+      if (settled) return
+      settled = true
+      cleanup()
+      abandon()
+      resolve({
+        exitCode: closedExitCode ?? child.exitCode,
+        output: buffer.subarray(0, size).toString('utf8'),
+        truncated, cancelled, timedOut,
+        ...(stopFailed ? { stopFailed: true } : {}),
+      })
+    }
+    const stop = () => {
+      if (stopping) return
+      clearTimeout(timer)
+      // Teardown is bounded and never rejects: a confirmed tree exit closes the
+      // outcome normally, and an unstoppable tree still yields a controlled
+      // stopFailed result instead of an unresolved promise or an exception.
+      stopping = (async () => {
+        let ok = false
+        try { ok = await terminateTree(child) } catch { ok = false }
+        if (ok) return
+        stopFailed = true
+        await sleep(500)
+        if (!settled) finish()
+      })()
     }
     const abort = () => { cancelled = true; stop() }
     const timer = setTimeout(() => { timedOut = true; stop() }, timeoutMs)
     signal?.addEventListener('abort', abort, { once: true })
+
     const collect = (chunk: Buffer) => {
       const retained = Math.min(chunk.length, OUTPUT_LIMIT_BYTES - size)
       chunk.copy(buffer, size, 0, retained)
@@ -86,15 +174,18 @@ export function runCommand(command: CommandSpec, cwd: string, signal?: AbortSign
     }
     child.stdout!.on('data', collect)
     child.stderr!.on('data', collect)
-    child.on('error', error => { spawnError = error })
+    child.on('error', error => {
+      spawnError = error
+      if (!settled) { settled = true; cleanup(); reject(error) }
+    })
     child.on('close', exitCode => {
-      clearTimeout(timer)
-      signal?.removeEventListener('abort', abort)
+      closedExitCode = exitCode
       void (async () => {
         await stopping
-        if (stopError) throw stopError
-        if (spawnError) throw spawnError
-        resolve({ exitCode, output: buffer.subarray(0, size).toString('utf8'), truncated, cancelled, timedOut })
+        if (!settled) {
+          if (spawnError) reject(spawnError)
+          else finish()
+        }
       })().catch(reject)
     })
     if (signal?.aborted) abort()

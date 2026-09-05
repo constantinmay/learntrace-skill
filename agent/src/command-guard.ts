@@ -155,8 +155,11 @@ export function createCommandTool(bridge: QuestionBridge, cwd: string) {
       signal?.throwIfAborted()
       const result = await runCommand(command, cwd, signal)
       signal?.throwIfAborted()
-      if (result.truncated) throw new Error(`输出已截断（stdout/stderr 合计超过64 KiB），命令及其进程树已终止；请缩小范围或分页。\n${result.output}`)
-      if (result.timedOut) throw new Error(`命令超时，命令及其进程树已终止。\n${result.output}`)
+      const stopNote = result.stopFailed
+        ? '；注意：未能确认其进程树已完全终止（可能被系统权限或安全软件拦截），如有残留进程请手动结束'
+        : '，命令及其进程树已终止'
+      if (result.truncated) throw new Error(`输出已截断（stdout/stderr 合计超过64 KiB）${stopNote}；请缩小范围或分页。\n${result.output}`)
+      if (result.timedOut) throw new Error(`命令超时${stopNote}。\n${result.output}`)
       if (result.exitCode !== 0) throw new Error(`命令执行失败（退出码 ${result.exitCode ?? '未知'}）：${result.output}`)
       return { content: [{ type: 'text', text: result.output || '命令已完成，无输出。' }], details: { approved: true, exitCode: result.exitCode, truncated: false } }
     },
