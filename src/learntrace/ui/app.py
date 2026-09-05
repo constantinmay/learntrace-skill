@@ -209,11 +209,15 @@ class RuntimeManager:
         if not record:
             raise KeyError(session_id)
         current = self.runtimes.get(session_id)
-        if current and record.get("error_code") not in _CONFIGURATION_ERRORS:
+        if current and current.is_healthy and record.get("error_code") not in _CONFIGURATION_ERRORS:
             return self.session_detail(session_id)
         if current:
             await current.close()
             self.runtimes.pop(session_id, None)
+        previous_monitor = self.artifact_tasks.pop(session_id, None)
+        if previous_monitor:
+            previous_monitor.cancel()
+            await asyncio.gather(previous_monitor, return_exceptions=True)
         project = Path(str(record["project"])).resolve(strict=True)
         if not project.is_dir():
             raise ValueError("原项目目录已不存在，无法恢复会话。")
@@ -330,7 +334,8 @@ class RuntimeManager:
         # Persistence and liveness are deliberately separate. A saved session
         # can always be inspected, but only a runtime owned by this process can
         # receive new prompts or publish live events.
-        runtime_connected = session_id in self.runtimes
+        runtime = self.runtimes.get(session_id)
+        runtime_connected = bool(runtime and runtime.is_healthy)
         can_send = runtime_connected and record.get("error_code") not in _CONFIGURATION_ERRORS
         result["runtime_connected"] = runtime_connected
         result["mode"] = "live" if can_send else "history"
@@ -344,7 +349,7 @@ class RuntimeManager:
         if record.get("error_code") in _CONFIGURATION_ERRORS:
             raise RuntimeError("模型配置已失效；请调整设置后新建一次分析。")
         current = self.runtimes.get(session_id)
-        if current:
+        if current and current.is_healthy:
             return current
         raise RuntimeError("服务重启后，请从历史记录选择“恢复并继续”。")
 

@@ -4,6 +4,7 @@ import asyncio
 import json
 import time
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from fastapi import FastAPI
@@ -273,7 +274,7 @@ def test_configuration_failure_cannot_keep_using_old_runtime(tmp_path: Path) -> 
         error_message="模型不存在。",
     )
     with _client(application) as client:
-        manager.runtimes["failed"] = object()  # type: ignore[assignment]
+        manager.runtimes["failed"] = SimpleNamespace(is_healthy=True)  # type: ignore[assignment]
         detail = manager.session_detail("failed")
         response = client.post("/api/v1/sessions/failed/messages", json={"text": "继续"})
         manager.runtimes.pop("failed")
@@ -285,7 +286,10 @@ def test_configuration_failure_cannot_keep_using_old_runtime(tmp_path: Path) -> 
     assert response.json()["detail"]["code"] == "session_not_live"
 
 
-def test_saved_pi_session_can_be_resumed(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+@pytest.mark.parametrize("broken_runtime", [False, True])
+def test_saved_pi_session_can_be_resumed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, broken_runtime: bool
+) -> None:
     settings = _settings(tmp_path)
     assert settings.paths is not None
     ModelConfigStore(settings.paths.model_config).save(
@@ -300,6 +304,8 @@ def test_saved_pi_session_can_be_resumed(tmp_path: Path, monkeypatch: pytest.Mon
     observed: dict[str, object] = {}
 
     class FakeRuntime:
+        is_healthy = True
+
         def __init__(self, *_args: object) -> None:
             pass
 
@@ -315,6 +321,16 @@ def test_saved_pi_session_can_be_resumed(tmp_path: Path, monkeypatch: pytest.Mon
         {"id": "resumable", "project": str(tmp_path), "title": "saved"}
     )
     application.state.manager.store.append_event("resumable", "analysis_started", {})
+    if broken_runtime:
+        broken = FakeRuntime()
+        broken.is_healthy = False
+        application.state.manager.runtimes["resumable"] = broken
+        application.state.manager.store.update_session(
+            "resumable", state="failed", error_code="agent_transport_failed"
+        )
+        detail = application.state.manager.session_detail("resumable")
+        assert detail["runtime_connected"] is False
+        assert detail["can_send"] is False
 
     with _client(application) as client:
         response = client.post("/api/v1/sessions/resumable/resume")
@@ -342,6 +358,8 @@ def test_unstarted_session_reopens_without_fake_resume(
     observed: dict[str, object] = {}
 
     class FakeRuntime:
+        is_healthy = True
+
         def __init__(self, *_args: object) -> None:
             pass
 
@@ -415,6 +433,8 @@ def test_historical_citation_uses_snapshotted_audit_archive(tmp_path: Path) -> N
 
 
 class _RecordingRuntime:
+    is_healthy = True
+
     def __init__(self) -> None:
         self.prompts: list[str] = []
 

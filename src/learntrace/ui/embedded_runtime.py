@@ -19,10 +19,17 @@ from typing import Any, cast
 from learntrace.ui.events import EventBroker
 from learntrace.ui.storage import UIStore
 
-_MINIMUM_NODE_VERSION = (22, 19, 0)
+_MINIMUM_NODE_VERSION = (22, 22, 2)
+_EVENT_LIMIT = 1024 * 1024
+
+
+class AgentTransportError(RuntimeError):
+    """The local event channel is unusable, even if Node is still alive."""
 
 
 def agent_error_details(error: Exception) -> tuple[str, str]:
+    if isinstance(error, AgentTransportError):
+        return "agent_transport_failed", str(error)
     message = str(error).strip() or type(error).__name__
     lowered = message.casefold()
     if "node.js" in lowered or "pi agent service" in lowered:
@@ -67,7 +74,7 @@ def agent_error_details(error: Exception) -> tuple[str, str]:
 def node_executable() -> str:
     node = shutil.which("node")
     if not node:
-        raise RuntimeError("使用 LearnTrace UI 需要安装 Node.js 22.19 或更高版本。")
+        raise RuntimeError("使用 LearnTrace UI 需要安装 Node.js 22.22.2 或更高版本。")
     try:
         completed = subprocess.run(
             [node, "--version"],
@@ -84,7 +91,7 @@ def node_executable() -> str:
     version = tuple(int(part) for part in match.groups())
     if version < _MINIMUM_NODE_VERSION:
         found = ".".join(str(part) for part in version)
-        raise RuntimeError(f"LearnTrace UI 需要 Node.js 22.19 或更高版本，当前为 {found}。")
+        raise RuntimeError(f"LearnTrace UI 需要 Node.js 22.22.2 或更高版本，当前为 {found}。")
     return node
 
 
@@ -160,8 +167,14 @@ def _tool_title(event: dict[str, Any]) -> str:
     args = cast(dict[str, Any], args)
     if name in {"read", "write", "edit"}:
         return f"{name} {args.get('path') or args.get('file_path') or ''}".strip()
-    if name == "bash":
+    if name in {"bash", "run_command"}:
+        if args.get("executable"):
+            values = args.get("args")
+            arguments = values if isinstance(values, list) else []
+            return " ".join([str(args["executable"]), *map(str, arguments)])[:240]
         return str(args.get("command", ""))[:240] or name
+    if name == "write_artifact":
+        return f"write_artifact {args.get('filename', '')}".strip()
     if name in {"grep", "find", "ls"}:
         return f"{name} {args.get('path') or args.get('pattern') or ''}".strip()
     return name
@@ -215,6 +228,19 @@ class EmbeddedAgentRuntime:
         self._assistant_message = "assistant-0"
         self._assistant_had_delta = False
         self._last_model_error: str | None = None
+        self._transport_failed = False
+        self._cancel_requested = False
+
+    @property
+    def is_healthy(self) -> bool:
+        return bool(
+            not self._closing
+            and not self._transport_failed
+            and self._process
+            and self._process.returncode is None
+            and self._reader_task
+            and not self._reader_task.done()
+        )
 
     async def start(self, config: dict[str, Any], *, resume: bool = False) -> None:
         node = node_executable()
@@ -226,6 +252,7 @@ class EmbeddedAgentRuntime:
             node,
             str(self.node_service),
             cwd=self.project,
+            limit=_EVENT_LIMIT,
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
@@ -251,8 +278,10 @@ class EmbeddedAgentRuntime:
         request_id = secrets.token_urlsafe(10)
         future: asyncio.Future[dict[str, Any]] = asyncio.get_running_loop().create_future()
         self._pending[request_id] = future
-        await self._send({"id": request_id, "type": kind, "sessionId": self.session_id, **payload})
         try:
+            await self._send(
+                {"id": request_id, "type": kind, "sessionId": self.session_id, **payload}
+            )
             response = await asyncio.wait_for(future, timeout=30)
         finally:
             self._pending.pop(request_id, None)
@@ -261,6 +290,8 @@ class EmbeddedAgentRuntime:
         return response
 
     async def _send(self, payload: dict[str, Any]) -> None:
+        if self._transport_failed or (self._reader_task and self._reader_task.done()):
+            raise AgentTransportError("Agent 事件连接已中断，请恢复会话后继续。")
         if not self._process or not self._process.stdin:
             raise RuntimeError("内置 Agent 服务未运行。")
         encoded = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
@@ -274,8 +305,10 @@ class EmbeddedAgentRuntime:
             while raw := await self._process.stdout.readline():
                 try:
                     message = json.loads(raw.decode("utf-8"))
-                except (UnicodeDecodeError, json.JSONDecodeError):
-                    continue
+                except (UnicodeDecodeError, json.JSONDecodeError) as error:
+                    raise AgentTransportError(
+                        "Agent 返回了无效事件数据，请恢复会话后继续。"
+                    ) from error
                 if not isinstance(message, dict):
                     continue
                 if message.get("type") == "response":
@@ -286,13 +319,50 @@ class EmbeddedAgentRuntime:
                     event = message.get("event")
                     if isinstance(event, dict):
                         await self._handle_event(cast(dict[str, Any], event))
-        finally:
+        except asyncio.CancelledError:
+            raise
+        except Exception as error:
             if not self._closing:
-                await self._fail(RuntimeError("内置 Agent 服务意外退出。"))
+                detail = (
+                    "Agent 事件超过单条大小限制，连接已关闭，请恢复会话后继续。"
+                    if isinstance(error, ValueError) and "limit" in str(error).lower()
+                    else f"Agent 事件读取失败（{type(error).__name__}），请恢复会话后继续。"
+                )
+                await self._break_transport(AgentTransportError(detail))
+        else:
+            if not self._closing:
+                await self._break_transport(
+                    AgentTransportError("Agent 事件通道已关闭，请恢复会话后继续。")
+                )
+
+    async def _break_transport(self, error: AgentTransportError) -> None:
+        self._transport_failed = True
+        for future in self._pending.values():
+            if not future.done():
+                future.set_exception(error)
+        self.store.expire_pending_requests(self.session_id)
+        if self._process and self._process.returncode is None:
+            with contextlib.suppress(ProcessLookupError):
+                self._process.terminate()
+            try:
+                await asyncio.wait_for(self._discard_stdout(), timeout=3)
+            except TimeoutError:
+                with contextlib.suppress(ProcessLookupError):
+                    self._process.kill()
+                await self._discard_stdout()
+            await self._process.wait()
+        await self._fail(error)
+
+    async def _discard_stdout(self) -> None:
+        # A stopped StreamReader may have paused its pipe at the size limit.
+        # Drain after termination so Process.wait() can finish on all platforms.
+        if self._process and self._process.stdout:
+            while await self._process.stdout.read(65536):
+                pass
 
     async def _read_stderr(self) -> None:
         assert self._process and self._process.stderr
-        while raw := await self._process.stderr.readline():
+        while raw := await self._process.stderr.read(4096):
             message = raw.decode("utf-8", errors="replace").strip()
             if message:
                 await self.broker.publish(
@@ -357,6 +427,8 @@ class EmbeddedAgentRuntime:
         if kind == "message_end":
             message = event.get("message")
             if isinstance(message, dict) and message.get("stopReason") == "error":
+                if self._cancel_requested:
+                    return
                 self._last_model_error = str(message.get("errorMessage") or "模型请求失败。")
                 return
             if isinstance(message, dict) and message.get("role") == "assistant":
@@ -396,10 +468,14 @@ class EmbeddedAgentRuntime:
             await self.broker.publish(self.session_id, "session_state", {"state": "running"})
             return
         if kind == "runtime_error":
+            if self._cancel_requested:
+                return
             message = str(event.get("message") or "Agent 运行出错。")
             await self._fail(RuntimeError(message))
             return
         if kind == "agent_settled":
+            if self._cancel_requested:
+                return
             if self._last_model_error:
                 await self._fail(RuntimeError(self._last_model_error))
             else:
@@ -416,6 +492,7 @@ class EmbeddedAgentRuntime:
             )
 
     async def prompt(self, text: str, *, visible: bool = True) -> None:
+        self._cancel_requested = False
         if visible:
             await self.broker.publish(
                 self.session_id, "message_completed", {"role": "user", "text": text}
@@ -444,8 +521,16 @@ class EmbeddedAgentRuntime:
         await self._command("configure", config={"thinkingLevel": value})
 
     async def cancel(self) -> None:
-        await self._command("abort")
-        self.store.update_session(self.session_id, state="cancelled")
+        self._cancel_requested = True
+        try:
+            await self._command("abort")
+        except Exception:
+            self._cancel_requested = False
+            raise
+        self.store.expire_pending_requests(self.session_id)
+        self.store.update_session(
+            self.session_id, state="cancelled", error_code=None, error_message=None
+        )
         await self.broker.publish(self.session_id, "session_state", {"state": "cancelled"})
 
     async def _fail(self, error: Exception) -> None:
@@ -458,10 +543,14 @@ class EmbeddedAgentRuntime:
         )
 
     async def close(self) -> None:
+        healthy = self.is_healthy
         self._closing = True
-        if self._process and self._process.returncode is None:
+        if healthy:
             with contextlib.suppress(RuntimeError, TimeoutError):
                 await self._command("close")
+        elif self._process and self._process.returncode is None:
+            with contextlib.suppress(ProcessLookupError):
+                self._process.terminate()
         if self._process and self._process.stdin:
             self._process.stdin.close()
         if self._process:
