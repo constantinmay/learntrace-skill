@@ -104,6 +104,7 @@ class RuntimeManager:
         self.runtimes: dict[str, EmbeddedAgentRuntime] = {}
         self.artifact_tasks: dict[str, asyncio.Task[None]] = {}
         self.artifact_baselines: dict[str, dict[str, str]] = {}
+        self._analysis_start_lock = asyncio.Lock()
 
     def _skill_path(self) -> Path:
         candidates = [
@@ -272,6 +273,18 @@ class RuntimeManager:
         )
 
     async def start_analysis(self, session_id: str, request: str) -> None:
+        async with self._analysis_start_lock:
+            await self._start_analysis_locked(session_id, request)
+
+    async def deliver_analysis_message(self, session_id: str, text: str) -> None:
+        async with self._analysis_start_lock:
+            if self.store.has_event(session_id, "analysis_started"):
+                runtime = await self.ensure_runtime(session_id)
+                asyncio.create_task(runtime.prompt(text))
+                return
+            await self._start_analysis_locked(session_id, text)
+
+    async def _start_analysis_locked(self, session_id: str, request: str) -> None:
         if self.store.has_event(session_id, "analysis_started"):
             raise ValueError("LearnTrace analysis has already started for this session")
         runtime = await self.ensure_runtime(session_id)
@@ -754,15 +767,12 @@ def create_app(settings: UISettings) -> FastAPI:
     @app.post("/api/v1/sessions/{session_id}/messages")
     async def message(session_id: str, body: MessageCreate) -> dict[str, bool]:
         try:
-            runtime = await manager.ensure_runtime(session_id)
+            await manager.ensure_runtime(session_id)
         except (KeyError, OSError, RuntimeError, ValueError) as error:
             raise HTTPException(
                 409, detail={"code": "session_not_live", "message": str(error)}
             ) from error
-        if not store.has_event(session_id, "analysis_started"):
-            await manager.start_analysis(session_id, body.text)
-        else:
-            asyncio.create_task(runtime.prompt(body.text))
+        await manager.deliver_analysis_message(session_id, body.text)
         return {"accepted": True}
 
     @app.post("/api/v1/sessions/{session_id}/start")

@@ -363,3 +363,60 @@ def test_historical_citation_uses_snapshotted_audit_archive(tmp_path: Path) -> N
     assert original.json()["record"]["summary"] == "original"
     assert "snapshots" in original.json()["source"]
     assert later.status_code == 404
+
+
+class _RecordingRuntime:
+    def __init__(self) -> None:
+        self.prompts: list[str] = []
+
+    async def prompt(self, text: str, *, visible: bool = True) -> None:
+        self.prompts.append(text)
+
+    async def close(self) -> None:
+        pass
+
+
+def test_concurrent_start_fires_analysis_prompt_once(tmp_path: Path) -> None:
+    application = create_app(_settings(tmp_path))
+    manager = application.state.manager
+    session_id = "concurrent-start"
+    manager.store.create_session({"id": session_id, "project": str(tmp_path), "title": "test"})
+    runtime = _RecordingRuntime()
+    manager.runtimes[session_id] = runtime  # type: ignore[assignment]
+
+    async def scenario() -> list[object]:
+        return await asyncio.gather(
+            manager.start_analysis(session_id, "first request"),
+            manager.start_analysis(session_id, "second request"),
+            return_exceptions=True,
+        )
+
+    outcomes = asyncio.run(scenario())
+    already_started = [item for item in outcomes if isinstance(item, ValueError)]
+    assert len(already_started) == 1
+    assert len(runtime.prompts) == 1
+    assert manager.store.has_event(session_id, "analysis_started")
+
+
+def test_same_project_second_session_start_rejected_while_running(
+    tmp_path: Path,
+) -> None:
+    application = create_app(_settings(tmp_path))
+    manager = application.state.manager
+    first = "first-session"
+    second = "second-session"
+    for session_id in (first, second):
+        manager.store.create_session({"id": session_id, "project": str(tmp_path), "title": "test"})
+    first_runtime = _RecordingRuntime()
+    second_runtime = _RecordingRuntime()
+    manager.runtimes[first] = first_runtime  # type: ignore[assignment]
+    manager.runtimes[second] = second_runtime  # type: ignore[assignment]
+
+    async def scenario() -> None:
+        await manager.start_analysis(first, "start first")
+        with pytest.raises(RuntimeError, match="同一项目已有分析正在运行"):
+            await manager.start_analysis(second, "start second")
+
+    asyncio.run(scenario())
+    assert len(first_runtime.prompts) == 1
+    assert len(second_runtime.prompts) == 0
