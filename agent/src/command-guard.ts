@@ -2,6 +2,7 @@ import { defineTool } from '@earendil-works/pi-coding-agent'
 import { Type } from 'typebox'
 import { QuestionBridge } from './question-tool.js'
 import { runCommand, type CommandSpec } from './process-runner.js'
+import { join, resolve, sep } from 'node:path'
 
 export type GuardVerdict = 'allow' | 'approve' | 'deny'
 
@@ -28,7 +29,74 @@ const SAFE_LEARNTRACE_OPTIONS: Record<string, readonly string[]> = {
   'render-narrative': ['-o', '--output', '--variant'],
 }
 
-export function classifyCommand(command: CommandSpec): { verdict: GuardVerdict; reason?: string } {
+// Allowlisted paths must stay bound to the session project: the project root
+// must be the session cwd itself, file inputs must live inside that project,
+// and explicit outputs may only target the session artifact directory.
+const PROJECT_ROOT_COMMANDS = new Set(['discover', 'parse', 'run', 'git-index', 'git-tree', 'git-evidence', 'git-file', 'git-worktree'])
+const PATH_VALUE_OPTIONS = new Map<string, 'input' | 'output'>([
+  ['--document', 'input'], ['--test-log', 'input'], ['--path', 'input'],
+  ['--snapshot', 'input'], ['--trace-result', 'input'], ['--confirmations', 'input'],
+  ['-o', 'output'], ['--output', 'output'], ['--output-dir', 'output'],
+  ['--records-output', 'output'], ['--questions-output', 'output'],
+])
+
+function canonicalPath(value: string): string {
+  const resolved = resolve(value)
+  return process.platform === 'win32' ? resolved.toLowerCase() : resolved
+}
+
+function pathInside(scope: string, target: string): boolean {
+  const scopeAbs = canonicalPath(scope)
+  const targetAbs = canonicalPath(target)
+  if (targetAbs === scopeAbs) return true
+  return targetAbs.startsWith(scopeAbs.endsWith(sep) ? scopeAbs : `${scopeAbs}${sep}`)
+}
+
+function scopeViolation(command: CommandSpec, cwd: string): string | undefined {
+  const { args } = command
+  const subcommand = args[0]
+  const at = (index: number): string | undefined => args[index]
+  const scopeAbs = canonicalPath(cwd)
+  const projectTarget = (value: string): string => canonicalPath(resolve(cwd, value))
+  if (PROJECT_ROOT_COMMANDS.has(subcommand ?? '')) {
+    const project = at(1)
+    if (project === undefined) return '缺少项目目录参数。'
+    if (projectTarget(project) !== scopeAbs) return `项目目录超出当前会话：${project}`
+  }
+  if (subcommand === 'archive') {
+    const records = at(1)
+    if (records !== undefined && !pathInside(scopeAbs, projectTarget(records))) return `archive 记录目录超出当前项目：${records}`
+  }
+  if (subcommand === 'git-file') {
+    const filePath = at(3)
+    if (filePath !== undefined && !pathInside(scopeAbs, projectTarget(filePath))) return `git-file 路径超出当前项目：${filePath}`
+  }
+  if (subcommand === 'verify-narrative' || subcommand === 'render-narrative') {
+    for (const index of [1, 2]) {
+      const value = at(index)
+      if (value !== undefined && !pathInside(scopeAbs, projectTarget(value))) return `叙事层路径超出当前项目：${value}`
+    }
+  }
+  const artifactScope = canonicalPath(join(cwd, '.learntrace'))
+  for (let i = 1; i < args.length; i += 1) {
+    const raw = args[i]!
+    const split = raw.indexOf('=')
+    const option = split === -1 ? raw : raw.slice(0, split)
+    const kind = PATH_VALUE_OPTIONS.get(option)
+    if (kind === undefined) continue
+    const value = split === -1 ? args[i + 1] : raw.slice(split + 1)
+    if (value === undefined) continue
+    if (split === -1) i += 1
+    const target = projectTarget(value)
+    if (!pathInside(scopeAbs, target)) return `${option} 指向当前项目之外：${value}`
+    if (kind === 'output' && !pathInside(artifactScope, target)) {
+      return `输出路径超出会话产物目录（.learntrace）：${value}`
+    }
+  }
+  return undefined
+}
+
+export function classifyCommand(command: CommandSpec, cwd?: string): { verdict: GuardVerdict; reason?: string } {
   const { executable, args } = command
   if (!executable || executable.includes('\0') || args.some(arg => typeof arg !== 'string' || arg.includes('\0'))) {
     return { verdict: 'deny', reason: '可执行文件与参数必须有效，不能包含空字节。' }
@@ -43,6 +111,10 @@ export function classifyCommand(command: CommandSpec): { verdict: GuardVerdict; 
     // abbreviated authorization flags. Export/authorization commands are not
     // in this allowlist at all.
     if (options && args.slice(1).every(arg => !arg.startsWith('-') || ['--help', '-h', '--', ...options].includes(arg.split('=')[0]!))) {
+      if (cwd !== undefined) {
+        const violation = scopeViolation(command, cwd)
+        if (violation !== undefined) return { verdict: 'approve', reason: violation }
+      }
       return { verdict: 'allow' }
     }
     return { verdict: 'approve', reason: '此 LearnTrace 调用包含授权、轨迹导出或未列入自动放行范围的操作，需要明确批准。' }
@@ -70,7 +142,7 @@ export function createCommandTool(bridge: QuestionBridge, cwd: string) {
     async execute(_toolCallId, params, signal) {
       // The same immutable argv is classified, displayed for approval and run.
       const command = Object.freeze({ executable: params.executable, args: Object.freeze([...params.args]) })
-      const classified = classifyCommand(command)
+      const classified = classifyCommand(command, cwd)
       if (classified.verdict === 'deny') throw new Error(classified.reason)
       if (classified.verdict === 'approve') {
         const answer = await bridge.ask({

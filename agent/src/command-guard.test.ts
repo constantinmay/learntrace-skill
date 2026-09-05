@@ -1,6 +1,14 @@
 import { expect, it } from 'vitest'
 import { QuestionBridge, type UserQuestion } from './question-tool.js'
 import { classifyCommand, createCommandTool } from './command-guard.js'
+import { join, resolve, sep } from 'node:path'
+
+const TEST_CWD = process.platform === 'win32' ? 'C:\learn\project' : '/learn/project'
+const OUTSIDE_ABS = resolve(TEST_CWD, '..', 'other-project')
+const ESCAPE_REL = `..${sep}other-project`
+const OUTSIDE_FILE = resolve(TEST_CWD, '..', 'outside.txt')
+const OUTSIDE_OUT = resolve(TEST_CWD, '..', 'report.md')
+
 
 it.each([
   ['git', ['branch', 'injected-review']], ['git', ['branch', '-D', 'main']],
@@ -23,14 +31,35 @@ it.each([
 it.each([
   ['git', ['status']], ['git', ['status', '--short']], ['git', ['branch', '--show-current']],
   ['git', ['remote', '-v']], ['git', ['--version']],
-  ['learntrace', ['--version']], ['learntrace', ['discover', 'E:\\course project']],
+  ['learntrace', ['--version']], ['learntrace', ['discover', '.']],
   ['learntrace', ['run', '.', '--author', 'UI Demo', '--document', 'README.md']],
   ['learntrace', ['git-file', '.', 'HEAD', 'README.md', '--lines', '1:20']],
-  ['learntrace', ['render-narrative', 'payload.json', 'archive.json', '--output', 'report.md', '--variant', 'submitted']],
+  ['learntrace', ['render-narrative', 'payload.json', 'archive.json', '--output', join('.learntrace', 'ui-sessions', 'session-1', 'report.md'), '--variant', 'submitted']],
 ] as [string, string[]][])('allows the known workflow: %s %j', (executable, args) => {
-  expect(classifyCommand({ executable, args }).verdict).toBe('allow')
+  expect(classifyCommand({ executable, args }, TEST_CWD).verdict).toBe('allow')
 })
 
+
+it.each([
+  ['discover', [OUTSIDE_ABS]],
+  ['discover', [ESCAPE_REL]],
+  ['parse', [OUTSIDE_ABS, '--document', 'README.md']],
+  ['git-file', [OUTSIDE_ABS, 'HEAD', 'secrets.py']],
+  ['git-file', ['.', 'HEAD', ESCAPE_REL]],
+  ['run', ['.', '--document', OUTSIDE_FILE]],
+  ['run', ['.', '--confirmations', OUTSIDE_FILE]],
+  ['parse', ['.', '-o', OUTSIDE_OUT]],
+  ['archive', ['.learntrace', '--snapshot', OUTSIDE_FILE]],
+  ['render-narrative', ['payload.json', 'archive.json', '-o', 'README.md']],
+] as [string, string[]][])('approves learntrace paths outside the session project: %j', (subcommand, tail) => {
+  expect(classifyCommand({ executable: 'learntrace', args: [subcommand, ...tail] }, TEST_CWD).verdict).toBe('approve')
+})
+
+if (process.platform === 'win32') {
+  it.each([['C:\\other-project'], ['..\\other-project']])('approves windows out-of-scope project root: %s', project => {
+    expect(classifyCommand({ executable: 'learntrace', args: ['discover', project] }, TEST_CWD).verdict).toBe('approve')
+  })
+}
 it('denies invalid executable/arguments', () => {
   expect(classifyCommand({ executable: '', args: [] }).verdict).toBe('deny')
   expect(classifyCommand({ executable: 'git', args: ['status\0'] }).verdict).toBe('deny')

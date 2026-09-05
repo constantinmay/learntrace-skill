@@ -25,13 +25,21 @@ export function minimalEnvironment(source: NodeJS.ProcessEnv): Record<string, st
 async function terminateTree(child: ChildProcess): Promise<void> {
   if (!child.pid) return
   if (process.platform === 'win32') {
-    const taskkill = join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', 'taskkill.exe')
+    const taskkill = join(process.env.SystemRoot ?? 'C:\Windows', 'System32', 'taskkill.exe')
+    const alreadyExited = () => child.exitCode !== null || child.signalCode !== null
     await new Promise<void>((resolve, reject) => {
-      const killer = spawn(taskkill, ['/PID', String(child.pid), '/T', '/F'], { windowsHide: true, stdio: 'ignore' })
+      let stderr = ''
+      const killer = spawn(taskkill, ['/PID', String(child.pid), '/T', '/F'], { windowsHide: true, stdio: ['ignore', 'ignore', 'pipe'] })
+      killer.stderr?.on('data', chunk => { stderr += chunk.toString('utf8') })
       killer.on('error', reject)
-      killer.on('close', code => {
-        if (code === 0 || child.exitCode !== null || child.signalCode !== null) resolve()
-        else reject(new Error('无法终止命令进程树。'))
+      killer.on('close', async code => {
+        if (code === 0 || alreadyExited()) return resolve()
+        // taskkill can report failure because the tree already exited between
+        // the kill request and its exit-code read; only give up once the
+        // child confirms it is really gone.
+        if (await waitForExit(child, 2000)) return resolve()
+        const reason = stderr.trim() || `taskkill exited with code ${code}`
+        reject(new Error(`无法终止命令进程树：${reason}`))
       })
     })
   } else {
@@ -40,6 +48,14 @@ async function terminateTree(child: ChildProcess): Promise<void> {
   }
 }
 
+function waitForExit(child: ChildProcess, timeoutMs: number): Promise<boolean> {
+  return new Promise(resolve => {
+    if (child.exitCode !== null || child.signalCode !== null) return resolve(true)
+    const timer = setTimeout(() => { child.removeListener('exit', onExit); resolve(false) }, timeoutMs)
+    const onExit = () => { clearTimeout(timer); resolve(true) }
+    child.once('exit', onExit)
+  })
+}
 export function runCommand(command: CommandSpec, cwd: string, signal?: AbortSignal, timeoutMs = 120_000): Promise<RunOutcome> {
   signal?.throwIfAborted()
   return new Promise((resolve, reject) => {

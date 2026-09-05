@@ -303566,8 +303566,10 @@ function minimalEnvironment(source) {
 async function terminateTree(child) {
 	if (!child.pid) return;
 	if (process.platform === "win32") {
-		const taskkill = join$1(process.env.SystemRoot ?? "C:\\Windows", "System32", "taskkill.exe");
+		const taskkill = join$1(process.env.SystemRoot ?? "C:Windows", "System32", "taskkill.exe");
+		const alreadyExited = () => child.exitCode !== null || child.signalCode !== null;
 		await new Promise((resolve, reject) => {
+			let stderr = "";
 			const killer = spawn(taskkill, [
 				"/PID",
 				String(child.pid),
@@ -303575,12 +303577,21 @@ async function terminateTree(child) {
 				"/F"
 			], {
 				windowsHide: true,
-				stdio: "ignore"
+				stdio: [
+					"ignore",
+					"ignore",
+					"pipe"
+				]
+			});
+			killer.stderr?.on("data", (chunk) => {
+				stderr += chunk.toString("utf8");
 			});
 			killer.on("error", reject);
-			killer.on("close", (code) => {
-				if (code === 0 || child.exitCode !== null || child.signalCode !== null) resolve();
-				else reject(/* @__PURE__ */ new Error("无法终止命令进程树。"));
+			killer.on("close", async (code) => {
+				if (code === 0 || alreadyExited()) return resolve();
+				if (await waitForExit(child, 2e3)) return resolve();
+				const reason = stderr.trim() || `taskkill exited with code ${code}`;
+				reject(/* @__PURE__ */ new Error(`无法终止命令进程树：${reason}`));
 			});
 		});
 	} else try {
@@ -303588,6 +303599,20 @@ async function terminateTree(child) {
 	} catch (error) {
 		if (error.code !== "ESRCH") throw error;
 	}
+}
+function waitForExit(child, timeoutMs) {
+	return new Promise((resolve) => {
+		if (child.exitCode !== null || child.signalCode !== null) return resolve(true);
+		const timer = setTimeout(() => {
+			child.removeListener("exit", onExit);
+			resolve(false);
+		}, timeoutMs);
+		const onExit = () => {
+			clearTimeout(timer);
+			resolve(true);
+		};
+		child.once("exit", onExit);
+	});
 }
 function runCommand(command, cwd, signal, timeoutMs = 12e4) {
 	signal?.throwIfAborted();
@@ -303682,7 +303707,55 @@ function init_process_runner() {
 }
 //#endregion
 //#region src/command-guard.ts
-function classifyCommand(command) {
+function canonicalPath(value) {
+	const resolved = resolve$1(value);
+	return process.platform === "win32" ? resolved.toLowerCase() : resolved;
+}
+function pathInside(scope, target) {
+	const scopeAbs = canonicalPath(scope);
+	const targetAbs = canonicalPath(target);
+	if (targetAbs === scopeAbs) return true;
+	return targetAbs.startsWith(scopeAbs.endsWith(sep$1) ? scopeAbs : `${scopeAbs}${sep$1}`);
+}
+function scopeViolation(command, cwd) {
+	const { args } = command;
+	const subcommand = args[0];
+	const at = (index) => args[index];
+	const scopeAbs = canonicalPath(cwd);
+	const projectTarget = (value) => canonicalPath(resolve$1(cwd, value));
+	if (PROJECT_ROOT_COMMANDS.has(subcommand ?? "")) {
+		const project = at(1);
+		if (project === void 0) return "缺少项目目录参数。";
+		if (projectTarget(project) !== scopeAbs) return `项目目录超出当前会话：${project}`;
+	}
+	if (subcommand === "archive") {
+		const records = at(1);
+		if (records !== void 0 && !pathInside(scopeAbs, projectTarget(records))) return `archive 记录目录超出当前项目：${records}`;
+	}
+	if (subcommand === "git-file") {
+		const filePath = at(3);
+		if (filePath !== void 0 && !pathInside(scopeAbs, projectTarget(filePath))) return `git-file 路径超出当前项目：${filePath}`;
+	}
+	if (subcommand === "verify-narrative" || subcommand === "render-narrative") for (const index of [1, 2]) {
+		const value = at(index);
+		if (value !== void 0 && !pathInside(scopeAbs, projectTarget(value))) return `叙事层路径超出当前项目：${value}`;
+	}
+	const artifactScope = canonicalPath(join$1(cwd, ".learntrace"));
+	for (let i = 1; i < args.length; i += 1) {
+		const raw = args[i];
+		const split = raw.indexOf("=");
+		const option = split === -1 ? raw : raw.slice(0, split);
+		const kind = PATH_VALUE_OPTIONS.get(option);
+		if (kind === void 0) continue;
+		const value = split === -1 ? args[i + 1] : raw.slice(split + 1);
+		if (value === void 0) continue;
+		if (split === -1) i += 1;
+		const target = projectTarget(value);
+		if (!pathInside(scopeAbs, target)) return `${option} 指向当前项目之外：${value}`;
+		if (kind === "output" && !pathInside(artifactScope, target)) return `输出路径超出会话产物目录（.learntrace）：${value}`;
+	}
+}
+function classifyCommand(command, cwd) {
 	const { executable, args } = command;
 	if (!executable || executable.includes("\0") || args.some((arg) => typeof arg !== "string" || arg.includes("\0"))) return {
 		verdict: "deny",
@@ -303702,7 +303775,16 @@ function classifyCommand(command) {
 			"-h",
 			"--",
 			...options
-		].includes(arg.split("=")[0]))) return { verdict: "allow" };
+		].includes(arg.split("=")[0]))) {
+			if (cwd !== void 0) {
+				const violation = scopeViolation(command, cwd);
+				if (violation !== void 0) return {
+					verdict: "approve",
+					reason: violation
+				};
+			}
+			return { verdict: "allow" };
+		}
 		return {
 			verdict: "approve",
 			reason: "此 LearnTrace 调用包含授权、轨迹导出或未列入自动放行范围的操作，需要明确批准。"
@@ -303731,7 +303813,7 @@ function createCommandTool(bridge, cwd) {
 				executable: params.executable,
 				args: Object.freeze([...params.args])
 			});
-			const classified = classifyCommand(command);
+			const classified = classifyCommand(command, cwd);
 			if (classified.verdict === "deny") throw new Error(classified.reason);
 			if (classified.verdict === "approve") {
 				if (await bridge.ask({
@@ -303769,7 +303851,7 @@ function createCommandTool(bridge, cwd) {
 		}
 	});
 }
-var GIT_QUERIES, PARSE_OPTIONS, SAFE_LEARNTRACE_OPTIONS, schema$2;
+var GIT_QUERIES, PARSE_OPTIONS, SAFE_LEARNTRACE_OPTIONS, PROJECT_ROOT_COMMANDS, PATH_VALUE_OPTIONS, schema$2;
 function init_command_guard() {
 	return (init_command_guard = __esmMin((() => {
 		init_dist$6();
@@ -303836,6 +303918,29 @@ function init_command_guard() {
 				"--variant"
 			]
 		};
+		PROJECT_ROOT_COMMANDS = /* @__PURE__ */ new Set([
+			"discover",
+			"parse",
+			"run",
+			"git-index",
+			"git-tree",
+			"git-evidence",
+			"git-file",
+			"git-worktree"
+		]);
+		PATH_VALUE_OPTIONS = /* @__PURE__ */ new Map([
+			["--document", "input"],
+			["--test-log", "input"],
+			["--path", "input"],
+			["--snapshot", "input"],
+			["--trace-result", "input"],
+			["--confirmations", "input"],
+			["-o", "output"],
+			["--output", "output"],
+			["--output-dir", "output"],
+			["--records-output", "output"],
+			["--questions-output", "output"]
+		]);
 		schema$2 = _Object_$1({
 			executable: String$2({
 				minLength: 1,

@@ -1,4 +1,4 @@
-import { mkdtemp, mkdir, readFile, rm, symlink } from 'node:fs/promises'
+import { mkdtemp, mkdir, readFile, realpath, rm, symlink } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, expect, it } from 'vitest'
@@ -7,7 +7,7 @@ import { createArtifactTool } from './artifact-tool.js'
 const directories: string[] = []
 const context = {} as Parameters<ReturnType<typeof createArtifactTool>['execute']>[4]
 async function workspace() {
-  const root = await mkdtemp(join(tmpdir(), 'learntrace-artifact-'))
+  const root = await realpath(await mkdtemp(join(tmpdir(), 'learntrace-artifact-')))
   directories.push(root)
   return root
 }
