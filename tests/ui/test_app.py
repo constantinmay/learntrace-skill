@@ -25,11 +25,59 @@ def _settings(tmp_path: Path) -> UISettings:
     return UISettings.create(tmp_path, port=8765, paths=paths)
 
 
-def test_sessions_endpoint_is_open_on_loopback(tmp_path: Path) -> None:
+LAUNCH_TOKEN = "test-launch-token"
+
+
+def _app(settings):
+    return create_app(settings, launch_token=LAUNCH_TOKEN)
+
+
+def _client(application):
+    client = TestClient(application, base_url="http://127.0.0.1")
+    client.cookies.set("lt_token", LAUNCH_TOKEN)
+    return client
+
+
+def test_sessions_endpoint_rejects_missing_launch_token(tmp_path: Path) -> None:
     settings = _settings(tmp_path)
-    with TestClient(create_app(settings)) as client:
-        # The UI is loopback-only; no launch token or cookie is required.
+    with TestClient(_app(settings), base_url="http://127.0.0.1") as client:
+        assert client.get("/api/v1/sessions").status_code == 401
+
+
+def test_sessions_endpoint_allows_valid_launch_token(tmp_path: Path) -> None:
+    settings = _settings(tmp_path)
+    with _client(_app(settings)) as client:
         assert client.get("/api/v1/sessions").status_code == 200
+
+
+def test_api_rejects_wrong_token_and_foreign_host(tmp_path: Path) -> None:
+    application = _app(_settings(tmp_path))
+    with TestClient(application, base_url="http://127.0.0.1") as client:
+        client.cookies.set("lt_token", "wrong-token")
+        assert client.get("/api/v1/sessions").status_code == 401
+        assert (
+            client.get("/api/v1/sessions", headers={"host": "attacker.example"}).status_code == 403
+        )
+        assert client.get("/", headers={"host": "attacker.example"}).status_code == 403
+
+
+def test_bootstrap_sets_http_only_launch_cookie(tmp_path: Path) -> None:
+    application = _app(_settings(tmp_path))
+    with TestClient(application, base_url="http://127.0.0.1") as client:
+        response = client.post(
+            "/api/v1/bootstrap", headers={"Authorization": f"Bearer {LAUNCH_TOKEN}"}
+        )
+    assert response.status_code == 200
+    cookie = response.headers.get("set-cookie", "")
+    assert "lt_token=" in cookie
+    assert "HttpOnly" in cookie
+    assert "SameSite=strict" in cookie
+
+
+def test_event_stream_rejects_missing_launch_token(tmp_path: Path) -> None:
+    settings = _settings(tmp_path)
+    with TestClient(_app(settings), base_url="http://127.0.0.1") as client:
+        assert client.get("/api/v1/sessions/none/events?after=0").status_code == 401
 
 
 def test_model_probe_uses_saved_key_and_pi_transport(
@@ -46,7 +94,7 @@ def test_model_probe_uses_saved_key_and_pi_transport(
         observed.update(config)
 
     monkeypatch.setattr("learntrace.ui.app.probe_model", fake_probe)
-    with TestClient(create_app(_settings(tmp_path))) as client:
+    with _client(_app(_settings(tmp_path))) as client:
         response = client.post(
             "/api/v1/model-config/probe",
             json={
@@ -71,7 +119,7 @@ def test_slow_credential_store_does_not_block_the_ui(
     monkeypatch.setattr("learntrace.ui.app._CREDENTIAL_TIMEOUT_SECONDS", 0.01)
     monkeypatch.setattr("learntrace.ui.app.ModelConfigStore.api_key", slow_key)
 
-    with TestClient(create_app(_settings(tmp_path))) as client:
+    with _client(_app(_settings(tmp_path))) as client:
         started = time.monotonic()
         response = client.get("/api/v1/model-config")
         elapsed = time.monotonic() - started
@@ -90,7 +138,7 @@ def test_model_config_requires_an_api_key(tmp_path: Path, monkeypatch: pytest.Mo
 
     monkeypatch.setattr("learntrace.ui.app.ModelConfigStore.api_key", missing_key)
 
-    with TestClient(create_app(_settings(tmp_path))) as client:
+    with _client(_app(_settings(tmp_path))) as client:
         response = client.put(
             "/api/v1/model-config",
             json={
@@ -107,7 +155,7 @@ def test_model_config_requires_an_api_key(tmp_path: Path, monkeypatch: pytest.Mo
 
 def test_artifact_path_cannot_escape_project(tmp_path: Path) -> None:
     settings = _settings(tmp_path)
-    with TestClient(create_app(settings)) as client:
+    with _client(_app(settings)) as client:
         assert client.get("/api/v1/sessions/absent/artifacts/../../secret").status_code in {
             404,
             422,
@@ -116,10 +164,10 @@ def test_artifact_path_cannot_escape_project(tmp_path: Path) -> None:
 
 def test_session_api_does_not_expose_removed_acp_fields(tmp_path: Path) -> None:
     settings = _settings(tmp_path)
-    application = create_app(settings)
+    application = _app(settings)
     manager = application.state.manager
     manager.store.create_session({"id": "other", "project": str(tmp_path / "other")})
-    with TestClient(application) as client:
+    with _client(application) as client:
         item = client.get("/api/v1/sessions").json()[0]
         assert "agent_session_id" not in item
         assert "resumable" not in item
@@ -128,7 +176,7 @@ def test_session_api_does_not_expose_removed_acp_fields(tmp_path: Path) -> None:
 
 def test_deleting_session_removes_its_embedded_agent_transcript(tmp_path: Path) -> None:
     settings = _settings(tmp_path)
-    application = create_app(settings)
+    application = _app(settings)
     manager = application.state.manager
     manager.store.create_session(
         {
@@ -143,7 +191,7 @@ def test_deleting_session_removes_its_embedded_agent_transcript(tmp_path: Path) 
     transcript = transcript_dir / "session.jsonl"
     transcript.write_text("{}\n", encoding="utf-8")
 
-    with TestClient(application) as client:
+    with _client(application) as client:
         response = client.delete("/api/v1/sessions/deadbeef")
 
     assert response.status_code == 200
@@ -152,7 +200,7 @@ def test_deleting_session_removes_its_embedded_agent_transcript(tmp_path: Path) 
 
 def test_saved_session_replays_events_without_claiming_a_live_runtime(tmp_path: Path) -> None:
     settings = _settings(tmp_path)
-    application = create_app(settings)
+    application = _app(settings)
     manager = application.state.manager
     manager.store.create_session(
         {
@@ -166,7 +214,7 @@ def test_saved_session_replays_events_without_claiming_a_live_runtime(tmp_path: 
         "history", "message_completed", {"role": "agent", "text": "saved reply"}
     )
 
-    with TestClient(application) as client:
+    with _client(application) as client:
         snapshot = client.get("/api/v1/sessions/history/snapshot").json()
 
     detail = snapshot["session"]
@@ -183,7 +231,7 @@ def test_saved_session_includes_authorized_conversation_sources(tmp_path: Path) 
     export = tmp_path / "session.jsonl"
     export.write_text("{}\n", encoding="utf-8")
     settings = _settings(tmp_path)
-    application = create_app(settings)
+    application = _app(settings)
     manager = application.state.manager
     manager.store.create_session({"id": "with-source", "project": str(tmp_path)})
     manager.store.add_conversation_source(
@@ -197,7 +245,7 @@ def test_saved_session_includes_authorized_conversation_sources(tmp_path: Path) 
         },
     )
 
-    with TestClient(application) as client:
+    with _client(application) as client:
         snapshot = client.get("/api/v1/sessions/with-source/snapshot").json()
 
     assert snapshot["session"]["conversation_sources"] == [
@@ -214,7 +262,7 @@ def test_saved_session_includes_authorized_conversation_sources(tmp_path: Path) 
 
 def test_configuration_failure_cannot_keep_using_old_runtime(tmp_path: Path) -> None:
     settings = _settings(tmp_path)
-    application = create_app(settings)
+    application = _app(settings)
     manager = application.state.manager
     manager.store.create_session({"id": "failed", "project": str(tmp_path)})
     manager.store.update_session(
@@ -223,7 +271,7 @@ def test_configuration_failure_cannot_keep_using_old_runtime(tmp_path: Path) -> 
         error_code="agent_model_invalid",
         error_message="模型不存在。",
     )
-    with TestClient(application) as client:
+    with _client(application) as client:
         manager.runtimes["failed"] = object()  # type: ignore[assignment]
         detail = manager.session_detail("failed")
         response = client.post("/api/v1/sessions/failed/messages", json={"text": "继续"})
@@ -261,13 +309,13 @@ def test_saved_pi_session_can_be_resumed(tmp_path: Path, monkeypatch: pytest.Mon
             pass
 
     monkeypatch.setattr("learntrace.ui.app.EmbeddedAgentRuntime", FakeRuntime)
-    application = create_app(settings)
+    application = _app(settings)
     application.state.manager.store.create_session(
         {"id": "resumable", "project": str(tmp_path), "title": "saved"}
     )
     application.state.manager.store.append_event("resumable", "analysis_started", {})
 
-    with TestClient(application) as client:
+    with _client(application) as client:
         response = client.post("/api/v1/sessions/resumable/resume")
 
     assert response.status_code == 200
@@ -303,12 +351,12 @@ def test_unstarted_session_reopens_without_fake_resume(
             pass
 
     monkeypatch.setattr("learntrace.ui.app.EmbeddedAgentRuntime", FakeRuntime)
-    application = create_app(settings)
+    application = _app(settings)
     application.state.manager.store.create_session(
         {"id": "not-started", "project": str(tmp_path), "title": "saved"}
     )
 
-    with TestClient(application) as client:
+    with _client(application) as client:
         response = client.post("/api/v1/sessions/not-started/resume")
 
     assert response.status_code == 200
@@ -317,7 +365,7 @@ def test_unstarted_session_reopens_without_fake_resume(
 
 def test_historical_artifact_uses_immutable_session_snapshot(tmp_path: Path) -> None:
     settings = _settings(tmp_path)
-    application = create_app(settings)
+    application = _app(settings)
     manager = application.state.manager
     manager.store.create_session({"id": "history-artifact", "project": str(tmp_path)})
     report = tmp_path / "learning-record.md"
@@ -331,7 +379,7 @@ def test_historical_artifact_uses_immutable_session_snapshot(tmp_path: Path) -> 
     )
     report.write_text("later run\n", encoding="utf-8")
 
-    with TestClient(application) as client:
+    with _client(application) as client:
         response = client.get("/api/v1/sessions/history-artifact/artifacts/learning-record.md")
 
     assert response.status_code == 200
@@ -340,7 +388,7 @@ def test_historical_artifact_uses_immutable_session_snapshot(tmp_path: Path) -> 
 
 def test_historical_citation_uses_snapshotted_audit_archive(tmp_path: Path) -> None:
     settings = _settings(tmp_path)
-    application = create_app(settings)
+    application = _app(settings)
     manager = application.state.manager
     manager.store.create_session({"id": "history-evidence", "project": str(tmp_path)})
     archive = tmp_path / ".learntrace" / "archive-records.json"
@@ -355,7 +403,7 @@ def test_historical_citation_uses_snapshotted_audit_archive(tmp_path: Path) -> N
         encoding="utf-8",
     )
 
-    with TestClient(application) as client:
+    with _client(application) as client:
         original = client.get("/api/v1/sessions/history-evidence/evidence/evt-original")
         later = client.get("/api/v1/sessions/history-evidence/evidence/evt-later")
 
@@ -377,7 +425,7 @@ class _RecordingRuntime:
 
 
 def test_concurrent_start_fires_analysis_prompt_once(tmp_path: Path) -> None:
-    application = create_app(_settings(tmp_path))
+    application = _app(_settings(tmp_path))
     manager = application.state.manager
     session_id = "concurrent-start"
     manager.store.create_session({"id": session_id, "project": str(tmp_path), "title": "test"})
@@ -401,7 +449,7 @@ def test_concurrent_start_fires_analysis_prompt_once(tmp_path: Path) -> None:
 def test_same_project_second_session_start_rejected_while_running(
     tmp_path: Path,
 ) -> None:
-    application = create_app(_settings(tmp_path))
+    application = _app(_settings(tmp_path))
     manager = application.state.manager
     first = "first-session"
     second = "second-session"

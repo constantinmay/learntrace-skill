@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import secrets
 import socket
 import threading
 import webbrowser
@@ -25,12 +26,16 @@ def run_ui(
 ) -> int:
     selected_port = port or _available_port(host)
     settings = UISettings.create(project, host=host, port=selected_port)
-    app = create_app(settings)
+    launch_token = secrets.token_urlsafe(32)
+    app = create_app(settings, launch_token=launch_token)
     display_host = "[::1]" if host == "::1" else host
     base = f"http://{display_host}:{selected_port}"
-    print(f"LearnTrace UI: {base}")
+    launch_url = f"{base}/?launch_token={launch_token}"
+    print(f"LearnTrace UI: {launch_url}")
     print("Data remains on this machine.")
     if open_browser:
-        threading.Timer(0.5, webbrowser.open, args=(base,)).start()
+        threading.Timer(0.5, webbrowser.open, args=(launch_url,)).start()
+    else:
+        print("打开上面的地址以继续（令牌只会显示这一次）。")
     uvicorn.run(app, host=host, port=selected_port, access_log=False)
     return 0

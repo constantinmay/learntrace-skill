@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import asyncio
 import platform
+import secrets
 import shutil
 import subprocess
 import uuid
@@ -40,6 +41,9 @@ _CONFIGURATION_ERRORS = {
     "agent_model_invalid",
     "agent_runtime_missing",
 }
+
+
+_UI_LOOPBACK_HOSTS = frozenset({"127.0.0.1", "localhost", "::1"})
 
 
 class ConversationSourceCreate(BaseModel):
@@ -389,7 +393,7 @@ class RuntimeManager:
         self.store.close()
 
 
-def create_app(settings: UISettings) -> FastAPI:
+def create_app(settings: UISettings, *, launch_token: str | None = None) -> FastAPI:
     if settings.paths is None:
         raise ValueError("UI settings paths are required")
     store = UIStore(settings.paths.database)
@@ -445,9 +449,30 @@ def create_app(settings: UISettings) -> FastAPI:
         title="LearnTrace", docs_url=None, redoc_url=None, openapi_url=None, lifespan=lifespan
     )
     app.state.manager = manager
+    token = launch_token if launch_token is not None else secrets.token_urlsafe(32)
 
     @app.middleware("http")
-    async def security_headers(request: Request, call_next: Any) -> Response:
+    async def authorize_and_secure(request: Request, call_next: Any) -> Response:
+        hostname = (request.url.hostname or "").strip("[]").lower()
+        if hostname not in _UI_LOOPBACK_HOSTS:
+            return JSONResponse(
+                {"detail": {"code": "forbidden_host", "message": "仅允许通过本机回环地址访问。"}},
+                status_code=403,
+            )
+        if request.url.path.startswith("/api/"):
+            auth_header = request.headers.get("authorization", "")
+            bearer = auth_header[7:] if auth_header.startswith("Bearer ") else ""
+            presented = bearer or request.cookies.get("lt_token", "")
+            if not presented or not secrets.compare_digest(presented, token):
+                return JSONResponse(
+                    {
+                        "detail": {
+                            "code": "unauthorized",
+                            "message": "未授权访问；请重新运行 learntrace ui。",
+                        }
+                    },
+                    status_code=401,
+                )
         response = await call_next(request)
         response.headers["Content-Security-Policy"] = (
             "default-src 'self'; script-src 'self'; style-src 'self'; "
@@ -456,6 +481,12 @@ def create_app(settings: UISettings) -> FastAPI:
         response.headers["X-Content-Type-Options"] = "nosniff"
         response.headers["Referrer-Policy"] = "no-referrer"
         response.headers["Cache-Control"] = "no-store"
+        return response
+
+    @app.post("/api/v1/bootstrap")
+    async def bootstrap() -> JSONResponse:
+        response = JSONResponse({"ok": True})
+        response.set_cookie("lt_token", token, httponly=True, samesite="strict", path="/")
         return response
 
     @app.get("/api/v1/model-config")

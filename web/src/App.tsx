@@ -57,12 +57,12 @@ export default function App() {
 
   useEffect(() => {
     const url = new URL(window.location.href)
-    if (url.searchParams.has('launch_token')) {
-      url.searchParams.delete('launch_token')
-      history.replaceState({}, '', url.pathname + url.search)
-    }
+    const launchToken = url.searchParams.get('launch_token')
+    url.searchParams.delete('launch_token')
+    history.replaceState({}, '', url.pathname + url.search)
     let disposed = false
-    void Promise.all([api.modelConfig(), api.sessions()])
+    const bootstrap = launchToken ? api.bootstrap(launchToken).catch(() => undefined) : Promise.resolve(undefined)
+    void bootstrap.then(() => Promise.all([api.modelConfig(), api.sessions()]))
       .then(([saved, sessionItems]) => {
         if (disposed) return
         setRuntimeConfig(value => ({ ...value, ...saved, api_key: '' }))

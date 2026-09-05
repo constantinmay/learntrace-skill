@@ -10,6 +10,7 @@ export const api = {
   modelConfig: () => request<StoredRuntimeConfig>('/api/v1/model-config'),
   saveModelConfig: (config: RuntimeConfig) => request<StoredRuntimeConfig>('/api/v1/model-config', { method: 'PUT', body: JSON.stringify({ ...config, api_key: config.api_key || null }) }),
   probeModelConfig: (config: RuntimeConfig) => request<{ status: 'connected'; message: string }>('/api/v1/model-config/probe', { method: 'POST', body: JSON.stringify({ ...config, api_key: config.api_key || null }) }),
+  bootstrap: (token: string) => request<{ ok: boolean }>('/api/v1/bootstrap', { method: 'POST', headers: { Authorization: 'Bearer ' + token } }),
   selectProject: () => request<{ selected: boolean; path: string }>('/api/v1/projects/select', { method: 'POST' }),
   sessions: () => request<Session[]>('/api/v1/sessions'),
   snapshot: (id: string) => request<SessionSnapshot>(`/api/v1/sessions/${id}/snapshot`),

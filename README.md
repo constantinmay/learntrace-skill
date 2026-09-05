@@ -72,7 +72,9 @@ Skill 是宿主 Agent 的工作流约束，不是操作系统沙箱。实际联�
 learntrace ui <project-dir>
 ```
 
-界面只监听本机回环地址，不对局域网或公网提供服务。LearnTrace
+界面只监听本机回环地址，不对局域网或公网提供服务。
+每次启动都会生成一次性访问令牌并写入 HttpOnly 会话 Cookie；界面仅接受本机回环 Host，页面刷新后仍可继续访问。
+LearnTrace
 直接启动产品内的 Pi SDK Agent，不扫描本机的 Agent，也不要求用户另行安装
 或登录 Pi CLI。使用这一入口需要本机安装 Node.js 22.22.2 或更高版本；Pi Agent
 服务和网页静态资源随 LearnTrace Python 包提供，不需要用户运行 `npm install`
