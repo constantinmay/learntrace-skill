@@ -9,6 +9,8 @@ import {
 import { createRuntimeModel } from './model.js'
 import type { RuntimeConfig } from './protocol.js'
 import { createCommandTool } from './command-guard.js'
+import { createArtifactTool } from './artifact-tool.js'
+import { UIEventProjector } from './ui-events.js'
 import { createQuestionTool, QuestionBridge } from './question-tool.js'
 
 type Publish = (event: Record<string, unknown>) => void
@@ -17,6 +19,7 @@ export class LearnTraceSession {
   private session: AgentSession | undefined
   private readonly questions: QuestionBridge
   private unsubscribe: (() => void) | undefined
+  private readonly uiEvents = new UIEventProjector()
 
   constructor(
     readonly id: string,
@@ -81,10 +84,13 @@ export class LearnTraceSession {
       resourceLoader: loader,
       settingsManager: settings,
       sessionManager,
-      tools: ['read', 'grep', 'find', 'ls', 'request_user_input'],
-      customTools: [createCommandTool(this.questions, this.cwd), createQuestionTool(this.questions)],
+      tools: ['read', 'grep', 'find', 'ls', 'run_command', 'write_artifact', 'request_user_input'],
+      customTools: [createCommandTool(this.questions, this.cwd), createArtifactTool(this.cwd, this.id), createQuestionTool(this.questions)],
     })
     this.session = created.session
+    for (const name of ['run_command', 'write_artifact', 'request_user_input']) {
+      if (!this.session.getActiveToolNames().includes(name)) throw new Error(`Agent 必需工具未启用：${name}`)
+    }
     this.session.setSessionName('LearnTrace 分析')
     this.unsubscribe = this.session.subscribe(event => this.onEvent(event))
     this.publish({
@@ -93,11 +99,12 @@ export class LearnTraceSession {
       model: { provider: model.provider, id: model.id, name: model.name },
       thinking_level: this.session.thinkingLevel,
       thinking_options: this.session.getAvailableThinkingLevels(),
+      active_tools: this.session.getActiveToolNames(),
     })
   }
 
   private onEvent(event: AgentSessionEvent): void {
-    this.publish(event as unknown as Record<string, unknown>)
+    for (const update of this.uiEvents.project(event)) this.publish(update)
   }
 
   async prompt(text: string): Promise<void> {

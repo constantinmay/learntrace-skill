@@ -1,140 +1,59 @@
-import { describe, expect, it } from 'vitest'
-import {
-  classifyCommand,
-  minimalEnvironment,
-  tokenizeCommand,
-} from './command-guard.js'
+import { expect, it } from 'vitest'
+import { QuestionBridge, type UserQuestion } from './question-tool.js'
+import { classifyCommand, createCommandTool } from './command-guard.js'
 
-describe('tokenizeCommand', () => {
-  it('splits a plain command on whitespace', () => {
-    expect(tokenizeCommand('learntrace task3_parse repo')).toEqual([
-      'learntrace',
-      'task3_parse',
-      'repo',
-    ])
-  })
-
-  it('trims leading and trailing whitespace', () => {
-    expect(tokenizeCommand('  git status  ')).toEqual(['git', 'status'])
-  })
-
-  it('returns null for empty or whitespace-only input', () => {
-    expect(tokenizeCommand('')).toBeNull()
-    expect(tokenizeCommand('   ')).toBeNull()
-  })
-
-  it.each([';', '&', '|', '<', '>', '$', '`', '\n', '\r'])(
-    'rejects the shell metacharacter %j',
-    meta => {
-      expect(tokenizeCommand(`learntrace run${meta}rm -rf /`)).toBeNull()
-      expect(tokenizeCommand(`learntrace run ${meta} rm -rf /`)).toBeNull()
-    },
-  )
-
-  it('rejects chained and substituted commands', () => {
-    expect(tokenizeCommand('learntrace task3_parse x && rm -rf /')).toBeNull()
-    expect(tokenizeCommand('echo hi > out.txt')).toBeNull()
-    expect(tokenizeCommand('git commit -m "$(whoami)"')).toBeNull()
-  })
+it.each([
+  ['git', ['branch', 'injected-review']], ['git', ['branch', '-D', 'main']],
+  ['git', ['tag', 'injected-review']], ['git', ['remote', 'add', 'leak', 'https://example.com/x']],
+  ['git', ['status', '--short', '--untracked-files=all']],
+  ['git', ['log', '--output=source.txt']], ['git', ['show', '--ext-diff']],
+  ['git', ['-c', 'alias.x=!malicious', 'x']],
+  ['learntrace', ['authorize-full-read', '.', '--session-export', 'secret', '--source', 'codex', '--authorized-at', 'now']],
+  ['learntrace', ['run', '.', '--authorized', '--opencode-export', 'secret']],
+  ['learntrace', ['run', '.', '--auth', '--opencode-export=secret']],
+  ['learntrace', ['export-evidence', '.', '--session-export', 'secret', '--authorization', 'full']],
+  ['learntrace', ['adapt', 'secret', '--authorized']],
+  ['learntrace', ['ui', '.']], ['learntrace', ['unknown', '.']],
+  ['learntrace', ['constructor', '--authorized']], ['learntrace', ['toString']],
+  ['learntrace', ['run', '.', '--unknown']], ['node', ['-e', 'process.exit()']],
+] as [string, string[]][])('requires explicit approval: %s %j', (executable, args) => {
+  expect(classifyCommand({ executable, args }).verdict).toBe('approve')
 })
 
-describe('classifyCommand', () => {
-  it('auto-allows the learntrace CLI', () => {
-    expect(classifyCommand('learntrace task3_parse ./repo')).toEqual({
-      verdict: 'allow',
-    })
-    expect(classifyCommand('learntrace')).toEqual({ verdict: 'allow' })
-  })
-
-  it('auto-allows read-only git commands', () => {
-    for (const command of [
-      'git status',
-      'git log --oneline -5',
-      'git show HEAD',
-      'git diff --stat',
-      'git blame README.md',
-      'git ls-files',
-      'git rev-parse --abbrev-ref HEAD',
-      'git branch',
-      'git remote -v',
-      'git --version',
-    ]) {
-      expect(classifyCommand(command).verdict).toBe('allow')
-    }
-  })
-
-  it('requests approval for mutating git commands', () => {
-    for (const command of ['git push origin main', 'git commit -m "x"', 'git reset --hard HEAD']) {
-      expect(classifyCommand(command).verdict).toBe('approve')
-    }
-  })
-
-  it('requests approval for unknown binaries', () => {
-    for (const command of [
-      'python analyze.py',
-      'bash -c whoami',
-      'npm install',
-      'rm -rf /tmp/scratch',
-      'powershell Remove-Item -Recurse .',
-    ]) {
-      const result = classifyCommand(command)
-      expect(result.verdict).toBe('approve')
-      expect(result.reason).toBeTruthy()
-    }
-  })
-
-  it('denies commands containing shell metacharacters', () => {
-    const result = classifyCommand('learntrace run x && python -c "import os; os.system(\'x\')"')
-    expect(result.verdict).toBe('deny')
-    expect(result.reason).toBeTruthy()
-  })
-
-  it('denies empty or whitespace-only commands', () => {
-    expect(classifyCommand('').verdict).toBe('deny')
-    expect(classifyCommand('   ').verdict).toBe('deny')
-  })
+it.each([
+  ['git', ['status']], ['git', ['status', '--short']], ['git', ['branch', '--show-current']],
+  ['git', ['remote', '-v']], ['git', ['--version']],
+  ['learntrace', ['--version']], ['learntrace', ['discover', 'E:\\course project']],
+  ['learntrace', ['run', '.', '--author', 'UI Demo', '--document', 'README.md']],
+  ['learntrace', ['git-file', '.', 'HEAD', 'README.md', '--lines', '1:20']],
+  ['learntrace', ['render-narrative', 'payload.json', 'archive.json', '--output', 'report.md', '--variant', 'submitted']],
+] as [string, string[]][])('allows the known workflow: %s %j', (executable, args) => {
+  expect(classifyCommand({ executable, args }).verdict).toBe('allow')
 })
 
-describe('minimalEnvironment', () => {
-  it('keeps only the allowlisted variables', () => {
-    const filtered = minimalEnvironment({
-      PATH: '/usr/bin:/bin',
-      HOME: '/home/test',
-      TEMP: '/tmp',
-      LLM_API_KEY: 'secret',
-      AWS_SECRET_ACCESS_KEY: 'secret',
-      PIP_INDEX_URL: 'https://internal.example',
-      NODE_OPTIONS: '--max-old-space-size=4096',
-    } as NodeJS.ProcessEnv)
-    expect(filtered.PATH).toBe('/usr/bin:/bin')
-    expect(filtered.HOME).toBe('/home/test')
-    expect(filtered.TEMP).toBe('/tmp')
-    expect(filtered.LLM_API_KEY).toBeUndefined()
-    expect(filtered.AWS_SECRET_ACCESS_KEY).toBeUndefined()
-    expect(filtered.PIP_INDEX_URL).toBeUndefined()
-    expect(filtered.NODE_OPTIONS).toBeUndefined()
-  })
+it('denies invalid executable/arguments', () => {
+  expect(classifyCommand({ executable: '', args: [] }).verdict).toBe('deny')
+  expect(classifyCommand({ executable: 'git', args: ['status\0'] }).verdict).toBe('deny')
+})
 
-  it('matches allowlist keys case-insensitively', () => {
-    const filtered = minimalEnvironment({ Path: '/x', Temp: '/y' } as NodeJS.ProcessEnv)
-    expect(filtered.Path).toBe('/x')
-    expect(filtered.Temp).toBe('/y')
-  })
+it('approval and spawn use one immutable argv without interpreting shell syntax', async () => {
+  let question: UserQuestion | undefined
+  const bridge = new QuestionBridge(item => { question = item })
+  const tool = createCommandTool(bridge, process.cwd())
+  const literals = ['hello world', 'E:\\course project', '"quoted"', '', 'a;b', '$(echo bad)', 'x|y', '中文']
+  const params = { executable: process.execPath, args: ['-e', 'console.log(JSON.stringify(process.argv.slice(1)))', '--', ...literals] }
+  const pending = tool.execute('argv', params, undefined, undefined, {} as Parameters<typeof tool.execute>[4])
+  expect(question).toBeDefined()
+  expect(question!.question).toContain(JSON.stringify(params, null, 2))
+  params.args.splice(0, params.args.length, '-e', 'throw new Error("changed")')
+  bridge.answer(question!.requestId, '允许执行')
+  const result = await pending
+  expect(result.content[0]).toMatchObject({ type: 'text', text: JSON.stringify(literals) + '\n' })
+})
 
-  it('promotes Path to PATH only when PATH is missing', () => {
-    const filtered = minimalEnvironment({ Path: '/usr/bin' } as NodeJS.ProcessEnv)
-    expect(filtered.PATH).toBe('/usr/bin')
-  })
-
-  it('keeps PATH when both PATH and Path are present', () => {
-    const filtered = minimalEnvironment({ PATH: '/a', Path: '/b' } as NodeJS.ProcessEnv)
-    expect(filtered.PATH).toBe('/a')
-    expect(filtered.Path).toBe('/b')
-  })
-
-  it('omits undefined values', () => {
-    const filtered = minimalEnvironment({ PATH: undefined, HOME: '/home' } as NodeJS.ProcessEnv)
-    expect(filtered.PATH).toBeUndefined()
-    expect(filtered.HOME).toBe('/home')
-  })
+it.each(['拒绝', null, '允许执行但没有正式批准', ['允许执行']])('does not execute without exact approval: %j', async answer => {
+  const bridge = new QuestionBridge(question => queueMicrotask(() => bridge.answer(question.requestId, answer)))
+  const tool = createCommandTool(bridge, process.cwd())
+  const result = await tool.execute('deny', { executable: 'does-not-exist', args: [] }, undefined, undefined, {} as Parameters<typeof tool.execute>[4])
+  expect(result.details.approved).toBe(false)
 })

@@ -36,7 +36,7 @@ import * as crypto$1 from "node:crypto";
 import { createHash, randomBytes, randomUUID as randomUUID$1 } from "node:crypto";
 import { createInterface as createInterface$1 } from "readline";
 import { StringDecoder } from "string_decoder";
-import { access as access$1, lstat, open, readFile as readFile$1, readdir as readdir$2, readlink, realpath, stat as stat$1, unlink } from "node:fs/promises";
+import { access as access$1, lstat, mkdir as mkdir$1, open, readFile as readFile$1, readdir as readdir$2, readlink, realpath, rename, stat as stat$1, unlink, writeFile as writeFile$1 } from "node:fs/promises";
 import { EventEmitter as EventEmitter$1 } from "node:events";
 import { pipeline as pipeline$1 } from "stream/promises";
 import { setTimeout as setTimeout$1 } from "timers/promises";
@@ -257761,7 +257761,7 @@ var require_snapshot_utils = /* @__PURE__ */ __commonJSMin(((exports, module) =>
 //#endregion
 //#region node_modules/@earendil-works/pi-coding-agent/node_modules/undici/lib/mock/snapshot-recorder.js
 var require_snapshot_recorder = /* @__PURE__ */ __commonJSMin(((exports, module) => {
-	const { writeFile: writeFile$1, readFile: readFile$2, mkdir: mkdir$1 } = __require("node:fs/promises");
+	const { writeFile: writeFile$2, readFile: readFile$2, mkdir: mkdir$2 } = __require("node:fs/promises");
 	const { dirname: dirname$2, resolve: resolve$2 } = __require("node:path");
 	const { setTimeout: setTimeout$2, clearTimeout: clearTimeout$1 } = __require("node:timers");
 	const { InvalidArgumentError, UndiciError } = require_errors();
@@ -258082,12 +258082,12 @@ var require_snapshot_recorder = /* @__PURE__ */ __commonJSMin(((exports, module)
 			const path = filePath || this.#snapshotPath;
 			if (!path) throw new InvalidArgumentError("Snapshot path is required");
 			const resolvedPath = resolve$2(path);
-			await mkdir$1(dirname$2(resolvedPath), { recursive: true });
+			await mkdir$2(dirname$2(resolvedPath), { recursive: true });
 			const data = Array.from(this.#snapshots.entries()).map(([hash, snapshot]) => ({
 				hash,
 				snapshot
 			}));
-			await writeFile$1(resolvedPath, JSON.stringify(data, null, 2), { flush: true });
+			await writeFile$2(resolvedPath, JSON.stringify(data, null, 2), { flush: true });
 		}
 		/**
 		* Clears all recorded snapshots
@@ -303553,152 +303553,118 @@ function init_model() {
 	})))();
 }
 //#endregion
-//#region src/command-guard.ts
-function tokenizeCommand(command) {
-	if (SHELL_METACHARACTERS.test(command)) return null;
-	const tokens = command.trim().split(/\s+/).filter(Boolean);
-	return tokens.length > 0 ? tokens : null;
-}
-function classifyCommand(command) {
-	const argv = tokenizeCommand(command);
-	if (!argv) return {
-		verdict: "deny",
-		reason: "命令包含 shell 元字符；LearnTrace 不会以 shell 方式拼接执行命令。"
-	};
-	const binary = argv[0];
-	const subcommand = argv[1];
-	if (binary === "learntrace") return { verdict: "allow" };
-	if (binary === "git") {
-		if (subcommand === void 0 || READONLY_GIT_SUBCOMMANDS.has(subcommand)) return { verdict: "allow" };
-		return {
-			verdict: "approve",
-			reason: "git 写操作需要你在界面中明确批准。"
-		};
-	}
-	if (!ALLOWED_BINARIES.has(binary)) return {
-		verdict: "approve",
-		reason: `命令 ${binary} 不在自动放行列表，需要你在界面中明确批准。`
-	};
-	return { verdict: "allow" };
-}
+//#region src/process-runner.ts
 function minimalEnvironment(source) {
 	const result = {};
 	for (const [key, value] of Object.entries(source)) if (value !== void 0 && ENV_ALLOWLIST.has(key.toUpperCase())) result[key] = value;
-	if (result.PATH === void 0 && result.Path !== void 0) result.PATH = result.Path;
+	if (result.Path !== void 0) {
+		result.PATH ??= result.Path;
+		delete result.Path;
+	}
 	return result;
 }
-function runCommand(argv, cwd, timeoutMs = 12e4) {
-	return new Promise((resolve) => {
-		const binary = argv[0];
-		const child = spawn(binary, argv.slice(1), {
+async function terminateTree(child) {
+	if (!child.pid) return;
+	if (process.platform === "win32") {
+		const taskkill = join$1(process.env.SystemRoot ?? "C:\\Windows", "System32", "taskkill.exe");
+		await new Promise((resolve, reject) => {
+			const killer = spawn(taskkill, [
+				"/PID",
+				String(child.pid),
+				"/T",
+				"/F"
+			], {
+				windowsHide: true,
+				stdio: "ignore"
+			});
+			killer.on("error", reject);
+			killer.on("close", (code) => {
+				if (code === 0 || child.exitCode !== null || child.signalCode !== null) resolve();
+				else reject(/* @__PURE__ */ new Error("无法终止命令进程树。"));
+			});
+		});
+	} else try {
+		process.kill(-child.pid, "SIGKILL");
+	} catch (error) {
+		if (error.code !== "ESRCH") throw error;
+	}
+}
+function runCommand(command, cwd, signal, timeoutMs = 12e4) {
+	signal?.throwIfAborted();
+	return new Promise((resolve, reject) => {
+		const child = spawn(command.executable, [...command.args], {
 			cwd,
 			env: minimalEnvironment(process.env),
 			shell: false,
-			windowsHide: true
+			windowsHide: true,
+			detached: process.platform !== "win32",
+			stdio: [
+				"ignore",
+				"pipe",
+				"pipe"
+			]
 		});
-		const chunks = [];
-		const timer = setTimeout(() => child.kill(), timeoutMs);
-		child.stdout.on("data", (chunk) => chunks.push(chunk));
-		child.stderr.on("data", (chunk) => chunks.push(chunk));
-		child.on("error", (error) => {
+		const buffer = Buffer.alloc(OUTPUT_LIMIT_BYTES);
+		let size = 0;
+		let truncated = false;
+		let cancelled = false;
+		let timedOut = false;
+		let stopping;
+		let stopError;
+		let spawnError;
+		const stop = () => {
 			clearTimeout(timer);
-			resolve({
-				exitCode: null,
-				output: `无法执行命令：${error.message}`
+			stopping ??= terminateTree(child).catch((error) => {
+				stopError = error;
+				child.kill("SIGKILL");
 			});
-		});
-		child.on("close", (exitCode, signal) => {
-			clearTimeout(timer);
-			resolve({
-				exitCode,
-				output: `${Buffer.concat(chunks).toString("utf8").trim()}${signal ? `（被信号 ${signal} 终止）` : ""}`
-			});
-		});
-	});
-}
-function truncate(text, limit = 24e3) {
-	return text.length <= limit ? text : `${text.slice(0, limit)}\n…（输出已截断）`;
-}
-function createCommandTool(bridge, cwd) {
-	return defineTool({
-		name: "run_command",
-		label: "执行命令",
-		description: "在 LearnTrace 当前项目中执行命令。learntrace 与只读 git 命令自动放行；其他命令必须先获得用户批准。",
-		promptSnippet: "需要运行命令时使用 run_command",
-		promptGuidelines: [
-			"运行项目命令一律使用 run_command，不要假定存在 bash 工具。",
-			"learntrace 与只读 git（status/log/show/diff 等）可自动放行。",
-			"写操作或未列出的命令会自动请求用户批准；等待批准结果后再继续。",
-			"绝不用 shell 运算符拼接多条命令；一次只执行一条。"
-		],
-		parameters: schema$1,
-		async execute(_toolCallId, params, signal) {
-			const command = String(params.command ?? "").trim();
-			const classified = classifyCommand(command);
-			if (classified.verdict === "deny") return {
-				content: [{
-					type: "text",
-					text: `已阻止执行：${classified.reason}`
-				}],
-				details: { approved: false }
-			};
-			let approved = classified.verdict === "allow";
-			if (!approved) {
-				const answer = await bridge.ask({
-					question: `是否允许执行以下命令？\n\n${command}`,
-					options: ["允许执行", "拒绝"],
-					allowMultiple: false,
-					allowText: false,
-					skippable: true,
-					...classified.reason ? { reason: classified.reason } : {}
-				}, signal);
-				approved = String(answer ?? "").startsWith("允许");
-				if (!approved) return {
-					content: [{
-						type: "text",
-						text: "用户拒绝了该命令的执行。"
-					}],
-					details: { approved: false }
-				};
+		};
+		const abort = () => {
+			cancelled = true;
+			stop();
+		};
+		const timer = setTimeout(() => {
+			timedOut = true;
+			stop();
+		}, timeoutMs);
+		signal?.addEventListener("abort", abort, { once: true });
+		const collect = (chunk) => {
+			const retained = Math.min(chunk.length, OUTPUT_LIMIT_BYTES - size);
+			chunk.copy(buffer, size, 0, retained);
+			size += retained;
+			if (retained < chunk.length) {
+				truncated = true;
+				stop();
 			}
-			const outcome = await runCommand(tokenizeCommand(command) ?? [], cwd);
-			const head = outcome.exitCode === 0 ? "" : `（退出码 ${outcome.exitCode ?? "未知"}）`;
-			return {
-				content: [{
-					type: "text",
-					text: truncate(outcome.output || `命令已执行${head}，无输出。`)
-				}],
-				details: {
-					approved: true,
-					exitCode: outcome.exitCode
-				}
-			};
-		}
+		};
+		child.stdout.on("data", collect);
+		child.stderr.on("data", collect);
+		child.on("error", (error) => {
+			spawnError = error;
+		});
+		child.on("close", (exitCode) => {
+			clearTimeout(timer);
+			signal?.removeEventListener("abort", abort);
+			(async () => {
+				await stopping;
+				if (stopError) throw stopError;
+				if (spawnError) throw spawnError;
+				resolve({
+					exitCode,
+					output: buffer.subarray(0, size).toString("utf8"),
+					truncated,
+					cancelled,
+					timedOut
+				});
+			})().catch(reject);
+		});
+		if (signal?.aborted) abort();
 	});
 }
-var ALLOWED_BINARIES, READONLY_GIT_SUBCOMMANDS, SHELL_METACHARACTERS, ENV_ALLOWLIST, schema$1;
-function init_command_guard() {
-	return (init_command_guard = __esmMin((() => {
-		init_dist$6();
-		init_build$2();
-		ALLOWED_BINARIES = /* @__PURE__ */ new Set(["learntrace", "git"]);
-		READONLY_GIT_SUBCOMMANDS = /* @__PURE__ */ new Set([
-			"status",
-			"log",
-			"show",
-			"diff",
-			"blame",
-			"ls-files",
-			"ls-tree",
-			"rev-parse",
-			"describe",
-			"branch",
-			"tag",
-			"remote",
-			"help",
-			"--version"
-		]);
-		SHELL_METACHARACTERS = /[;&|<>$`\n\r]/;
+var OUTPUT_LIMIT_BYTES, ENV_ALLOWLIST;
+function init_process_runner() {
+	return (init_process_runner = __esmMin((() => {
+		OUTPUT_LIMIT_BYTES = 65536;
 		ENV_ALLOWLIST = /* @__PURE__ */ new Set([
 			"PATH",
 			"PATHEXT",
@@ -303712,7 +303678,332 @@ function init_command_guard() {
 			"HOMEDRIVE",
 			"USERNAME"
 		]);
-		schema$1 = _Object_$1({ command: String$2({ description: "要在当前项目中执行的命令，不包含 shell 运算符" }) });
+	})))();
+}
+//#endregion
+//#region src/command-guard.ts
+function classifyCommand(command) {
+	const { executable, args } = command;
+	if (!executable || executable.includes("\0") || args.some((arg) => typeof arg !== "string" || arg.includes("\0"))) return {
+		verdict: "deny",
+		reason: "可执行文件与参数必须有效，不能包含空字节。"
+	};
+	if (executable === "git" && GIT_QUERIES.has(JSON.stringify(args))) return { verdict: "allow" };
+	if (executable === "learntrace") {
+		if (args.length === 1 && [
+			"--version",
+			"--help",
+			"-h"
+		].includes(args[0])) return { verdict: "allow" };
+		const subcommand = args[0] ?? "";
+		const options = Object.hasOwn(SAFE_LEARNTRACE_OPTIONS, subcommand) ? SAFE_LEARNTRACE_OPTIONS[subcommand] : void 0;
+		if (options && args.slice(1).every((arg) => !arg.startsWith("-") || [
+			"--help",
+			"-h",
+			"--",
+			...options
+		].includes(arg.split("=")[0]))) return { verdict: "allow" };
+		return {
+			verdict: "approve",
+			reason: "此 LearnTrace 调用包含授权、轨迹导出或未列入自动放行范围的操作，需要明确批准。"
+		};
+	}
+	return {
+		verdict: "approve",
+		reason: "此命令不属于已核对的精确查询形式，需要明确批准。"
+	};
+}
+function createCommandTool(bridge, cwd) {
+	return defineTool({
+		name: "run_command",
+		label: "执行命令",
+		description: "通过 executable 和 args 数组运行一个命令，不经过 shell。只自动放行指定 LearnTrace 工作流和精确 Git 查询；授权、导出或其他调用需要用户批准。",
+		promptSnippet: "需要执行命令时使用 run_command 的 executable 和 args 数组",
+		promptGuidelines: [
+			"例如 learntrace --version 应传 executable=\"learntrace\", args=[\"--version\"]。不要使用旧的 command 字符串参数。",
+			"不要为路径或参数添加 shell 引号、不要拼接多条命令。每个参数原样放进数组。",
+			"授权和敏感操作会请求明确批准；不要通过其他命令或写文件绕过批准。",
+			"输出达到64 KiB会终止命令并标明截断。优先使用 LearnTrace 分页回读，不能把截断结果当作完整证据。"
+		],
+		parameters: schema$2,
+		async execute(_toolCallId, params, signal) {
+			const command = Object.freeze({
+				executable: params.executable,
+				args: Object.freeze([...params.args])
+			});
+			const classified = classifyCommand(command);
+			if (classified.verdict === "deny") throw new Error(classified.reason);
+			if (classified.verdict === "approve") {
+				if (await bridge.ask({
+					question: `是否允许执行以下命令？\n工作目录：${cwd}\n${JSON.stringify(command, null, 2)}`,
+					options: ["允许执行", "拒绝"],
+					allowMultiple: false,
+					allowText: false,
+					skippable: true,
+					...classified.reason ? { reason: classified.reason } : {}
+				}, signal) !== "允许执行") return {
+					content: [{
+						type: "text",
+						text: "用户未批准，该命令未执行。"
+					}],
+					details: { approved: false }
+				};
+			}
+			signal?.throwIfAborted();
+			const result = await runCommand(command, cwd, signal);
+			signal?.throwIfAborted();
+			if (result.truncated) throw new Error(`输出已截断（stdout/stderr 合计超过64 KiB），命令及其进程树已终止；请缩小范围或分页。\n${result.output}`);
+			if (result.timedOut) throw new Error(`命令超时，命令及其进程树已终止。\n${result.output}`);
+			if (result.exitCode !== 0) throw new Error(`命令执行失败（退出码 ${result.exitCode ?? "未知"}）：${result.output}`);
+			return {
+				content: [{
+					type: "text",
+					text: result.output || "命令已完成，无输出。"
+				}],
+				details: {
+					approved: true,
+					exitCode: result.exitCode,
+					truncated: false
+				}
+			};
+		}
+	});
+}
+var GIT_QUERIES, PARSE_OPTIONS, SAFE_LEARNTRACE_OPTIONS, schema$2;
+function init_command_guard() {
+	return (init_command_guard = __esmMin((() => {
+		init_dist$6();
+		init_build$2();
+		init_process_runner();
+		GIT_QUERIES = new Set([
+			["--version"],
+			["status"],
+			["status", "--short"],
+			["status", "--porcelain"],
+			["branch", "--show-current"],
+			["remote", "-v"],
+			["rev-parse", "HEAD"],
+			["rev-parse", "--show-toplevel"]
+		].map((args) => JSON.stringify(args)));
+		PARSE_OPTIONS = [
+			"--document",
+			"--test-log",
+			"--no-git",
+			"--max-commits",
+			"--find-copies-harder",
+			"--author"
+		];
+		SAFE_LEARNTRACE_OPTIONS = {
+			discover: [],
+			parse: [
+				...PARSE_OPTIONS,
+				"-o",
+				"--output"
+			],
+			run: [...PARSE_OPTIONS, "--confirmations"],
+			archive: [
+				"--trace-result",
+				"--snapshot",
+				"--confirmations",
+				"-o",
+				"--output",
+				"--records-output",
+				"--questions-output"
+			],
+			"git-index": ["-o", "--output"],
+			"git-tree": ["-o", "--output"],
+			"git-file": [
+				"--lines",
+				"--bytes",
+				"-o",
+				"--output"
+			],
+			"git-worktree": [
+				"--max-chars",
+				"-o",
+				"--output"
+			],
+			"git-evidence": [
+				"--path",
+				"--max-chars",
+				"-o",
+				"--output-dir"
+			],
+			"verify-narrative": [],
+			"render-narrative": [
+				"-o",
+				"--output",
+				"--variant"
+			]
+		};
+		schema$2 = _Object_$1({
+			executable: String$2({
+				minLength: 1,
+				maxLength: 4096,
+				description: "可执行文件名，例如 learntrace 或 git；不包含命令参数"
+			}),
+			args: _Array_(String$2({ maxLength: 16384 }), {
+				maxItems: 256,
+				description: "每项是一个原始参数。路径中有空格也保持一个参数，不添加 shell 引号。"
+			})
+		});
+	})))();
+}
+//#endregion
+//#region src/artifact-tool.ts
+function createArtifactTool(cwd, sessionId) {
+	if (!/^[a-zA-Z0-9_-]+$/.test(sessionId)) throw new Error("无效的会话目录。");
+	return defineTool({
+		name: "write_artifact",
+		label: "保存报告材料",
+		description: "只在本次会话产物目录保存叙事 JSON 或学生确认 JSON，不修改项目源码。返回可交给 LearnTrace CLI 的绝对路径。",
+		promptSnippet: "使用 write_artifact 保存 narrative-payload.json 或 student-confirmations.json",
+		promptGuidelines: [
+			"先读取 Skill 的 narrative-payload.md 契约，再保存完整叙事 JSON；可再次调用来修正同一文件。",
+			"最终 Markdown 必须由 run_command 调用 learntrace verify-narrative 和 render-narrative 校验、生成。",
+			"学生确认只能记录用户实际回答；缺失的反思保持未记录，生成 working 报告。"
+		],
+		parameters: schema$1,
+		async execute(_id, params, signal) {
+			if (!filenames.includes(params.filename)) throw new Error("只能写入本次会话的报告材料。");
+			JSON.parse(params.content);
+			signal?.throwIfAborted();
+			let directory = await realpath(cwd);
+			for (const part of [
+				".learntrace",
+				"ui-sessions",
+				sessionId
+			]) {
+				directory = join$1(directory, part);
+				await mkdir$1(directory).catch((error) => {
+					if (error.code !== "EEXIST") throw error;
+				});
+				const info = await lstat(directory);
+				if (info.isSymbolicLink() || !info.isDirectory()) throw new Error("产物目录不能是链接或普通文件。");
+			}
+			const target = join$1(directory, params.filename);
+			const temporary = join$1(directory, `.${randomUUID$1()}.tmp`);
+			try {
+				await writeFile$1(temporary, params.content + "\n", {
+					encoding: "utf8",
+					flag: "wx",
+					...signal ? { signal } : {}
+				});
+				signal?.throwIfAborted();
+				await rename(temporary, target);
+			} finally {
+				await unlink(temporary).catch((error) => {
+					if (error.code !== "ENOENT") throw error;
+				});
+			}
+			return {
+				content: [{
+					type: "text",
+					text: `已保存：${target}`
+				}],
+				details: { path: target }
+			};
+		}
+	});
+}
+var filenames, schema$1;
+function init_artifact_tool() {
+	return (init_artifact_tool = __esmMin((() => {
+		init_dist$6();
+		init_build$2();
+		filenames = ["narrative-payload.json", "student-confirmations.json"];
+		schema$1 = _Object_$1({
+			filename: Union(filenames.map((name) => Literal(name))),
+			content: String$2({ description: "完整 JSON 文本；学生陈述只能使用用户原话" })
+		});
+	})))();
+}
+//#endregion
+//#region src/ui-events.ts
+var short, UIEventProjector;
+function init_ui_events() {
+	return (init_ui_events = __esmMin((() => {
+		short = (value, length = 1024) => typeof value === "string" ? value.slice(0, length) : "";
+		UIEventProjector = class {
+			streamed = false;
+			text(text) {
+				const events = [];
+				const chars = Array.from(text);
+				for (let offset = 0; offset < chars.length; offset += 2048) events.push({
+					type: "message_update",
+					assistantMessageEvent: {
+						type: "text_delta",
+						delta: chars.slice(offset, offset + 2048).join("")
+					}
+				});
+				if (events.length) this.streamed = true;
+				return events;
+			}
+			project(event) {
+				const type = event.type;
+				if (type === "message_start" && event.message?.role === "assistant") {
+					this.streamed = false;
+					return [{
+						type,
+						message: { role: "assistant" }
+					}];
+				}
+				if (type === "message_update") {
+					const update = event.assistantMessageEvent;
+					return update?.type === "text_delta" ? this.text(String(update.delta ?? "")) : [];
+				}
+				if (type === "message_end" && event.message?.role === "assistant") {
+					const message = event.message;
+					const fallback = !this.streamed && message.stopReason !== "error" ? typeof message.content === "string" ? message.content : (message.content ?? []).filter((item) => item.type === "text").map((item) => item.text).join("") : "";
+					return [...this.text(fallback), {
+						type,
+						message: {
+							role: "assistant",
+							stopReason: short(message.stopReason),
+							errorMessage: short(message.errorMessage, 4096)
+						}
+					}];
+				}
+				if ([
+					"tool_execution_start",
+					"tool_execution_update",
+					"tool_execution_end"
+				].includes(type)) {
+					const args = {};
+					for (const key of [
+						"path",
+						"file_path",
+						"command",
+						"filename",
+						"pattern"
+					]) if (event.args?.[key]) args[key] = short(event.args[key], 240);
+					if (event.args?.executable) {
+						args.executable = short(event.args.executable, 240);
+						args.args = Array.isArray(event.args.args) ? event.args.args.slice(0, 12).map((arg) => short(arg, 240)) : [];
+					}
+					return [{
+						type,
+						toolCallId: short(event.toolCallId),
+						toolName: short(event.toolName),
+						args,
+						isError: Boolean(event.isError)
+					}];
+				}
+				if ([
+					"agent_start",
+					"agent_settled",
+					"compaction_start"
+				].includes(type)) return [{ type }];
+				if (type === "auto_retry_start") return [{
+					type,
+					attempt: event.attempt,
+					maxAttempts: event.maxAttempts,
+					delayMs: event.delayMs,
+					errorMessage: short(event.errorMessage)
+				}];
+				return [];
+			}
+		};
 	})))();
 }
 //#endregion
@@ -303817,6 +304108,8 @@ function init_session$2() {
 		init_dist$6();
 		init_model();
 		init_command_guard();
+		init_artifact_tool();
+		init_ui_events();
 		init_question_tool();
 		LearnTraceSession = class {
 			id;
@@ -303827,6 +304120,7 @@ function init_session$2() {
 			session;
 			questions;
 			unsubscribe;
+			uiEvents = new UIEventProjector();
 			constructor(id, cwd, skillPath, sessionDir, publish) {
 				this.id = id;
 				this.cwd = cwd;
@@ -303887,11 +304181,22 @@ function init_session$2() {
 						"grep",
 						"find",
 						"ls",
+						"run_command",
+						"write_artifact",
 						"request_user_input"
 					],
-					customTools: [createCommandTool(this.questions, this.cwd), createQuestionTool(this.questions)]
+					customTools: [
+						createCommandTool(this.questions, this.cwd),
+						createArtifactTool(this.cwd, this.id),
+						createQuestionTool(this.questions)
+					]
 				});
 				this.session = created.session;
+				for (const name of [
+					"run_command",
+					"write_artifact",
+					"request_user_input"
+				]) if (!this.session.getActiveToolNames().includes(name)) throw new Error(`Agent 必需工具未启用：${name}`);
 				this.session.setSessionName("LearnTrace 分析");
 				this.unsubscribe = this.session.subscribe((event) => this.onEvent(event));
 				this.publish({
@@ -303903,11 +304208,12 @@ function init_session$2() {
 						name: model.name
 					},
 					thinking_level: this.session.thinkingLevel,
-					thinking_options: this.session.getAvailableThinkingLevels()
+					thinking_options: this.session.getAvailableThinkingLevels(),
+					active_tools: this.session.getActiveToolNames()
 				});
 			}
 			onEvent(event) {
-				this.publish(event);
+				for (const update of this.uiEvents.project(event)) this.publish(update);
 			}
 			async prompt(text) {
 				if (!this.session) throw new Error("Agent 会话尚未启动。");
