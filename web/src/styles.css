@@ -146,6 +146,18 @@ abbr { display: inline-grid; place-items: center; width: 17px; height: 17px; mar
 .connection-warning { color: #9a5a3f; font-size: .72rem; white-space: nowrap; }
 .quiet-danger { padding: 7px; border: 0; color: var(--muted); background: transparent; }
 .quiet-danger:hover { color: #9b4239; }
+.chat-topbar { flex-wrap: wrap; gap: 10px; }
+.chat-topbar > .session-heading { flex: 1 1 160px; min-width: 0; overflow: hidden; }
+.session-heading strong, .session-heading .eyebrow { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.chat-topbar button, .chat-topbar summary, .chat-topbar .state { flex-shrink: 0; white-space: nowrap; }
+.workspace-options { position: relative; }
+.workspace-options summary { cursor: pointer; padding: 8px 10px; border: 1px solid var(--line); border-radius: 9px; font-size: .85rem; }
+.workspace-options-panel { position: absolute; z-index: 25; right: 0; top: calc(100% + 8px); width: 240px; display: grid; gap: 14px; padding: 16px; border: 1px solid var(--line); border-radius: 12px; background: var(--paper); box-shadow: var(--shadow); }
+.workspace-options .session-config { margin: 0; width: auto; }
+.workspace-options .session-config label { flex-wrap: wrap; }
+.workspace-options .session-config label > span { display: inline; white-space: nowrap; }
+.run-progress { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 8px; padding: 12px 5%; color: var(--muted); font-size: .8rem; border-bottom: 1px solid var(--line); }
+.run-progress small { white-space: nowrap; }
 
 .start-analysis { width: min(540px, calc(100% - 48px)); margin: clamp(45px, 11vh, 120px) auto 12px; padding: 30px; border: 1px solid var(--line); border-radius: 20px; background: linear-gradient(145deg, #fff, #f5f7f1); box-shadow: var(--shadow); }
 .start-analysis h2 { margin: 10px 0; font: 400 1.9rem Georgia, "Noto Serif SC", serif; }
@@ -184,6 +196,9 @@ abbr { display: inline-grid; place-items: center; width: 17px; height: 17px; mar
 .question-mark { width: 31px; height: 31px; flex: none; display: grid; place-items: center; border-radius: 50%; color: white; background: var(--green); font: 600 17px Georgia, serif; }
 .question-card h3 { margin: 7px 0 8px; font-size: 1.06rem; line-height: 1.55; }
 .question-card > p { color: var(--muted); line-height: 1.55; }
+.question-card h3 { white-space: pre-wrap; overflow-wrap: anywhere; }
+.report, .artifact-list { overflow-wrap: anywhere; }
+.report table { table-layout: fixed; }
 .choice-list { display: flex; flex-wrap: wrap; gap: 9px; margin: 14px 0 4px 45px; }
 .choice-list button, .answer-box button { padding: 9px 14px; border: 1px solid #94aa9a; border-radius: 10px; color: var(--green-deep); background: white; }
 .choice-list button:hover { border-color: var(--green); background: #edf4ee; }

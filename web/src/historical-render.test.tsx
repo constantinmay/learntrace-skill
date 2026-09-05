@@ -1,9 +1,11 @@
 // @vitest-environment jsdom
-import { render, screen } from '@testing-library/react'
-import { describe, expect, it, vi } from 'vitest'
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { Conversation } from './components/Conversation'
 import { ChatWorkspace } from './components/ChatWorkspace'
 import type { UIEvent } from './types'
+
+afterEach(cleanup)
 
 function delta(sequence: number, text: string): UIEvent {
   return {
@@ -16,6 +18,25 @@ function delta(sequence: number, text: string): UIEvent {
 }
 
 describe('historical conversation rendering', () => {
+  it('stops a running session and allows retry when stopping fails', async () => {
+    const onStop = vi.fn().mockRejectedValueOnce(new Error('连接中断')).mockResolvedValue(undefined)
+    const props = {
+      session: { id: 'live', project: 'C:\\project', title: 'project', state: 'running', mode: 'live' as const, can_send: true, created_at: '', updated_at: '' },
+      projectName: 'project', events: [], pending: [], configOptions: [], artifactCount: 0,
+      connection: 'live', error: '', reportOpen: false,
+      onToggleReport: vi.fn(), onModelSettings: vi.fn(), onNewSession: vi.fn(), onResume: vi.fn(),
+      onDelete: vi.fn(), onStart: vi.fn(), onRetry: vi.fn(), onStop,
+      onSend: vi.fn(), onAnswer: vi.fn(), onConfigure: vi.fn(),
+    }
+    const { rerender } = render(<ChatWorkspace {...props} />)
+    fireEvent.click(screen.getByRole('button', { name: '停止分析' }))
+    await waitFor(() => expect(screen.getByRole('alert').textContent).toContain('连接中断'))
+    fireEvent.click(screen.getByRole('button', { name: '停止分析' }))
+    await waitFor(() => expect(onStop).toHaveBeenCalledTimes(2))
+    rerender(<ChatWorkspace {...props} session={{ ...props.session, state: 'cancelled' }} />)
+    expect(screen.queryByRole('button', { name: '停止分析' })).toBeNull()
+    expect(screen.getByText('已暂停')).toBeTruthy()
+  })
   it('renders a persisted streamed GFM response without crashing', () => {
     const markdown = [
       '**Git 范围**',
@@ -46,6 +67,7 @@ describe('historical conversation rendering', () => {
       artifactCount={0} connection="history" error="" reportOpen={false}
       onToggleReport={vi.fn()} onModelSettings={vi.fn()} onNewSession={vi.fn()}
       onResume={vi.fn()}
+      onStop={vi.fn(async () => undefined)}
       onDelete={vi.fn()} onStart={vi.fn()} onRetry={vi.fn()}
       onSend={vi.fn(async () => undefined)} onAnswer={vi.fn(async () => undefined)}
       onConfigure={vi.fn(async () => undefined)}

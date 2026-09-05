@@ -259,7 +259,7 @@ export default function App() {
       if (sidebarOpen) setSidebarWidth(value => Math.max(210, Math.min(420, value + delta)))
     }} />
 
-    {active ? <ChatWorkspace
+    {active ? <ChatWorkspace key={active.id}
       session={active} projectName={projectName} events={events} pending={pending}
       configOptions={configOptions} artifactCount={artifacts.length} connection={connection} error={error}
       reportOpen={reportOpen} onToggleReport={() => setReportOpen(value => !value)}
@@ -272,6 +272,12 @@ export default function App() {
         if (needsConfiguration) openModelSettings()
       }}
       onResume={() => void resumeSession()}
+      onStop={async () => {
+        await api.cancel(active.id)
+        const fresh = await api.snapshot(active.id)
+        updateSession(fresh.session)
+        setData(current => current.sessionId === active.id ? { ...current, pending: fresh.pending_requests } : current)
+      }}
       onDelete={() => void deleteSession(active.id)}
       onStart={() => void send('请按 LearnTrace Skill 开始分析这个项目。')}
       onRetry={() => void send('刚才的模型请求没有完成，请从中断处继续。')}

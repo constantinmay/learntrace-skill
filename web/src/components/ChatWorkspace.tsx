@@ -1,4 +1,5 @@
-import { useState, type FormEvent } from 'react'
+import { useEffect, useState, type FormEvent } from 'react'
+import { currentActivity } from '../conversation'
 import { Conversation } from './Conversation'
 import { SectionErrorBoundary } from './SectionErrorBoundary'
 import type { ConfigOption } from '../useSessionData'
@@ -64,7 +65,7 @@ function SessionConfig({ options, onConfigure }: {
   </label>)}</div>
 }
 
-export function ChatWorkspace({ session, projectName, events, pending, configOptions, artifactCount, connection, error, reportOpen, onToggleReport, onModelSettings, onNewSession, onResume, onDelete, onStart, onRetry, onSend, onAnswer, onConfigure }: {
+export function ChatWorkspace({ session, projectName, events, pending, configOptions, artifactCount, connection, error, reportOpen, onToggleReport, onModelSettings, onNewSession, onResume, onDelete, onStart, onRetry, onStop, onSend, onAnswer, onConfigure }: {
   session: Session
   projectName: string
   events: UIEvent[]
@@ -81,11 +82,27 @@ export function ChatWorkspace({ session, projectName, events, pending, configOpt
   onDelete: () => void
   onStart: () => void
   onRetry: () => void
+  onStop: () => Promise<void>
   onSend: (text: string) => Promise<void>
   onAnswer: (requestId: string, answer: unknown) => Promise<void>
   onConfigure: (id: string, value: string | boolean) => Promise<void>
 }) {
   const [message, setMessage] = useState('')
+  const [stopping, setStopping] = useState(false)
+  const [stopError, setStopError] = useState('')
+  const [now, setNow] = useState(Date.now)
+  useEffect(() => {
+    if (session.state !== 'running') return
+    const timer = window.setInterval(() => setNow(Date.now()), 1000)
+    return () => window.clearInterval(timer)
+  }, [session.state])
+  const stop = async () => {
+    setStopping(true)
+    setStopError('')
+    try { await onStop() }
+    catch (reason) { setStopError(reason instanceof Error ? reason.message : String(reason)) }
+    finally { setStopping(false) }
+  }
   const submitMessage = async (event: FormEvent) => {
     event.preventDefault()
     const text = message.trim()
@@ -103,23 +120,36 @@ export function ChatWorkspace({ session, projectName, events, pending, configOpt
   ].includes(session.error_code ?? '')
   const retryableFailure = session.state === 'failed' && !configurationFailure && session.can_send
   const canCompose = session.can_send && !configurationFailure
+  const running = session.state === 'running'
+  const activity = running ? currentActivity(events) : null
+  const lastEvent = events.at(-1)
+  const seconds = lastEvent ? Math.max(0, Math.floor((now - Date.parse(lastEvent.created_at)) / 1000)) : 0
+  const activityText = pending.length && running ? '等待你的回答' : activity ? '执行工具中' : '模型处理中'
 
   return <section className="main-panel">
-    <header className="topbar">
-      <div><span className="eyebrow">{projectName}</span><strong>{session.title}</strong></div>
-      <span className="source-status">{session.conversation_sources?.length
-        ? `AI 对话资料 · ${session.conversation_sources.length} 份`
-        : '仅项目资料'}</span>
-      {session.can_send && <SessionConfig options={configOptions} onConfigure={onConfigure} />}
+    <header className="topbar chat-topbar">
+      <div className="session-heading"><span className="eyebrow">{projectName}</span><strong title={session.title}>{session.title}</strong></div>
+      <span className={`state ${session.state}`}><i />{running ? activityText : stateLabel[session.state] ?? session.state}</span>
+      {running && session.can_send && <button className="secondary stop-analysis" disabled={stopping} onClick={() => void stop()}>{stopping ? '正在停止…' : '停止分析'}</button>}
       <button className={`report-toggle ${reportOpen ? 'active' : ''}`} onClick={onToggleReport}>报告{artifactCount ? ` · ${artifactCount}` : ''}</button>
-      <button className="model-settings-button" onClick={onModelSettings}>模型设置</button>
-      <span className={`state ${session.state}`}><i />{stateLabel[session.state] ?? session.state}</span>
-      {connection === 'disconnected' && <span className="connection-warning">实时连接中断，正在重连</span>}
-      <button className="quiet-danger" onClick={onDelete}>删除</button>
+      <details className="workspace-options">
+        <summary>更多</summary>
+        <div className="workspace-options-panel">
+          <span className="source-status">{session.conversation_sources?.length
+            ? `AI 对话资料 · ${session.conversation_sources.length} 份`
+            : '仅项目资料'}</span>
+          {session.can_send && <SessionConfig options={configOptions} onConfigure={onConfigure} />}
+          <button className="model-settings-button" onClick={onModelSettings}>模型设置</button>
+          <button className="quiet-danger" onClick={onDelete}>删除</button>
+        </div>
+      </details>
     </header>
+    {connection === 'disconnected' && <div className="run-progress connection-warning" role="status">实时连接中断，正在重连</div>}
+    {running && <div className="run-progress"><span>{pending.length ? '请回答下方问题后继续。' : activity ?? '正在等待模型返回内容…'}</span>{!pending.length && seconds >= 5 && <small>距最近更新 {seconds} 秒</small>}</div>}
+    {stopError && <div className="workspace-error failure" role="alert">停止失败：{stopError}</div>}
     {error && <div className="workspace-error failure" role="alert">{error}</div>}
     {session.state === 'failed' && <div className="failure-actions">
-      <div><strong>{configurationFailure ? '模型配置需要调整' : '本次模型请求没有完成'}</strong><p>{session.error_message}</p></div>
+      <div><strong>{configurationFailure ? '模型配置需要调整' : session.error_code === 'agent_transport_failed' ? 'Agent 连接已中断' : '本次模型请求没有完成'}</strong><p>{session.error_message}</p></div>
       {retryableFailure && <button className="secondary" onClick={onRetry}>重新尝试</button>}
       <button className="secondary" onClick={onModelSettings}>模型设置</button>
       {configurationFailure && <button className="primary" onClick={onResume}>应用新配置并恢复</button>}

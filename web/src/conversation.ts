@@ -20,10 +20,12 @@ const HIDDEN_EVENTS = new Set([
 
 function activityLabel(title: string): string {
   const value = title.toLowerCase()
+  if (value.includes('request_user_input')) return '等待你的回答'
   if (value.includes('discover')) return '正在了解项目范围'
   if (value.includes('git-index') || value.includes('git-tree') || value.includes('git log')) return '正在整理开发历史'
   if (value.includes('git-file') || value.includes('git-evidence') || value.includes('read')) return '正在核对项目材料'
   if (value.includes('verify') || value.includes('render')) return '正在生成并校验学习档案'
+  if (value.includes('write_artifact')) return '正在保存报告材料'
   if (value.includes('learntrace run') || value.includes('archive')) return '正在整理学习证据'
   return '正在调查项目证据'
 }
@@ -31,6 +33,10 @@ function activityLabel(title: string): string {
 export function currentActivity(events: UIEvent[]): string | null {
   const states = new Map<string, { title: string; active: boolean }>()
   for (const event of events) {
+    if (event.type === 'session_completed' || event.type === 'session_failed' || (event.type === 'session_state' && event.payload.state !== 'running')) {
+      states.clear()
+      continue
+    }
     if (!event.type.startsWith('tool_')) continue
     const update = event.payload.update as { toolCallId?: string; title?: string; status?: string } | undefined
     const id = String(update?.toolCallId ?? `tool-${event.sequence}`)

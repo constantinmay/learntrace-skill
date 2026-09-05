@@ -112,8 +112,9 @@ export function useSessionData(
               const state = String(event.payload.state)
               patchSession(activeId, {
                 state,
-                ...(state === 'running' ? { error_code: null, error_message: null } : {}),
+                ...(['running', 'cancelled'].includes(state) ? { error_code: null, error_message: null } : {}),
               })
+              if (state === 'cancelled') setData(current => current.sessionId === activeId ? { ...current, pending: [] } : current)
             }
             if (event.type === 'analysis_started') {
               patchSession(activeId, { analysis_started: true })
@@ -121,6 +122,7 @@ export function useSessionData(
             if (event.type === 'session_failed') {
               patchSession(activeId, {
                 state: 'failed',
+                ...(event.payload.code === 'agent_transport_failed' ? { can_send: false, runtime_connected: false, mode: 'history' } : {}),
                 error_code: String(event.payload.code ?? 'agent_prompt_failed'),
                 error_message: String(event.payload.message ?? '模型请求失败。'),
               })

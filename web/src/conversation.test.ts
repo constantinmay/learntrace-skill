@@ -31,5 +31,6 @@ describe('buildConversationRows', () => {
     ]
     expect(currentActivity(events)).toBe('正在核对项目材料')
     expect(currentActivity([...events, event(4, 'tool_completed', { toolCallId: 't2', status: 'completed' })])).toBeNull()
+    expect(currentActivity([...events, { ...event(4, 'session_state', {}), payload: { state: 'cancelled' } }])).toBeNull()
   })
 })
