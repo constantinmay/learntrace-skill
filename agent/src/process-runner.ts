@@ -2,6 +2,10 @@ import { spawn, type ChildProcess } from 'node:child_process'
 import { join } from 'node:path'
 
 export const OUTPUT_LIMIT_BYTES = 64 * 1024
+// After the leader exits, stdout/stderr normally close within milliseconds.
+// A detached descendant that inherited the pipes can keep them open forever, so
+// 'close' alone must not be the only settle signal; this grace period bounds it.
+const EXIT_DRAIN_MS = 800
 export type CommandSpec = { executable: string; args: readonly string[] }
 export type RunOutcome = {
   exitCode: number | null
@@ -112,15 +116,34 @@ export function runCommand(command: CommandSpec, cwd: string, signal?: AbortSign
     let truncated = false
     let cancelled = false
     let timedOut = false
-    let stopFailed = false
+    let stopRequested = false
+    let leaderExited = false
     let stopping: Promise<void> | undefined
     let settled = false
     let spawnError: Error | undefined
+    let streamsClosed = false
+    let leaderExitCode: number | null = null
     let closedExitCode: number | null = null
+    let drainTimer: ReturnType<typeof setTimeout> | undefined
     const stillAlive = () => child.exitCode === null && child.signalCode === null
 
+    const clearDrain = () => {
+      if (drainTimer) { clearTimeout(drainTimer); drainTimer = undefined }
+    }
+    // A detached descendant that inherited our pipes can outlive the leader and
+    // keep 'close' from ever firing. The grace timer makes the wait bounded: a
+    // normal command's close arrives in milliseconds and cancels it; a command
+    // that spawned such a descendant still settles shortly after the leader.
+    const scheduleDrain = () => {
+      clearDrain()
+      drainTimer = setTimeout(() => {
+        drainTimer = undefined
+        if (!settled) finish()
+      }, EXIT_DRAIN_MS)
+    }
     const cleanup = () => {
       clearTimeout(timer)
+      clearDrain()
       signal?.removeEventListener('abort', abort)
     }
     // Releases the pipe handles after the promise settles so a process that the
@@ -140,24 +163,39 @@ export function runCommand(command: CommandSpec, cwd: string, signal?: AbortSign
       settled = true
       cleanup()
       abandon()
+      // A clean stop is only provable once our stdio pipes actually closed:
+      // that is what releases the handles and what a pipe-holding detached
+      // descendant would keep open. The parent exiting alone is not proof the
+      // whole tree is gone, so a stop whose streams never closed is reported as
+      // a controlled stopFailed rather than a clean stop or an unresolved wait.
+      const stopFailed = stopRequested && !streamsClosed
       resolve({
-        exitCode: closedExitCode ?? child.exitCode,
+        exitCode: closedExitCode ?? leaderExitCode ?? child.exitCode,
         output: buffer.subarray(0, size).toString('utf8'),
         truncated, cancelled, timedOut,
         ...(stopFailed ? { stopFailed: true } : {}),
       })
     }
     const stop = () => {
-      if (stopping) return
+      if (stopping || settled) return
+      stopRequested = true
       clearTimeout(timer)
       // Teardown is bounded and never rejects: a confirmed tree exit closes the
-      // outcome normally, and an unstoppable tree still yields a controlled
-      // stopFailed result instead of an unresolved promise or an exception.
+      // outcome normally, and any tree we cannot confirm stopped yields a
+      // controlled stopFailed result instead of an unresolved promise.
       stopping = (async () => {
+        if (settled) return
+        if (leaderExited) {
+          // The leader is already gone: the exit handler scheduled the drain
+          // timer that bounds pipe-holding descendants, and a clean close
+          // settles immediately. Nothing else for stopping to force.
+          return
+        }
         let ok = false
         try { ok = await terminateTree(child) } catch { ok = false }
-        if (ok) return
-        stopFailed = true
+        if (ok) return // exit/close handlers settle promptly once the tree dies
+        // Termination could not be confirmed (denied/blocked): settle with a
+        // controlled stopFailed after a short grace period instead of hanging.
         await sleep(500)
         if (!settled) finish()
       })()
@@ -176,9 +214,17 @@ export function runCommand(command: CommandSpec, cwd: string, signal?: AbortSign
     child.stderr!.on('data', collect)
     child.on('error', error => {
       spawnError = error
-      if (!settled) { settled = true; cleanup(); reject(error) }
+      if (!settled) { settled = true; cleanup(); abandon(); reject(error) }
+    })
+    child.on('exit', code => {
+      if (settled) return
+      leaderExited = true
+      leaderExitCode = code
+      scheduleDrain()
     })
     child.on('close', exitCode => {
+      if (settled) return
+      streamsClosed = true
       closedExitCode = exitCode
       void (async () => {
         await stopping

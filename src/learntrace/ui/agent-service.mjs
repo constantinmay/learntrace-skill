@@ -303660,14 +303660,32 @@ function runCommand(command, cwd, signal, timeoutMs = 12e4) {
 		let truncated = false;
 		let cancelled = false;
 		let timedOut = false;
-		let stopFailed = false;
+		let stopRequested = false;
+		let leaderExited = false;
 		let stopping;
 		let settled = false;
 		let spawnError;
+		let streamsClosed = false;
+		let leaderExitCode = null;
 		let closedExitCode = null;
+		let drainTimer;
 		const stillAlive = () => child.exitCode === null && child.signalCode === null;
+		const clearDrain = () => {
+			if (drainTimer) {
+				clearTimeout(drainTimer);
+				drainTimer = void 0;
+			}
+		};
+		const scheduleDrain = () => {
+			clearDrain();
+			drainTimer = setTimeout(() => {
+				drainTimer = void 0;
+				if (!settled) finish();
+			}, EXIT_DRAIN_MS);
+		};
 		const cleanup = () => {
 			clearTimeout(timer);
+			clearDrain();
 			signal?.removeEventListener("abort", abort);
 		};
 		const abandon = () => {
@@ -303686,8 +303704,9 @@ function runCommand(command, cwd, signal, timeoutMs = 12e4) {
 			settled = true;
 			cleanup();
 			abandon();
+			const stopFailed = stopRequested && !streamsClosed;
 			resolve({
-				exitCode: closedExitCode ?? child.exitCode,
+				exitCode: closedExitCode ?? leaderExitCode ?? child.exitCode,
 				output: buffer.subarray(0, size).toString("utf8"),
 				truncated,
 				cancelled,
@@ -303696,9 +303715,12 @@ function runCommand(command, cwd, signal, timeoutMs = 12e4) {
 			});
 		};
 		const stop = () => {
-			if (stopping) return;
+			if (stopping || settled) return;
+			stopRequested = true;
 			clearTimeout(timer);
 			stopping = (async () => {
+				if (settled) return;
+				if (leaderExited) return;
 				let ok = false;
 				try {
 					ok = await terminateTree(child);
@@ -303706,7 +303728,6 @@ function runCommand(command, cwd, signal, timeoutMs = 12e4) {
 					ok = false;
 				}
 				if (ok) return;
-				stopFailed = true;
 				await sleep(500);
 				if (!settled) finish();
 			})();
@@ -303736,10 +303757,19 @@ function runCommand(command, cwd, signal, timeoutMs = 12e4) {
 			if (!settled) {
 				settled = true;
 				cleanup();
+				abandon();
 				reject(error);
 			}
 		});
+		child.on("exit", (code) => {
+			if (settled) return;
+			leaderExited = true;
+			leaderExitCode = code;
+			scheduleDrain();
+		});
 		child.on("close", (exitCode) => {
+			if (settled) return;
+			streamsClosed = true;
 			closedExitCode = exitCode;
 			(async () => {
 				await stopping;
@@ -303752,10 +303782,11 @@ function runCommand(command, cwd, signal, timeoutMs = 12e4) {
 		if (signal?.aborted) abort();
 	});
 }
-var OUTPUT_LIMIT_BYTES, ENV_ALLOWLIST, sleep;
+var OUTPUT_LIMIT_BYTES, EXIT_DRAIN_MS, ENV_ALLOWLIST, sleep;
 function init_process_runner() {
 	return (init_process_runner = __esmMin((() => {
 		OUTPUT_LIMIT_BYTES = 65536;
+		EXIT_DRAIN_MS = 800;
 		ENV_ALLOWLIST = /* @__PURE__ */ new Set([
 			"PATH",
 			"PATHEXT",
@@ -303784,43 +303815,136 @@ function pathInside(scope, target) {
 	if (targetAbs === scopeAbs) return true;
 	return targetAbs.startsWith(scopeAbs.endsWith(sep$1) ? scopeAbs : `${scopeAbs}${sep$1}`);
 }
+function realTargetOf(value) {
+	const abs = resolve$1(value);
+	try {
+		return canonicalPath(realpathSync$1.native(abs));
+	} catch {}
+	const tail = [];
+	let head = abs;
+	for (;;) {
+		const parent = dirname$1(head);
+		if (parent === head) return canonicalPath(abs);
+		tail.unshift(basename$1(head));
+		head = parent;
+		try {
+			return canonicalPath(resolve$1(realpathSync$1.native(head), ...tail));
+		} catch {}
+	}
+}
+function parseLearntraceArgs(subcommand, args) {
+	const grammar = GRAMMARS[subcommand];
+	if (!grammar) return {
+		ok: false,
+		reason: `不支持的子命令：${subcommand}`
+	};
+	const optionMap = new Map(grammar.options.map((option) => [option.name, option]));
+	const positionals = [];
+	const parsed = {
+		repoPaths: [],
+		inputs: [],
+		outputs: []
+	};
+	let afterDash = false;
+	for (let i = 1; i < args.length; i += 1) {
+		const token = args[i];
+		if (!afterDash && token === "--") {
+			afterDash = true;
+			continue;
+		}
+		if (!afterDash && token.startsWith("-") && token !== "-") {
+			const eq = token.indexOf("=");
+			const name = eq === -1 ? token : token.slice(0, eq);
+			if (name === "-h" || name === "--help") continue;
+			const option = optionMap.get(name);
+			if (!option) return {
+				ok: false,
+				reason: `无法解析的选项：${token}`
+			};
+			if (option.kind === "flag") continue;
+			const value = eq === -1 ? args[i + 1] : token.slice(eq + 1);
+			if (value === void 0 || value.startsWith("-")) return {
+				ok: false,
+				reason: `选项 ${name} 缺少取值。`
+			};
+			if (eq === -1) i += 1;
+			if (option.role === "input") parsed.inputs.push({
+				label: name,
+				value
+			});
+			else if (option.role === "output") parsed.outputs.push({
+				label: name,
+				value
+			});
+			continue;
+		}
+		positionals.push(token);
+	}
+	const required = grammar.positionals.filter((positional) => !positional.optional).length;
+	if (positionals.length < required) return {
+		ok: false,
+		reason: "缺少位置参数（项目目录或路径）。"
+	};
+	if (positionals.length > grammar.positionals.length) return {
+		ok: false,
+		reason: `多余的位置参数：${positionals[grammar.positionals.length]}`
+	};
+	for (let index = 0; index < positionals.length; index += 1) {
+		const spec = grammar.positionals[index];
+		const value = positionals[index];
+		if (spec.role === "project") parsed.project = value;
+		else if (spec.role === "repoPath") parsed.repoPaths.push(value);
+		else if (spec.role === "input") parsed.inputs.push({
+			label: "位置路径",
+			value
+		});
+	}
+	return {
+		ok: true,
+		parsed
+	};
+}
 function scopeViolation(command, cwd) {
 	const { args } = command;
-	const subcommand = args[0];
-	const at = (index) => args[index];
-	const scopeAbs = canonicalPath(cwd);
-	const projectTarget = (value) => canonicalPath(resolve$1(cwd, value));
-	if (PROJECT_ROOT_COMMANDS.has(subcommand ?? "")) {
-		const project = at(1);
-		if (project === void 0) return "缺少项目目录参数。";
-		if (projectTarget(project) !== scopeAbs) return `项目目录超出当前会话：${project}`;
+	const subcommand = args[0] ?? "";
+	const parsedResult = parseLearntraceArgs(subcommand, args);
+	if (!parsedResult.ok) return parsedResult.reason;
+	const parsed = parsedResult.parsed;
+	const scopeLex = canonicalPath(resolve$1(cwd));
+	const scopeReal = realTargetOf(cwd);
+	const artifactLex = canonicalPath(join$1(cwd, ".learntrace"));
+	const lex = (value) => canonicalPath(resolve$1(cwd, value));
+	const real = (value) => realTargetOf(resolve$1(cwd, value));
+	const project = parsed.project ?? (subcommand === "archive" ? "." : void 0);
+	if (project !== void 0) {
+		if (subcommand === "archive") {
+			if (!pathInside(scopeLex, lex(project)) || !pathInside(scopeReal, real(project))) return `archive 记录目录超出当前项目：${project}`;
+		} else if (real(project) !== scopeReal) return `项目目录超出当前会话：${project}`;
 	}
+	for (const repoPath of parsed.repoPaths) if (!pathInside(scopeLex, lex(repoPath)) || !pathInside(scopeReal, real(repoPath))) return `git-file 路径超出当前项目：${repoPath}`;
+	for (const bound of parsed.inputs) if (!pathInside(scopeLex, lex(bound.value)) || !pathInside(scopeReal, real(bound.value))) return `${bound.label} 指向当前项目之外：${bound.value}`;
+	for (const bound of parsed.outputs) {
+		if (!pathInside(artifactLex, lex(bound.value))) return `输出路径超出会话产物目录（.learntrace）：${bound.value}`;
+		if (!pathInside(scopeReal, real(bound.value))) return `输出路径经链接解析后超出当前项目：${bound.value}`;
+	}
+	const hasOutput = parsed.outputs.length > 0;
+	const artifactRoot = resolve$1(cwd, ".learntrace");
+	const implied = [];
 	if (subcommand === "archive") {
-		const records = at(1);
-		if (records !== void 0 && !pathInside(scopeAbs, projectTarget(records))) return `archive 记录目录超出当前项目：${records}`;
+		if (!hasOutput) implied.push(resolve$1(cwd, project ?? ".", "learning-record.md"));
+	} else if (ARTIFACT_WRITING_COMMANDS.has(subcommand)) {
+		if (subcommand === "parse") {
+			if (!hasOutput) implied.push(resolve$1(artifactRoot, "task2-result.json"));
+		} else if (subcommand === "git-index") {
+			if (!hasOutput) implied.push(resolve$1(artifactRoot, "evidence", "git", "history.jsonl"));
+		} else if (subcommand === "git-worktree") {
+			if (!hasOutput) implied.push(resolve$1(artifactRoot, "evidence", "git", "worktree.json"));
+		} else {
+			if (subcommand !== "run" || !hasOutput) implied.push(artifactRoot);
+			if (subcommand === "run" && !hasOutput) implied.push(resolve$1(artifactRoot, "task2-result.json"));
+		}
 	}
-	if (subcommand === "git-file") {
-		const filePath = at(3);
-		if (filePath !== void 0 && !pathInside(scopeAbs, projectTarget(filePath))) return `git-file 路径超出当前项目：${filePath}`;
-	}
-	if (subcommand === "verify-narrative" || subcommand === "render-narrative") for (const index of [1, 2]) {
-		const value = at(index);
-		if (value !== void 0 && !pathInside(scopeAbs, projectTarget(value))) return `叙事层路径超出当前项目：${value}`;
-	}
-	const artifactScope = canonicalPath(join$1(cwd, ".learntrace"));
-	for (let i = 1; i < args.length; i += 1) {
-		const raw = args[i];
-		const split = raw.indexOf("=");
-		const option = split === -1 ? raw : raw.slice(0, split);
-		const kind = PATH_VALUE_OPTIONS.get(option);
-		if (kind === void 0) continue;
-		const value = split === -1 ? args[i + 1] : raw.slice(split + 1);
-		if (value === void 0) continue;
-		if (split === -1) i += 1;
-		const target = projectTarget(value);
-		if (!pathInside(scopeAbs, target)) return `${option} 指向当前项目之外：${value}`;
-		if (kind === "output" && !pathInside(artifactScope, target)) return `输出路径超出会话产物目录（.learntrace）：${value}`;
-	}
+	for (const path of implied) if (!pathInside(scopeReal, realTargetOf(path))) return `默认输出经链接解析后超出当前项目：${path}`;
 }
 function classifyCommand(command, cwd) {
 	const { executable, args } = command;
@@ -303919,7 +304043,7 @@ function createCommandTool(bridge, cwd) {
 		}
 	});
 }
-var GIT_QUERIES, PARSE_OPTIONS, SAFE_LEARNTRACE_OPTIONS, PROJECT_ROOT_COMMANDS, PATH_VALUE_OPTIONS, schema$2;
+var GIT_QUERIES, PARSE_OPTIONS, SAFE_LEARNTRACE_OPTIONS, OUTPUT_SHORT, OUTPUT_LONG, PARSE_OPTION_SPECS, GRAMMARS, ARTIFACT_WRITING_COMMANDS, schema$2;
 function init_command_guard() {
 	return (init_command_guard = __esmMin((() => {
 		init_dist$6();
@@ -303986,28 +304110,184 @@ function init_command_guard() {
 				"--variant"
 			]
 		};
-		PROJECT_ROOT_COMMANDS = /* @__PURE__ */ new Set([
-			"discover",
+		OUTPUT_SHORT = {
+			name: "-o",
+			kind: "value",
+			role: "output"
+		};
+		OUTPUT_LONG = {
+			name: "--output",
+			kind: "value",
+			role: "output"
+		};
+		PARSE_OPTION_SPECS = [
+			{
+				name: "--document",
+				kind: "value",
+				role: "input"
+			},
+			{
+				name: "--test-log",
+				kind: "value",
+				role: "input"
+			},
+			{
+				name: "--max-commits",
+				kind: "value"
+			},
+			{
+				name: "--author",
+				kind: "value"
+			},
+			{
+				name: "--no-git",
+				kind: "flag"
+			},
+			{
+				name: "--find-copies-harder",
+				kind: "flag"
+			},
+			OUTPUT_SHORT,
+			OUTPUT_LONG
+		];
+		GRAMMARS = {
+			discover: {
+				positionals: [{ role: "project" }],
+				options: []
+			},
+			parse: {
+				positionals: [{ role: "project" }],
+				options: PARSE_OPTION_SPECS
+			},
+			run: {
+				positionals: [{ role: "project" }],
+				options: [...PARSE_OPTION_SPECS, {
+					name: "--confirmations",
+					kind: "value",
+					role: "input"
+				}]
+			},
+			archive: {
+				positionals: [{
+					role: "project",
+					optional: true
+				}],
+				options: [
+					{
+						name: "--trace-result",
+						kind: "value",
+						role: "input"
+					},
+					{
+						name: "--snapshot",
+						kind: "value",
+						role: "input"
+					},
+					{
+						name: "--confirmations",
+						kind: "value",
+						role: "input"
+					},
+					OUTPUT_SHORT,
+					OUTPUT_LONG,
+					{
+						name: "--records-output",
+						kind: "value",
+						role: "output"
+					},
+					{
+						name: "--questions-output",
+						kind: "value",
+						role: "output"
+					}
+				]
+			},
+			"git-index": {
+				positionals: [{ role: "project" }],
+				options: [OUTPUT_SHORT, OUTPUT_LONG]
+			},
+			"git-tree": {
+				positionals: [{ role: "project" }, { role: "plain" }],
+				options: [OUTPUT_SHORT, OUTPUT_LONG]
+			},
+			"git-file": {
+				positionals: [
+					{ role: "project" },
+					{ role: "plain" },
+					{ role: "repoPath" }
+				],
+				options: [
+					{
+						name: "--lines",
+						kind: "value"
+					},
+					{
+						name: "--bytes",
+						kind: "value"
+					},
+					OUTPUT_SHORT,
+					OUTPUT_LONG
+				]
+			},
+			"git-worktree": {
+				positionals: [{ role: "project" }],
+				options: [
+					{
+						name: "--max-chars",
+						kind: "value"
+					},
+					OUTPUT_SHORT,
+					OUTPUT_LONG
+				]
+			},
+			"git-evidence": {
+				positionals: [{ role: "project" }, { role: "plain" }],
+				options: [
+					{
+						name: "--path",
+						kind: "value",
+						role: "input"
+					},
+					{
+						name: "--max-chars",
+						kind: "value"
+					},
+					{
+						name: "-o",
+						kind: "value",
+						role: "output"
+					},
+					{
+						name: "--output-dir",
+						kind: "value",
+						role: "output"
+					}
+				]
+			},
+			"verify-narrative": {
+				positionals: [{ role: "input" }, { role: "input" }],
+				options: []
+			},
+			"render-narrative": {
+				positionals: [{ role: "input" }, { role: "input" }],
+				options: [
+					{
+						name: "--variant",
+						kind: "value"
+					},
+					OUTPUT_SHORT,
+					OUTPUT_LONG
+				]
+			}
+		};
+		ARTIFACT_WRITING_COMMANDS = /* @__PURE__ */ new Set([
 			"parse",
 			"run",
 			"git-index",
 			"git-tree",
-			"git-evidence",
 			"git-file",
-			"git-worktree"
-		]);
-		PATH_VALUE_OPTIONS = /* @__PURE__ */ new Map([
-			["--document", "input"],
-			["--test-log", "input"],
-			["--path", "input"],
-			["--snapshot", "input"],
-			["--trace-result", "input"],
-			["--confirmations", "input"],
-			["-o", "output"],
-			["--output", "output"],
-			["--output-dir", "output"],
-			["--records-output", "output"],
-			["--questions-output", "output"]
+			"git-worktree",
+			"git-evidence"
 		]);
 		schema$2 = _Object_$1({
 			executable: String$2({

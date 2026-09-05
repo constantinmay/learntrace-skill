@@ -1,6 +1,7 @@
 import { mkdtemp, readFile, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { spawnSync } from 'node:child_process'
 import { expect, it } from 'vitest'
 import { minimalEnvironment, OUTPUT_LIMIT_BYTES, runCommand } from './process-runner.js'
 
@@ -15,6 +16,26 @@ async function running(pid: number): Promise<boolean> {
     return true
   } catch { return false }
 }
+
+function killPidTree(pid: number): void {
+  if (!Number.isInteger(pid) || pid <= 0) return
+  try {
+    if (process.platform === 'win32') {
+      const taskkill = join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', 'taskkill.exe')
+      spawnSync(taskkill, ['/PID', String(pid), '/T', '/F'], { stdio: 'ignore' })
+    } else {
+      try { process.kill(-pid, 'SIGKILL') } catch { process.kill(pid, 'SIGKILL') }
+    }
+  } catch { /* best effort cleanup */ }
+}
+
+// The leader exits ~150ms in while a detached descendant inherits stdout/stderr
+// and stays alive, so the pipes never see EOF and child 'close' never fires on
+// its own. runCommand must still settle, bounded, instead of staying pending.
+const DAEMON_HOLDER_SCRIPT = (marker: string) =>
+  "const cp=require('node:child_process');const fs=require('node:fs');" +
+  "const d=cp.spawn(process.execPath,['-e','setInterval(()=>{},1000)'],{detached:true,stdio:['ignore','inherit','inherit'],windowsHide:true});" +
+  `fs.writeFileSync(process.argv[1],String(d.pid));setTimeout(()=>process.exit(0),150);`
 
 it.each(['cancel', 'timeout'] as const)('terminates parent and child on %s', async mode => {
   const root = await mkdtemp(join(tmpdir(), 'learntrace-process-'))
@@ -64,3 +85,50 @@ it('keeps only the minimal environment and one Windows PATH spelling', () => {
   const env = minimalEnvironment({ PATH: '/a', Path: '/b', HOME: '/home', TEMP: '/tmp', MODEL_API_KEY: 'secret', NODE_OPTIONS: '--eval=bad' })
   expect(env).toEqual({ PATH: '/a', HOME: '/home', TEMP: '/tmp' })
 })
+
+it('settles when the leader exits but a detached descendant holds the pipes', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'learntrace-holder-'))
+  const marker = join(root, 'daemon.pid')
+  let daemonPid = 0
+  try {
+    const started = Date.now()
+    const result = await runCommand({ executable: process.execPath, args: ['-e', DAEMON_HOLDER_SCRIPT(marker), marker] }, root)
+    const elapsed = Date.now() - started
+    expect(result.exitCode).toBe(0)
+    expect(elapsed).toBeLessThan(5000)
+    daemonPid = Number(await readFile(marker, 'utf8'))
+    expect(Number.isInteger(daemonPid)).toBe(true)
+  } finally {
+    killPidTree(daemonPid)
+    await rm(root, { recursive: true, force: true })
+  }
+}, 15000)
+
+it('abort stays bounded and reports stopFailed when the leader is already gone and a descendant holds the pipes', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'learntrace-holder-'))
+  const marker = join(root, 'daemon.pid')
+  const controller = new AbortController()
+  let daemonPid = 0
+  try {
+    const pending = runCommand(
+      { executable: process.execPath, args: ['-e', DAEMON_HOLDER_SCRIPT(marker), marker] },
+      root, controller.signal, 10_000,
+    )
+    for (let i = 0; i < 100; i++) {
+      try { daemonPid = Number(await readFile(marker, 'utf8')); if (daemonPid > 0) break } catch { await pause(20) }
+    }
+    expect(daemonPid).toBeGreaterThan(0)
+    await pause(450) // let the ~150ms leader exit complete before aborting
+    const started = Date.now()
+    controller.abort()
+    const result = await pending
+    const elapsed = Date.now() - started
+    expect(result.cancelled).toBe(true)
+    expect(result.stopFailed).toBe(true)
+    expect(elapsed).toBeLessThan(8000)
+  } finally {
+    controller.abort()
+    killPidTree(daemonPid)
+    await rm(root, { recursive: true, force: true })
+  }
+}, 20000)

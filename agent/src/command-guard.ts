@@ -2,7 +2,8 @@ import { defineTool } from '@earendil-works/pi-coding-agent'
 import { Type } from 'typebox'
 import { QuestionBridge } from './question-tool.js'
 import { runCommand, type CommandSpec } from './process-runner.js'
-import { join, resolve, sep } from 'node:path'
+import { realpathSync } from 'node:fs'
+import { basename, dirname, join, resolve, sep } from 'node:path'
 
 export type GuardVerdict = 'allow' | 'approve' | 'deny'
 
@@ -29,16 +30,76 @@ const SAFE_LEARNTRACE_OPTIONS: Record<string, readonly string[]> = {
   'render-narrative': ['-o', '--output', '--variant'],
 }
 
-// Allowlisted paths must stay bound to the session project: the project root
-// must be the session cwd itself, file inputs must live inside that project,
-// and explicit outputs may only target the session artifact directory.
-const PROJECT_ROOT_COMMANDS = new Set(['discover', 'parse', 'run', 'git-index', 'git-tree', 'git-evidence', 'git-file', 'git-worktree'])
-const PATH_VALUE_OPTIONS = new Map<string, 'input' | 'output'>([
-  ['--document', 'input'], ['--test-log', 'input'], ['--path', 'input'],
-  ['--snapshot', 'input'], ['--trace-result', 'input'], ['--confirmations', 'input'],
-  ['-o', 'output'], ['--output', 'output'], ['--output-dir', 'output'],
-  ['--records-output', 'output'], ['--questions-output', 'output'],
-])
+// Positional and option shapes mirror the real argparse definitions in
+// src/learntrace/cli.py and src/learntrace/archive.py: options may appear
+// anywhere before '--', '--' ends option parsing, and repeated options are
+// legal. The guard parses argv the same way the CLI will, so it cannot be
+// bypassed by reordering arguments or by a '--' separator the way fixed
+// argv-index checks can.
+type GrammarPositional = { role: 'project' | 'repoPath' | 'plain' | 'input'; optional?: boolean }
+type GrammarOption = { name: string; kind: 'flag' | 'value'; role?: 'plain' | 'input' | 'output' }
+type CommandGrammar = { positionals: GrammarPositional[]; options: GrammarOption[] }
+type BoundPath = { label: string; value: string }
+type ParsedCommand = { project?: string; repoPaths: string[]; inputs: BoundPath[]; outputs: BoundPath[] }
+
+const OUTPUT_SHORT: GrammarOption = { name: '-o', kind: 'value', role: 'output' }
+const OUTPUT_LONG: GrammarOption = { name: '--output', kind: 'value', role: 'output' }
+const PARSE_OPTION_SPECS: GrammarOption[] = [
+  { name: '--document', kind: 'value', role: 'input' },
+  { name: '--test-log', kind: 'value', role: 'input' },
+  { name: '--max-commits', kind: 'value' },
+  { name: '--author', kind: 'value' },
+  { name: '--no-git', kind: 'flag' },
+  { name: '--find-copies-harder', kind: 'flag' },
+  OUTPUT_SHORT, OUTPUT_LONG,
+]
+
+const GRAMMARS: Record<string, CommandGrammar> = {
+  discover: { positionals: [{ role: 'project' }], options: [] },
+  parse: { positionals: [{ role: 'project' }], options: PARSE_OPTION_SPECS },
+  run: {
+    positionals: [{ role: 'project' }],
+    options: [...PARSE_OPTION_SPECS, { name: '--confirmations', kind: 'value', role: 'input' }],
+  },
+  archive: {
+    positionals: [{ role: 'project', optional: true }],
+    options: [
+      { name: '--trace-result', kind: 'value', role: 'input' },
+      { name: '--snapshot', kind: 'value', role: 'input' },
+      { name: '--confirmations', kind: 'value', role: 'input' },
+      OUTPUT_SHORT, OUTPUT_LONG,
+      { name: '--records-output', kind: 'value', role: 'output' },
+      { name: '--questions-output', kind: 'value', role: 'output' },
+    ],
+  },
+  'git-index': { positionals: [{ role: 'project' }], options: [OUTPUT_SHORT, OUTPUT_LONG] },
+  'git-tree': { positionals: [{ role: 'project' }, { role: 'plain' }], options: [OUTPUT_SHORT, OUTPUT_LONG] },
+  'git-file': {
+    positionals: [{ role: 'project' }, { role: 'plain' }, { role: 'repoPath' }],
+    options: [
+      { name: '--lines', kind: 'value' }, { name: '--bytes', kind: 'value' },
+      OUTPUT_SHORT, OUTPUT_LONG,
+    ],
+  },
+  'git-worktree': {
+    positionals: [{ role: 'project' }],
+    options: [{ name: '--max-chars', kind: 'value' }, OUTPUT_SHORT, OUTPUT_LONG],
+  },
+  'git-evidence': {
+    positionals: [{ role: 'project' }, { role: 'plain' }],
+    options: [
+      { name: '--path', kind: 'value', role: 'input' },
+      { name: '--max-chars', kind: 'value' },
+      { name: '-o', kind: 'value', role: 'output' },
+      { name: '--output-dir', kind: 'value', role: 'output' },
+    ],
+  },
+  'verify-narrative': { positionals: [{ role: 'input' }, { role: 'input' }], options: [] },
+  'render-narrative': {
+    positionals: [{ role: 'input' }, { role: 'input' }],
+    options: [{ name: '--variant', kind: 'value' }, OUTPUT_SHORT, OUTPUT_LONG],
+  },
+}
 
 function canonicalPath(value: string): string {
   const resolved = resolve(value)
@@ -52,45 +113,132 @@ function pathInside(scope: string, target: string): boolean {
   return targetAbs.startsWith(scopeAbs.endsWith(sep) ? scopeAbs : `${scopeAbs}${sep}`)
 }
 
+// Resolve the real target of a path, walking up to the deepest existing
+// ancestor. Lexical path.resolve() cannot see Windows junctions or symlinks;
+// this exposes them so an output like .learntrace/x cannot silently land in an
+// external directory that was never approved.
+function realTargetOf(value: string): string {
+  const abs = resolve(value)
+  try { return canonicalPath(realpathSync.native(abs)) } catch { /* walk up */ }
+  const tail: string[] = []
+  let head = abs
+  for (;;) {
+    const parent = dirname(head)
+    if (parent === head) return canonicalPath(abs)
+    tail.unshift(basename(head))
+    head = parent
+    try { return canonicalPath(resolve(realpathSync.native(head), ...tail)) } catch { /* keep walking */ }
+  }
+}
+
+function parseLearntraceArgs(subcommand: string, args: readonly string[]): { ok: boolean; reason?: string; parsed?: ParsedCommand } {
+  const grammar = GRAMMARS[subcommand]
+  if (!grammar) return { ok: false, reason: `不支持的子命令：${subcommand}` }
+  const optionMap = new Map(grammar.options.map(option => [option.name, option]))
+  const positionals: string[] = []
+  const parsed: ParsedCommand = { repoPaths: [], inputs: [], outputs: [] }
+  let afterDash = false
+  for (let i = 1; i < args.length; i += 1) {
+    const token = args[i]!
+    if (!afterDash && token === '--') { afterDash = true; continue }
+    if (!afterDash && token.startsWith('-') && token !== '-') {
+      const eq = token.indexOf('=')
+      const name = eq === -1 ? token : token.slice(0, eq)
+      if (name === '-h' || name === '--help') continue
+      const option = optionMap.get(name)
+      if (!option) return { ok: false, reason: `无法解析的选项：${token}` }
+      if (option.kind === 'flag') continue
+      const value = eq === -1 ? args[i + 1] : token.slice(eq + 1)
+      if (value === undefined || value.startsWith('-')) return { ok: false, reason: `选项 ${name} 缺少取值。` }
+      if (eq === -1) i += 1
+      if (option.role === 'input') parsed.inputs.push({ label: name, value })
+      else if (option.role === 'output') parsed.outputs.push({ label: name, value })
+      continue
+    }
+    positionals.push(token)
+  }
+  const required = grammar.positionals.filter(positional => !positional.optional).length
+  if (positionals.length < required) return { ok: false, reason: '缺少位置参数（项目目录或路径）。' }
+  if (positionals.length > grammar.positionals.length) {
+    return { ok: false, reason: `多余的位置参数：${positionals[grammar.positionals.length]}` }
+  }
+  for (let index = 0; index < positionals.length; index += 1) {
+    const spec = grammar.positionals[index]!
+    const value = positionals[index]!
+    if (spec.role === 'project') parsed.project = value
+    else if (spec.role === 'repoPath') parsed.repoPaths.push(value)
+    else if (spec.role === 'input') parsed.inputs.push({ label: '位置路径', value })
+  }
+  return { ok: true, parsed }
+}
+
+// Default outputs, when the corresponding explicit output option is absent,
+// mirror the CLI: archive writes <project>/learning-record.md; parse/run and the
+// git evidence commands write below <project>/.learntrace.
+const ARTIFACT_WRITING_COMMANDS = new Set(['parse', 'run', 'git-index', 'git-tree', 'git-file', 'git-worktree', 'git-evidence'])
+
 function scopeViolation(command: CommandSpec, cwd: string): string | undefined {
   const { args } = command
-  const subcommand = args[0]
-  const at = (index: number): string | undefined => args[index]
-  const scopeAbs = canonicalPath(cwd)
-  const projectTarget = (value: string): string => canonicalPath(resolve(cwd, value))
-  if (PROJECT_ROOT_COMMANDS.has(subcommand ?? '')) {
-    const project = at(1)
-    if (project === undefined) return '缺少项目目录参数。'
-    if (projectTarget(project) !== scopeAbs) return `项目目录超出当前会话：${project}`
-  }
-  if (subcommand === 'archive') {
-    const records = at(1)
-    if (records !== undefined && !pathInside(scopeAbs, projectTarget(records))) return `archive 记录目录超出当前项目：${records}`
-  }
-  if (subcommand === 'git-file') {
-    const filePath = at(3)
-    if (filePath !== undefined && !pathInside(scopeAbs, projectTarget(filePath))) return `git-file 路径超出当前项目：${filePath}`
-  }
-  if (subcommand === 'verify-narrative' || subcommand === 'render-narrative') {
-    for (const index of [1, 2]) {
-      const value = at(index)
-      if (value !== undefined && !pathInside(scopeAbs, projectTarget(value))) return `叙事层路径超出当前项目：${value}`
+  const subcommand = args[0] ?? ''
+  const parsedResult = parseLearntraceArgs(subcommand, args)
+  if (!parsedResult.ok) return parsedResult.reason
+  const parsed = parsedResult.parsed!
+  const scopeLex = canonicalPath(resolve(cwd))
+  const scopeReal = realTargetOf(cwd)
+  const artifactLex = canonicalPath(join(cwd, '.learntrace'))
+  const lex = (value: string) => canonicalPath(resolve(cwd, value))
+  const real = (value: string) => realTargetOf(resolve(cwd, value))
+
+  const project = parsed.project ?? (subcommand === 'archive' ? '.' : undefined)
+  if (project !== undefined) {
+    if (subcommand === 'archive') {
+      if (!pathInside(scopeLex, lex(project)) || !pathInside(scopeReal, real(project))) {
+        return `archive 记录目录超出当前项目：${project}`
+      }
+    } else if (real(project) !== scopeReal) {
+      return `项目目录超出当前会话：${project}`
     }
   }
-  const artifactScope = canonicalPath(join(cwd, '.learntrace'))
-  for (let i = 1; i < args.length; i += 1) {
-    const raw = args[i]!
-    const split = raw.indexOf('=')
-    const option = split === -1 ? raw : raw.slice(0, split)
-    const kind = PATH_VALUE_OPTIONS.get(option)
-    if (kind === undefined) continue
-    const value = split === -1 ? args[i + 1] : raw.slice(split + 1)
-    if (value === undefined) continue
-    if (split === -1) i += 1
-    const target = projectTarget(value)
-    if (!pathInside(scopeAbs, target)) return `${option} 指向当前项目之外：${value}`
-    if (kind === 'output' && !pathInside(artifactScope, target)) {
-      return `输出路径超出会话产物目录（.learntrace）：${value}`
+  for (const repoPath of parsed.repoPaths) {
+    if (!pathInside(scopeLex, lex(repoPath)) || !pathInside(scopeReal, real(repoPath))) {
+      return `git-file 路径超出当前项目：${repoPath}`
+    }
+  }
+  for (const bound of parsed.inputs) {
+    if (!pathInside(scopeLex, lex(bound.value)) || !pathInside(scopeReal, real(bound.value))) {
+      return `${bound.label} 指向当前项目之外：${bound.value}`
+    }
+  }
+  for (const bound of parsed.outputs) {
+    if (!pathInside(artifactLex, lex(bound.value))) {
+      return `输出路径超出会话产物目录（.learntrace）：${bound.value}`
+    }
+    if (!pathInside(scopeReal, real(bound.value))) {
+      return `输出路径经链接解析后超出当前项目：${bound.value}`
+    }
+  }
+  const hasOutput = parsed.outputs.length > 0
+  const artifactRoot = resolve(cwd, '.learntrace')
+  const implied: string[] = []
+  if (subcommand === 'archive') {
+    if (!hasOutput) implied.push(resolve(cwd, project ?? '.', 'learning-record.md'))
+  } else if (ARTIFACT_WRITING_COMMANDS.has(subcommand)) {
+    if (subcommand === 'parse') {
+      if (!hasOutput) implied.push(resolve(artifactRoot, 'task2-result.json'))
+    } else if (subcommand === 'git-index') {
+      if (!hasOutput) implied.push(resolve(artifactRoot, 'evidence', 'git', 'history.jsonl'))
+    } else if (subcommand === 'git-worktree') {
+      if (!hasOutput) implied.push(resolve(artifactRoot, 'evidence', 'git', 'worktree.json'))
+    } else {
+      // run always writes below .learntrace; git-tree/git-file/git-evidence use
+      // dynamic default names under .learntrace, so validate the directory.
+      if (subcommand !== 'run' || !hasOutput) implied.push(artifactRoot)
+      if (subcommand === 'run' && !hasOutput) implied.push(resolve(artifactRoot, 'task2-result.json'))
+    }
+  }
+  for (const path of implied) {
+    if (!pathInside(scopeReal, realTargetOf(path))) {
+      return `默认输出经链接解析后超出当前项目：${path}`
     }
   }
   return undefined

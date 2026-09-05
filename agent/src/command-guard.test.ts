@@ -1,6 +1,9 @@
 import { expect, it } from 'vitest'
 import { QuestionBridge, type UserQuestion } from './question-tool.js'
 import { classifyCommand, createCommandTool } from './command-guard.js'
+import { mkdirSync, symlinkSync } from 'node:fs'
+import { mkdtemp, rm } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
 import { join, resolve, sep } from 'node:path'
 
 const TEST_CWD = process.platform === 'win32' ? 'C:\\learn\\project' : '/learn/project'
@@ -60,6 +63,42 @@ if (process.platform === 'win32') {
     expect(classifyCommand({ executable: 'learntrace', args: ['discover', project] }, TEST_CWD).verdict).toBe('approve')
   })
 }
+
+it.each([
+  ['archive', ['--', ESCAPE_REL]],
+  ['archive', ['-o', join('.learntrace', 'report.md'), ESCAPE_REL]],
+  ['render-narrative', ['--variant', 'working', join(ESCAPE_REL, 'payload.json'), join(ESCAPE_REL, 'archive.json')]],
+  ['parse', ['--no-git', OUTSIDE_ABS]],
+  ['git-file', ['.', 'HEAD', ESCAPE_REL, '--lines', '1:20']],
+] as [string, string[]][])('approves argparse-legal reorderings fixed indices would mis-read: %s %j', (subcommand, tail) => {
+  expect(classifyCommand({ executable: 'learntrace', args: [subcommand, ...tail] }, TEST_CWD).verdict).toBe('approve')
+})
+
+it('approves explicit outputs and default outputs that escape through a junctioned .learntrace', async () => {
+  const base = await mkdtemp(join(tmpdir(), 'lt-junction-'))
+  try {
+    const project = join(base, 'project')
+    const outside = join(base, 'outside')
+    mkdirSync(project)
+    mkdirSync(outside)
+    symlinkSync(outside, join(project, '.learntrace'), process.platform === 'win32' ? 'junction' : 'dir')
+    // Explicit output whose lexical path is inside .learntrace but whose real
+    // target is the external junction destination must not auto-allow.
+    expect(classifyCommand(
+      { executable: 'learntrace', args: ['parse', '.', '--no-git', '-o', join('.learntrace', 'source.py')] },
+      project,
+    ).verdict).toBe('approve')
+    // The parse default (.<project>/.learntrace/task2-result.json) is also
+    // validated: it would land in the external directory through the junction.
+    expect(classifyCommand(
+      { executable: 'learntrace', args: ['parse', '.', '--no-git'] },
+      project,
+    ).verdict).toBe('approve')
+  } finally {
+    await rm(base, { recursive: true, force: true })
+  }
+})
+
 it('denies invalid executable/arguments', () => {
   expect(classifyCommand({ executable: '', args: [] }).verdict).toBe('deny')
   expect(classifyCommand({ executable: 'git', args: ['status\0'] }).verdict).toBe('deny')
