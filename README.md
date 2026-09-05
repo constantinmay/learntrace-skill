@@ -74,7 +74,7 @@ learntrace ui <project-dir>
 
 界面只监听本机回环地址，不对局域网或公网提供服务。LearnTrace
 直接启动产品内的 Pi SDK Agent，不扫描本机的 Agent，也不要求用户另行安装
-或登录 Pi CLI。使用这一入口需要本机安装 Node.js 22.19 或更高版本；Pi Agent
+或登录 Pi CLI。使用这一入口需要本机安装 Node.js 22.22.2 或更高版本；Pi Agent
 服务和网页静态资源随 LearnTrace Python 包提供，不需要用户运行 `npm install`
 或单独启动前后端。该 Agent 使用仓库中未经改写的 LearnTrace Skill 调查当前项目。
 开始分析前，用户在网页中配置模型服务：
@@ -132,7 +132,7 @@ cd ..; cd agent; npm ci; npm run build
 uv run python -m learntrace ui <project-dir>
 ```
 
-需要 Node.js 22.19 或更高版本；启动行为与安装版 `learntrace ui` 一致。
+需要 Node.js 22.22.2 或更高版本；启动行为与安装版 `learntrace ui` 一致。
 前后端热更新联调时，让后端固定监听 `8765`，再启动 `vite` 开发服务器（其把
 `/api`、`/auth` 代理到 `http://127.0.0.1:8765`）：
 

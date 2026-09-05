@@ -3,6 +3,9 @@
   "private": true,
   "version": "0.1.0",
   "type": "module",
+  "engines": {
+    "node": ">=22.22.2"
+  },
   "scripts": {
     "build": "tsc -p tsconfig.json && npm run bundle",
     "bundle": "rolldown src/service.ts --file ../src/learntrace/ui/agent-service.mjs --format esm --platform node --no-codeSplitting --no-treeshake --strictExecutionOrder",
