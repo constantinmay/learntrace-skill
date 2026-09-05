@@ -1,12 +1,21 @@
 ---
 name: learntrace
-description: Organize local Git history, project documents, existing test evidence, and explicitly authorized AI coding traces into a traceable student learning portfolio. Use for course-project reflection, AI-collaboration evidence review, candidate learning-node confirmation, or generation of a privacy-conscious Markdown portfolio; never use it to detect cheating, attribute authorship, rank contributors, or execute repository code.
+description: Use this skill for student course/semester/capstone project learning records (学习档案/学习记录/learning portfolio/reflection report) built from local Git history/commits, project docs/README, test logs, and authorized OpenCode/Claude Code/Codex session exports. Use when a student/instructor asks to create a defensible Markdown record for a professor/advisor/instructor, show what they learned/did, cite real commits, summarize development process, separate student work from AI assistance, scope a team repo, or include/exclude AI-session metadata. Not for plagiarism detection, contributor ranking, commit-message advice, release notes, design docs, or career reflection.
 ---
 
 # LearnTrace
 
 Build an evidence-based learning portfolio while keeping observable facts,
 system inference, and the student's own confirmation separate.
+
+Two reference files hold the working details; consult the one that matches
+the current step:
+
+- [references/cli.md](references/cli.md) — flag-level reference for every
+  subcommand (use when looking up exact flags).
+- [references/narrative-payload.md](references/narrative-payload.md) —
+  payload fields, citation shapes, and the verify red lines (use when
+  writing the narrative payload).
 
 ## Consent gate
 
@@ -85,6 +94,9 @@ learntrace run <project-dir>
 
 Use repeatable `--document` and `--test-log` arguments when the student approved
 only a subset. Add `--no-git` when Git history was not approved.
+The complete reachable Git history is retained by default; `--max-commits`
+is a side-branch detail budget only — the first-parent chain and merge
+commits are never removed.
 
 Treat Task 2 Git events as navigation into the code evidence, not as a semantic
 description of the change. When a commit is important to the final account,
@@ -308,6 +320,12 @@ output as a generated artifact so a later `run` will not ingest it — but
 only when the archive lives at the standard `<project>/.learntrace/`
 location; with a custom archive path, register or exclude the output
 yourself.
+
+Every event ID in the payload must come from the archive being verified
+against — never from another run, another project, or a shipped example.
+The payload's `author_scope` flag mirrors the consent gate's multi-author
+decision (see the `author_scope` note in the reference) — it reflects the
+`git_authors` count from `discover`, not the warnings you happened to see.
 
 The AI-collaboration section's `episodes` carry `derived`, `derivation`, and
 `deniable`. A `derived: true` episode is a host-agent digest of a fully
