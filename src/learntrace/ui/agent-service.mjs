@@ -83,13 +83,15 @@ var __toESM = (mod, isNodeMode, target) => (target = mod != null ? __create(__ge
 var __require = /* #__PURE__ */ (() => createRequire(import.meta.url))();
 //#endregion
 //#region src/protocol.ts
+function normalizeHostname(hostname) {
+	return hostname.replace(/^\[|\]$/g, "").toLowerCase();
+}
 function assertRuntimeConfig(value) {
 	const url = new URL(value.baseUrl);
-	if (url.protocol !== "https:" && ![
-		"localhost",
-		"127.0.0.1",
-		"::1"
-	].includes(url.hostname)) throw new Error("API 地址必须使用 HTTPS；只有本机服务可以使用 HTTP。");
+	const host = normalizeHostname(url.hostname);
+	const localHttp = url.protocol === "http:" && LOOPBACK_HOSTS.has(host);
+	if (url.protocol !== "https:" && !localHttp) throw new Error("API 地址必须使用 HTTPS；只有本机服务可以使用 HTTP。");
+	if (url.username || url.password) throw new Error("API 地址不能包含用户名或密码。");
 	if (!value.apiKey.trim()) throw new Error("API Key 不能为空。");
 	if (!value.modelId.trim()) throw new Error("模型 ID 不能为空。");
 	if (![
@@ -97,6 +99,16 @@ function assertRuntimeConfig(value) {
 		"openai-completions",
 		"openai-responses"
 	].includes(value.api)) throw new Error("不支持的 API 协议。");
+}
+var LOOPBACK_HOSTS;
+function init_protocol() {
+	return (init_protocol = __esmMin((() => {
+		LOOPBACK_HOSTS = /* @__PURE__ */ new Set([
+			"localhost",
+			"127.0.0.1",
+			"::1"
+		]);
+	})))();
 }
 //#endregion
 //#region node_modules/@earendil-works/pi-coding-agent/node_modules/chalk/source/vendor/ansi-styles/index.js
@@ -303846,6 +303858,7 @@ async function shutdown() {
 var sessions, lines;
 function init_service() {
 	return (init_service = __esmMin((() => {
+		init_protocol();
 		init_session$2();
 		init_model();
 		sessions = /* @__PURE__ */ new Map();

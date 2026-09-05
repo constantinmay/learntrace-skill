@@ -45,3 +45,30 @@ def test_model_config_rejects_insecure_remote_http(tmp_path: Path) -> None:
         ModelConfigStore(tmp_path / "config.json").save(
             ModelConfig("http://api.example.com", "model"), "secret"
         )
+
+
+ALLOWED_BASE_URLS = (
+    "https://api.example.com",
+    "https://[::1]:11434",
+    "http://127.0.0.1:11434",
+    "http://localhost:11434",
+    "http://[::1]:11434",
+)
+
+REJECTED_BASE_URLS = (
+    "http://api.example.com",
+    "http://127.0.0.1.evil.com",
+    "http://127.0.0.1@evil.com",
+    "http://localhost.attacker.test",
+    "https://user:pass@api.example.com",
+    "ws://example.com",
+)
+
+
+def test_model_config_url_validation_uses_exact_loopback_hosts() -> None:
+    for url in ALLOWED_BASE_URLS:
+        ModelConfig(url, "model").validate()
+
+    for url in REJECTED_BASE_URLS:
+        with pytest.raises(ValueError, match="HTTPS"):
+            ModelConfig(url, "model").validate()

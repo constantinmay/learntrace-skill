@@ -25,7 +25,9 @@ class ModelConfig:
     thinking_level: str = "medium"
 
     def validate(self) -> None:
-        if not self.base_url.startswith(("https://", "http://127.0.0.1", "http://localhost")):
+        scheme, host = self._url_parts(self.base_url)
+        local_http = scheme == "http" and host in {"127.0.0.1", "localhost", "::1"}
+        if scheme != "https" and not local_http:
             raise ValueError("API 地址必须使用 HTTPS；只有本机服务可以使用 HTTP。")
         if not self.model_id.strip():
             raise ValueError("模型 ID 不能为空。")
@@ -33,6 +35,20 @@ class ModelConfig:
             raise ValueError("不支持的 API 协议。")
         if self.thinking_level not in _THINKING:
             raise ValueError("不支持的思考强度。")
+
+    @staticmethod
+    def _url_parts(raw: str) -> tuple[str, str]:
+        from urllib.parse import urlsplit
+
+        parts = urlsplit(raw.strip())
+        if (
+            parts.scheme not in {"http", "https"}
+            or not parts.hostname
+            or parts.username is not None
+            or parts.password is not None
+        ):
+            raise ValueError("API 地址必须使用 HTTPS；只有本机服务可以使用 HTTP。")
+        return parts.scheme, parts.hostname
 
 
 class ModelConfigStore:
