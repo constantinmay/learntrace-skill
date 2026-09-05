@@ -281,6 +281,17 @@ abbr { display: inline-grid; place-items: center; width: 17px; height: 17px; mar
 .source-list button { border: 0; border-radius: 7px; color: var(--muted); background: transparent; font-size: 1.15rem; }
 .source-list button:hover { color: #9b4239; background: #f3dcd8; }
 
+@media (min-width: 681px) {
+  .workspace.active-chat { height: 100vh; height: 100dvh; overflow: hidden; grid-template-rows: minmax(0, 1fr); }
+  .workspace.active-chat > .sidebar,
+  .workspace.active-chat > .main-panel,
+  .workspace.active-chat > .evidence-panel { min-height: 0; }
+  .workspace.active-chat > .sidebar { display: flex; flex-direction: column; overflow: hidden; }
+  .workspace.active-chat .sidebar-content { flex: 1; min-height: 0; overflow-y: auto; padding-bottom: 96px; }
+  .workspace.active-chat > .main-panel { overflow: hidden; }
+  .workspace.active-chat > .evidence-panel { overflow-y: auto; }
+}
+
 @media (max-width: 1180px) {
   .session-config label > span { display: none; }
 }

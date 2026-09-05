@@ -248,7 +248,7 @@ export default function App() {
   } as CSSProperties
 
   return <>
-  <main className={`workspace ${showReport ? 'report-open' : 'report-closed'}`} style={workspaceStyle}>
+  <main className={`workspace ${showReport ? 'report-open' : 'report-closed'}${active ? ' active-chat' : ''}`} style={workspaceStyle}>
     <Sidebar
       open={sidebarOpen} sessions={sessions} activeId={active?.id}
       onToggle={() => setSidebarOpen(value => !value)}
