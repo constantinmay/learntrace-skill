@@ -17,7 +17,9 @@ async function running(pid: number): Promise<boolean> {
   } catch { return false }
 }
 
-function killPidTree(pid: number): void {
+const KILL_WAIT_MS = 2000
+
+async function killPidTree(pid: number): Promise<void> {
   if (!Number.isInteger(pid) || pid <= 0) return
   try {
     if (process.platform === 'win32') {
@@ -27,6 +29,8 @@ function killPidTree(pid: number): void {
       try { process.kill(-pid, 'SIGKILL') } catch { process.kill(pid, 'SIGKILL') }
     }
   } catch { /* best effort cleanup */ }
+  const deadline = Date.now() + KILL_WAIT_MS
+  while (Date.now() < deadline && await running(pid)) await pause(25)
 }
 
 // The leader exits ~150ms in while a detached descendant inherits stdout/stderr
@@ -64,7 +68,7 @@ it.each(['cancel', 'timeout'] as const)('terminates parent and child on %s', asy
   } finally {
     controller.abort()
     await pending.catch(() => undefined)
-    await rm(root, { recursive: true, force: true })
+    await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })
   }
 }, 15000)
 
@@ -99,8 +103,8 @@ it('settles when the leader exits but a detached descendant holds the pipes', as
     daemonPid = Number(await readFile(marker, 'utf8'))
     expect(Number.isInteger(daemonPid)).toBe(true)
   } finally {
-    killPidTree(daemonPid)
-    await rm(root, { recursive: true, force: true })
+    await killPidTree(daemonPid)
+    await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })
   }
 }, 15000)
 
@@ -128,7 +132,7 @@ it('abort stays bounded and reports stopFailed when the leader is already gone a
     expect(elapsed).toBeLessThan(8000)
   } finally {
     controller.abort()
-    killPidTree(daemonPid)
-    await rm(root, { recursive: true, force: true })
+    await killPidTree(daemonPid)
+    await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })
   }
 }, 20000)
