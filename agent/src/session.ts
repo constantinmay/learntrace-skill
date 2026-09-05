@@ -8,6 +8,7 @@ import {
 } from '@earendil-works/pi-coding-agent'
 import { createRuntimeModel } from './model.js'
 import type { RuntimeConfig } from './protocol.js'
+import { createCommandTool } from './command-guard.js'
 import { createQuestionTool, QuestionBridge } from './question-tool.js'
 
 type Publish = (event: Record<string, unknown>) => void
@@ -46,7 +47,7 @@ export class LearnTraceSession {
       defaultThinkingLevel: config.thinkingLevel ?? 'medium',
       enableAnalytics: false,
       enableInstallTelemetry: false,
-    }, { projectTrusted: true })
+    }, { projectTrusted: false })
     const loader = new DefaultResourceLoader({
       cwd: this.cwd,
       agentDir: this.sessionDir,
@@ -80,8 +81,8 @@ export class LearnTraceSession {
       resourceLoader: loader,
       settingsManager: settings,
       sessionManager,
-      tools: ['read', 'bash', 'grep', 'find', 'ls', 'request_user_input'],
-      customTools: [createQuestionTool(this.questions)],
+      tools: ['read', 'grep', 'find', 'ls', 'request_user_input'],
+      customTools: [createCommandTool(this.questions, this.cwd), createQuestionTool(this.questions)],
     })
     this.session = created.session
     this.session.setSessionName('LearnTrace 分析')

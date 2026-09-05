@@ -6,6 +6,7 @@ import time
 from pathlib import Path
 
 import pytest
+from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from learntrace.ui.app import create_app
@@ -28,11 +29,11 @@ def _settings(tmp_path: Path) -> UISettings:
 LAUNCH_TOKEN = "test-launch-token"
 
 
-def _app(settings):
+def _app(settings: UISettings) -> FastAPI:
     return create_app(settings, launch_token=LAUNCH_TOKEN)
 
 
-def _client(application):
+def _client(application: FastAPI) -> TestClient:
     client = TestClient(application, base_url="http://127.0.0.1")
     client.cookies.set("lt_token", LAUNCH_TOKEN)
     return client

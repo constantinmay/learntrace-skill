@@ -274732,7 +274732,7 @@ async function convertToPng(bytes) {
 		return null;
 	}
 }
-function runCommand(command, args, options) {
+function runCommand$1(command, args, options) {
 	const timeoutMs = options?.timeoutMs ?? DEFAULT_READ_TIMEOUT_MS;
 	const maxBufferBytes = options?.maxBufferBytes ?? DEFAULT_MAX_BUFFER_BYTES;
 	const result = spawnSync$1(command, args, {
@@ -274754,11 +274754,11 @@ function runCommand(command, args, options) {
 	};
 }
 function readClipboardImageViaWlPaste() {
-	const list = runCommand("wl-paste", ["--list-types"], { timeoutMs: DEFAULT_LIST_TIMEOUT_MS });
+	const list = runCommand$1("wl-paste", ["--list-types"], { timeoutMs: DEFAULT_LIST_TIMEOUT_MS });
 	if (!list.ok) return null;
 	const selectedType = selectPreferredImageMimeType(list.stdout.toString("utf-8").split(/\r?\n/).map((t) => t.trim()).filter(Boolean));
 	if (!selectedType) return null;
-	const data = runCommand("wl-paste", [
+	const data = runCommand$1("wl-paste", [
 		"--type",
 		selectedType,
 		"--no-newline"
@@ -274786,11 +274786,11 @@ function isWSL(env = process.env) {
 function readClipboardImageViaPowerShell() {
 	const tmpFile = join(tmpdir$1(), `pi-wsl-clip-${randomUUID()}.png`);
 	try {
-		const winPathResult = runCommand("wslpath", ["-w", tmpFile], { timeoutMs: DEFAULT_LIST_TIMEOUT_MS });
+		const winPathResult = runCommand$1("wslpath", ["-w", tmpFile], { timeoutMs: DEFAULT_LIST_TIMEOUT_MS });
 		if (!winPathResult.ok) return null;
 		const winPath = winPathResult.stdout.toString("utf-8").trim();
 		if (!winPath) return null;
-		const result = runCommand("powershell.exe", [
+		const result = runCommand$1("powershell.exe", [
 			"-NoProfile",
 			"-Command",
 			[
@@ -274818,7 +274818,7 @@ function readClipboardImageViaPowerShell() {
 	}
 }
 function readClipboardImageViaXclip() {
-	const targets = runCommand("xclip", [
+	const targets = runCommand$1("xclip", [
 		"-selection",
 		"clipboard",
 		"-t",
@@ -274830,7 +274830,7 @@ function readClipboardImageViaXclip() {
 	const preferred = candidateTypes.length > 0 ? selectPreferredImageMimeType(candidateTypes) : null;
 	const tryTypes = preferred ? [preferred, ...SUPPORTED_IMAGE_MIME_TYPES] : [...SUPPORTED_IMAGE_MIME_TYPES];
 	for (const mimeType of tryTypes) {
-		const data = runCommand("xclip", [
+		const data = runCommand$1("xclip", [
 			"-selection",
 			"clipboard",
 			"-t",
@@ -303553,6 +303553,169 @@ function init_model() {
 	})))();
 }
 //#endregion
+//#region src/command-guard.ts
+function tokenizeCommand(command) {
+	if (SHELL_METACHARACTERS.test(command)) return null;
+	const tokens = command.trim().split(/\s+/).filter(Boolean);
+	return tokens.length > 0 ? tokens : null;
+}
+function classifyCommand(command) {
+	const argv = tokenizeCommand(command);
+	if (!argv) return {
+		verdict: "deny",
+		reason: "命令包含 shell 元字符；LearnTrace 不会以 shell 方式拼接执行命令。"
+	};
+	const binary = argv[0];
+	const subcommand = argv[1];
+	if (binary === "learntrace") return { verdict: "allow" };
+	if (binary === "git") {
+		if (subcommand === void 0 || READONLY_GIT_SUBCOMMANDS.has(subcommand)) return { verdict: "allow" };
+		return {
+			verdict: "approve",
+			reason: "git 写操作需要你在界面中明确批准。"
+		};
+	}
+	if (!ALLOWED_BINARIES.has(binary)) return {
+		verdict: "approve",
+		reason: `命令 ${binary} 不在自动放行列表，需要你在界面中明确批准。`
+	};
+	return { verdict: "allow" };
+}
+function minimalEnvironment(source) {
+	const result = {};
+	for (const [key, value] of Object.entries(source)) if (value !== void 0 && ENV_ALLOWLIST.has(key.toUpperCase())) result[key] = value;
+	if (result.PATH === void 0 && result.Path !== void 0) result.PATH = result.Path;
+	return result;
+}
+function runCommand(argv, cwd, timeoutMs = 12e4) {
+	return new Promise((resolve) => {
+		const binary = argv[0];
+		const child = spawn(binary, argv.slice(1), {
+			cwd,
+			env: minimalEnvironment(process.env),
+			shell: false,
+			windowsHide: true
+		});
+		const chunks = [];
+		const timer = setTimeout(() => child.kill(), timeoutMs);
+		child.stdout.on("data", (chunk) => chunks.push(chunk));
+		child.stderr.on("data", (chunk) => chunks.push(chunk));
+		child.on("error", (error) => {
+			clearTimeout(timer);
+			resolve({
+				exitCode: null,
+				output: `无法执行命令：${error.message}`
+			});
+		});
+		child.on("close", (exitCode, signal) => {
+			clearTimeout(timer);
+			resolve({
+				exitCode,
+				output: `${Buffer.concat(chunks).toString("utf8").trim()}${signal ? `（被信号 ${signal} 终止）` : ""}`
+			});
+		});
+	});
+}
+function truncate(text, limit = 24e3) {
+	return text.length <= limit ? text : `${text.slice(0, limit)}\n…（输出已截断）`;
+}
+function createCommandTool(bridge, cwd) {
+	return defineTool({
+		name: "run_command",
+		label: "执行命令",
+		description: "在 LearnTrace 当前项目中执行命令。learntrace 与只读 git 命令自动放行；其他命令必须先获得用户批准。",
+		promptSnippet: "需要运行命令时使用 run_command",
+		promptGuidelines: [
+			"运行项目命令一律使用 run_command，不要假定存在 bash 工具。",
+			"learntrace 与只读 git（status/log/show/diff 等）可自动放行。",
+			"写操作或未列出的命令会自动请求用户批准；等待批准结果后再继续。",
+			"绝不用 shell 运算符拼接多条命令；一次只执行一条。"
+		],
+		parameters: schema$1,
+		async execute(_toolCallId, params, signal) {
+			const command = String(params.command ?? "").trim();
+			const classified = classifyCommand(command);
+			if (classified.verdict === "deny") return {
+				content: [{
+					type: "text",
+					text: `已阻止执行：${classified.reason}`
+				}],
+				details: { approved: false }
+			};
+			let approved = classified.verdict === "allow";
+			if (!approved) {
+				const answer = await bridge.ask({
+					question: `是否允许执行以下命令？\n\n${command}`,
+					options: ["允许执行", "拒绝"],
+					allowMultiple: false,
+					allowText: false,
+					skippable: true,
+					...classified.reason ? { reason: classified.reason } : {}
+				}, signal);
+				approved = String(answer ?? "").startsWith("允许");
+				if (!approved) return {
+					content: [{
+						type: "text",
+						text: "用户拒绝了该命令的执行。"
+					}],
+					details: { approved: false }
+				};
+			}
+			const outcome = await runCommand(tokenizeCommand(command) ?? [], cwd);
+			const head = outcome.exitCode === 0 ? "" : `（退出码 ${outcome.exitCode ?? "未知"}）`;
+			return {
+				content: [{
+					type: "text",
+					text: truncate(outcome.output || `命令已执行${head}，无输出。`)
+				}],
+				details: {
+					approved: true,
+					exitCode: outcome.exitCode
+				}
+			};
+		}
+	});
+}
+var ALLOWED_BINARIES, READONLY_GIT_SUBCOMMANDS, SHELL_METACHARACTERS, ENV_ALLOWLIST, schema$1;
+function init_command_guard() {
+	return (init_command_guard = __esmMin((() => {
+		init_dist$6();
+		init_build$2();
+		ALLOWED_BINARIES = /* @__PURE__ */ new Set(["learntrace", "git"]);
+		READONLY_GIT_SUBCOMMANDS = /* @__PURE__ */ new Set([
+			"status",
+			"log",
+			"show",
+			"diff",
+			"blame",
+			"ls-files",
+			"ls-tree",
+			"rev-parse",
+			"describe",
+			"branch",
+			"tag",
+			"remote",
+			"help",
+			"--version"
+		]);
+		SHELL_METACHARACTERS = /[;&|<>$`\n\r]/;
+		ENV_ALLOWLIST = /* @__PURE__ */ new Set([
+			"PATH",
+			"PATHEXT",
+			"SYSTEMROOT",
+			"WINDIR",
+			"HOME",
+			"USERPROFILE",
+			"TEMP",
+			"TMP",
+			"COMSPEC",
+			"HOMEDRIVE",
+			"USERNAME"
+		]);
+		schema$1 = _Object_$1({ command: String$2({ description: "要在当前项目中执行的命令，不包含 shell 运算符" }) });
+	})))();
+}
+//#endregion
 //#region src/question-tool.ts
 function createQuestionTool(bridge) {
 	return defineTool({
@@ -303653,6 +303816,7 @@ function init_session$2() {
 	return (init_session$2 = __esmMin((() => {
 		init_dist$6();
 		init_model();
+		init_command_guard();
 		init_question_tool();
 		LearnTraceSession = class {
 			id;
@@ -303690,7 +303854,7 @@ function init_session$2() {
 					defaultThinkingLevel: config.thinkingLevel ?? "medium",
 					enableAnalytics: false,
 					enableInstallTelemetry: false
-				}, { projectTrusted: true });
+				}, { projectTrusted: false });
 				const loader = new DefaultResourceLoader({
 					cwd: this.cwd,
 					agentDir: this.sessionDir,
@@ -303720,13 +303884,12 @@ function init_session$2() {
 					sessionManager,
 					tools: [
 						"read",
-						"bash",
 						"grep",
 						"find",
 						"ls",
 						"request_user_input"
 					],
-					customTools: [createQuestionTool(this.questions)]
+					customTools: [createCommandTool(this.questions, this.cwd), createQuestionTool(this.questions)]
 				});
 				this.session = created.session;
 				this.session.setSessionName("LearnTrace 分析");
