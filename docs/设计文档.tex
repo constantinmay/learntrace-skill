@@ -47,7 +47,7 @@
 \fancyhead[L]{\small LearnTrace 设计文档}
 \fancyhead[R]{\small 可追溯学习档案智能体}
 \fancyfoot[C]{\thepage}
-\setlength{\headheight}{15pt}
+\setlength{\headheight}{16pt}
 
 \title{\vspace{-1.4cm}\textbf{LearnTrace：面向 AI 辅助课程项目的\\可追溯学习档案智能体}\\[0.7em]
 \large 设计文档}
@@ -79,6 +79,44 @@ LearnTrace 是一套面向 AI 辅助课程项目的本地学习档案智能体�
 
 \clearpage
 \tableofcontents
+\clearpage
+
+\section*{作品速览}
+\addcontentsline{toc}{section}{作品速览}
+
+\begin{itemize}
+  \item \textbf{面向问题：} AI 辅助课程项目结束后，学生难以说明自己的决策、验证和学习过程。
+  \item \textbf{核心方案：} 将 Git、项目文档、已有测试日志和经授权的 AI 轨迹转换为带来源的学习证据。
+  \item \textbf{交互方式：} 提供 CLI、宿主 Agent 和本地 Web 工作区三种入口。
+  \item \textbf{核心产物：} 可编辑 Markdown 学习档案、待确认问题清单和机器可审计 JSON 记录。
+  \item \textbf{关键创新：} 事实、系统候选和学生确认分层保存，不凭时间邻近为 AI 轨迹与 Git 提交建立因果关系。
+\end{itemize}
+
+\noindent\textbf{一句话价值：} LearnTrace 不替学生编造成长故事，而是帮助学生用更少、更清楚、可回查的证据说明自己的学习。
+
+\section{作品实现与验收结果}
+
+作品已经形成从材料发现、授权、静态解析、候选生成、学生确认到学习档案导出的完整闭环。评审既可检查仓库中的脱敏合成案例，也可安装 wheel 后运行 \texttt{learntrace ui <project-dir>} 进行本地验收。
+
+\begin{center}
+\small
+\begin{tabularx}{\textwidth}{>{\bfseries}p{0.25\textwidth}X}
+\toprule
+验收项目 & 实际结果 \\
+\midrule
+静态证据解析 & 从 Git、文档和已有测试日志生成带来源引用的统一事实 \\
+轨迹适配 & 支持逐文件授权的 OpenCode、Claude Code 和 Codex 导出 \\
+学习档案输出 & 生成工作版/提交版 Markdown 档案、问题清单和 JSON 归档 \\
+Web 工作区 & 支持模型配置、授权、对话、结构化问题卡片、停止和报告阅读 \\
+安全边界 & 未授权轨迹不读取；解析器不执行项目代码、测试或日志命令 \\
+可复查案例 & \texttt{examples/task4-demo} 随附设计约束、失败日志、补丁和合成轨迹 \\
+跨平台交付 & Ubuntu 与 Windows CI 均通过，wheel 包含 Web、Agent 和 Skill 资源 \\
+\bottomrule
+\end{tabularx}
+\end{center}
+
+\noindent\textbf{验收入口：} 图形路径运行 \texttt{learntrace ui <project-dir>}；本地确定性路径运行 \texttt{learntrace discover <project-dir>} 和 \texttt{learntrace run <project-dir>}；五步证据闭环见本文“可复查案例设计”。
+
 \clearpage
 
 \section{设计背景与核心理念}
@@ -499,7 +537,7 @@ Web 构建结果写入 Python 包的静态资源目录，Agent 构建结果打�
 
 \subsection{测试体系}
 
-最近一次公开持续集成基线 Git 提交 \texttt{8283589} 包含 Python、Web 和 Agent 三套测试。2026 年 9 月 6 日的 GitHub Actions 记录显示，Python 测试在 Ubuntu 和 Windows 上均为 \textbf{686 项通过、1 项跳过}，而不是仅以“成功收集测试”作为通过依据。本次材料定稿后的工作树在 Windows 本地全量复测为 \textbf{687 项通过、4 项因本机符号链接或环境条件跳过、0 项失败}，Ruff 与 Pyright 同样通过。公开基线和本地复测采用不同环境，以下分类描述两者共同覆盖的测试体系：
+最近一次公开持续集成基线为 Git 提交 \texttt{0af1135}。2026 年 9 月 6 日的 GitHub Actions 记录显示，Python 全量测试在 Ubuntu 和 Windows 上均为 \textbf{690 项通过、1 项跳过}，Web 测试为 6 项通过，Agent 测试为 81 项通过；Ruff、格式检查、Pyright、前后端构建、资源同步和 wheel 构建也均通过，而不是仅以“成功收集测试”作为验收依据。以下分类描述测试体系：
 
 \begin{itemize}
   \item 单元测试：模型、解析器、适配器、脱敏、候选推断、存储和命令守卫；
@@ -512,7 +550,7 @@ Web 构建结果写入 Python 包的静态资源目录，Agent 构建结果打�
 
 \subsection{持续集成}
 
-GitHub Actions 在 Ubuntu 和 Windows 上执行 Ruff、格式检查、Pyright、Pytest、前后端类型检查与构建、生成资源同步以及 wheel 安装验证。上述基线的各项任务均通过，记录地址为 \url{https://github.com/constantinmay/learntrace-skill/actions/runs/34005218350}。双平台任务用于覆盖路径格式、文件锁、子进程和打包行为差异。公开测试样例均经过脱敏，不包含真实学生会话、密钥和私人项目材料。这些结果说明对应版本满足既定工程检查，但不能替代对真实教学价值的案例观察和用户评价。
+GitHub Actions 在 Ubuntu 和 Windows 上执行 Ruff、格式检查、Pyright、Pytest、前后端类型检查与构建、生成资源同步以及 wheel 安装验证。上述基线的各项任务均通过，记录地址为 \url{https://github.com/constantinmay/learntrace-skill/actions/runs/34011233296}。双平台任务用于覆盖路径格式、文件锁、子进程和打包行为差异。公开测试样例均经过脱敏，不包含真实学生会话、密钥和私人项目材料。这些结果说明对应版本满足既定工程检查，但不能替代对真实教学价值的案例观察和用户评价。
 
 \subsection{验收清单}
 

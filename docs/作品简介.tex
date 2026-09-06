@@ -255,14 +255,32 @@ $\rightarrow$
 
 \section{关键技术与实现难点}
 
-项目的主要难点集中在三处。第一，Git、文档、测试日志和不同 Agent 会话格式差异很大，系统使用版本化 Schema 将它们统一为带来源引用的事件。第二，完整材料与隐私、上下文规模存在冲突，因此采用轻量索引、按需回读、流式解析和显式截断警告。第三，自然语言报告容易把合理猜测写成事实，LearnTrace 通过事实、候选和学生确认分层，并以结构校验、引用一致性检查和人工复核降低无依据叙述的风险；这些机制不能替代对自然语言语义的最终核查。
+\subsection{异构证据的统一语义}
+
+Git 记录文件树和差异，测试日志记录执行结果，文档表达项目目标，智能编码工具又使用不同的 JSON 或 JSONL 会话格式。项目以版本化 Schema 将这些材料统一为带稳定标识、事件类型、摘要、时间和来源引用的记录。各适配器只负责格式转换，不直接生成学习结论，从架构上避免解析层越权推断。
+
+\subsection{可追溯性与上下文规模的平衡}
+
+完整复制源码、聊天和工具输出会造成上下文膨胀和隐私风险。LearnTrace 采用“轻量索引 + 按需回读”：先生成完整可检索索引，仅在核验关键修改时读取有限行数或字节范围。长会话逐行流式解析，并对文件、单行、事件和警告数量设置上限；截断会形成结构化警告，不会被悄悄隐藏。
+
+\subsection{叙事质量与人机责任边界}
+
+仅靠模型自动撰写“学习收获”容易产生事后合理化。LearnTrace 先区分事实、候选和学生陈述，再通过结构校验、引用存在性检查和确认状态约束降低无依据叙述风险。ContractValidator 能检查可判定的契约错误，但不能证明每句自然语言都被引用证据完整支持；最终语义仍需学生或读者回到原始材料复核。
+
+\subsection{本地智能体的安全运行}
+
+本地服务使用回环监听、一次性令牌和 HttpOnly Cookie 保护接口；模型配置、对话元数据、项目产物和 API Key 分开存储。\texttt{run\_command} 命令守卫校验子命令、参数和项目写入范围，并提供超时、输出截断、取消及子进程清理。内置 \texttt{read/grep/find/ls} 是独立的只读工具，不经过同一命令守卫，因此系统明确将自身定位为有边界的本地工具，而不是完整操作系统沙箱。
+
+\subsection{可恢复交互与产物一致性}
+
+学习档案生成包含授权、工具调用、等待回答、继续分析和产物生成。作品通过 SQLite 会话状态、SSE 事件流、持久 Agent 会话、结构化问题卡片、项目写锁和不可变产物快照保持一致；刷新或重启后可以继续原会话，停止分析时则取消未完成问题并终止正在运行的任务。
 
 \section{作品创新点}
 
 \begin{enumerate}
-  \item \textbf{证据分层与学生确认。} 系统把事实、候选推断和学生陈述分开保存，不替学生判断已经学会了什么。
-  \item \textbf{多来源协作过程重建。} Git、文档、测试日志和三类编码 Agent 轨迹被统一为可检索事件，同时避免仅凭时间邻近制造因果关系。
-  \item \textbf{可回查的学习档案闭环。} 从授权、取证、追问到报告生成，关键内容保留来源；阅读档案与机器审计记录分层，兼顾可读性和复核需要。
+  \item \textbf{证据分层与学生共同确认。} 系统把事实、候选推断和学生陈述分开保存，把学生设计为档案共同作者，而不是被模型分析和评分的对象。
+  \item \textbf{隐私最小化的多来源过程重建。} Git、文档、测试日志和三类编码 Agent 轨迹被统一为可检索事件；确定性工具与模型解耦，既能离线复现，也避免仅凭时间邻近制造因果关系。
+  \item \textbf{面向长周期项目的可回查闭环。} 从授权、索引、按需取证、追问到报告生成，关键内容保留来源；稳定去重、内容指纹和不可变快照使阅读档案与机器审计记录可以相互核对。
 \end{enumerate}
 
 \section{典型使用流程}
@@ -308,11 +326,30 @@ $\rightarrow$
 
 工程侧建立了单元测试、集成测试、UI 测试和打包安装测试，覆盖静态解析、Git 导航、三类轨迹适配、隐私脱敏、Schema 校验、报告渲染、会话恢复、模型配置、命令守卫、进程取消与前端历史状态渲染等关键路径；同时使用 Ruff、Pyright、Pytest、TypeScript 类型检查和前端测试工具进行持续质量控制。系统对失败状态采取显式处理：缺失文件、未授权输入、格式错误、截断、无法识别的调用类型和未知执行状态都会形成可见结果或结构化警告。
 
-最近一次公开持续集成基线为 Git 提交 \texttt{8283589}。2026 年 9 月 6 日的 GitHub Actions 运行记录显示，Python 测试在 Ubuntu 和 Windows 上均为 \textbf{686 项通过、1 项跳过}，Ruff、Pyright、前端与 Agent 测试及构建、资源同步和 wheel 安装检查同时通过。运行记录：\url{https://github.com/constantinmay/learntrace-skill/actions/runs/34005218350}。本次材料定稿后的工作树又在 Windows 本地完成全量复测，结果为 \textbf{687 项通过、4 项因本机符号链接或环境条件跳过、0 项失败}，Ruff 与 Pyright 同样通过。公开基线与本地复测采用不同环境，不混写为同一份 CI 结果；这些工程检查也不替代对教学价值的案例观察和用户评价。
+最近一次公开持续集成基线为 Git 提交 \texttt{0af1135}。2026 年 9 月 6 日的 GitHub Actions 运行记录显示，Python 全量测试在 Ubuntu 和 Windows 上均为 \textbf{690 项通过、1 项跳过}，Web 测试 6 项通过，Agent 测试 81 项通过；Ruff、Pyright、前后端构建、资源同步和 wheel 检查同时通过。运行记录：\url{https://github.com/constantinmay/learntrace-skill/actions/runs/34011233296}。这些结果证明对应提交满足既定工程检查，但不替代对教学价值的案例观察和用户评价。
 
-\section{快速体验与使用边界}
+\begin{center}
+\small
+\begin{tabularx}{\textwidth}{>{\bfseries}p{0.19\textwidth}X X}
+\toprule
+验收层次 & 重点验证内容 & 代表性工具 \\
+\midrule
+代码与类型 & Python/TypeScript 格式、类型和静态缺陷 & Ruff、Pyright、TypeScript、ESLint \\
+功能行为 & 解析器、适配器、Schema、报告、Web 会话与 Agent 协议 & Pytest、Vitest \\
+集成链路 & 三类会话导入、归档闭环、授权边界和真实 Git 行为 & Python 集成测试 \\
+发布交付 & 前端/Agent 资源同步、wheel 构建与隔离安装 & Vite、Rolldown、uv、pip \\
+跨平台 & Windows 与 Linux 的路径、进程和打包行为 & GitHub Actions 双平台任务 \\
+\bottomrule
+\end{tabularx}
+\end{center}
 
-核心 CLI 需要 Python 3.11 或更高版本；使用自带 Web 智能体工作区还需要 Node.js 22.22.2 或更高版本。前端、Agent 服务和 Skill 均随 Python 包分发，最短启动流程为：
+\section{安装部署与快速体验}
+
+\subsection{运行条件}
+
+核心 CLI 需要 Python 3.11 或更高版本；仅使用宿主 Skill 时无需另装 Node.js，使用自带 Web 智能体工作区则需要 Node.js 22.22.2 或更高版本。前端静态资源、Agent 服务和 Skill 已随 Python 包分发，普通用户无需进入源码目录重新安装前端依赖。
+
+\subsection{最短使用路径}
 
 \begin{lstlisting}
 uv tool install .
@@ -320,7 +357,20 @@ learntrace --version
 learntrace ui <project-dir>
 \end{lstlisting}
 
-添加 AI 会话轨迹时必须逐份授权；LearnTrace 不主动扫描 Agent 历史目录，也不自动运行目标项目测试。机器审计档案可能包含本地来源索引，对外分享前应检查主档案，不应直接上传原始会话或未经检查的机器归档。当前版本主要支持 Git、Markdown/纯文本、常见测试日志和三类编码 Agent 会话格式；候选学习节点不是自动评分，最终叙述仍需学生确认和复核。
+页面打开后，用户依次完成模型设置、项目选择、材料范围确认、可选轨迹授权和结构化问题回答，即可查看学习档案。若只使用本地确定性管线，可以运行：
+
+\begin{lstlisting}
+learntrace discover <project-dir>
+learntrace run <project-dir>
+\end{lstlisting}
+
+\section{数据安全、适用边界与已知限制}
+
+添加 AI 会话轨迹时必须逐份授权；LearnTrace 不主动扫描 Claude Code、Codex 或 OpenCode 历史目录，也不自动运行目标项目测试。机器审计档案可能包含本地来源索引，应被视为敏感产物；对外分享前应检查经过脱敏的主档案，不应直接上传原始会话或未经检查的机器归档。
+
+当前版本主要支持 Git、Markdown/纯文本、常见测试日志和三类编码 Agent 会话格式；对 PDF、Word 等复杂二进制文档主要记录文件事实，不强行解释正文。“测试通过”必须来自用户已有日志，候选学习节点也不是自动评分，最终叙述仍需学生确认和复核。
+
+这些限制是有意的产品边界。课程评价涉及真实个人经历，系统宁可明确缺失证据，也不为得到更完整的报告而扩大读取范围、自动执行不可信代码或让模型补写未经确认的经历。
 
 \section{应用价值与后续发展}
 

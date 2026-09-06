@@ -122,6 +122,24 @@ def test_discovery_warning_does_not_expose_an_outside_absolute_path(
     assert str(outside.parent) not in serialized
 
 
+def test_discovery_excludes_generated_hidden_and_outside_requested_paths(tmp_path: Path) -> None:
+    (tmp_path / "notes.md").write_text("# Notes\n", encoding="utf-8")
+    (tmp_path / "learning-record.md").write_text("generated\n", encoding="utf-8")
+    (tmp_path / "custom-output.md").write_text("generated\n", encoding="utf-8")
+    (tmp_path / ".private.md").write_text("hidden\n", encoding="utf-8")
+
+    materials = discover_static_materials(
+        tmp_path,
+        excluded_paths=(Path("custom-output.md"), tmp_path.parent / "outside.md"),
+    )
+
+    assert materials.documents == (Path("notes.md"),)
+    assert set(materials.inventory.excluded_generated_artifacts) == {
+        "custom-output.md",
+        "learning-record.md",
+    }
+
+
 def test_discovery_lists_git_authors_of_a_real_repository(tmp_path: Path) -> None:
     (tmp_path / "src").mkdir()
     (tmp_path / "src" / "app.py").write_text("VALUE = 1\n", encoding="utf-8")
