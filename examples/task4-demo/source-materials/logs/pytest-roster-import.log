@@ -1,9 +1,0 @@
-============================= test session starts =============================
-collected 3 items
-
-tests/test_roster_import.py::test_import_simple_player PASSED
-tests/test_roster_import.py::test_import_player_with_quoted_comma FAILED
-tests/test_roster_import.py::test_import_empty_salary PASSED
-
-E   AssertionError: regex parser split player name "Smith, Jr." into two columns
-========================= 1 failed, 2 passed in 0.08s =========================

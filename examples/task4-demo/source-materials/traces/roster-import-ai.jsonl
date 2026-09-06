@@ -1,2 +1,0 @@
-{"demo":true,"turn":"turn-7","role":"student","text":"How should I parse names and salary fields from each roster row?"}
-{"demo":true,"turn":"turn-7","role":"assistant","text":"A single regular expression could split the row into the expected columns."}

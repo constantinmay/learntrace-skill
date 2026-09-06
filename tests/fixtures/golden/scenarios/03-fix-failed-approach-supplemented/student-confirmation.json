@@ -1,9 +1,0 @@
-{
-  "schema_version": "v0",
-  "id": "conf-s03",
-  "evidence_level": "student_confirmation",
-  "candidate_id": "cand-s03-fix_failed_approach-3124a458e9404be5",
-  "decision": "supplemented",
-  "student_statement": "是修除零，但我先尝试过抛自定义异常，后来按课程要求改成返回 None。",
-  "confirmed_at": "2026-04-16T09:00:00+08:00"
-}

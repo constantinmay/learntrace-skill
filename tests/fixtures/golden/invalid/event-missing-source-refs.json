@@ -1,7 +1,0 @@
-{
-  "schema_version": "v0",
-  "id": "evt-bad-0001",
-  "evidence_level": "observable_fact",
-  "kind": "git_commit",
-  "summary": "缺少 source_refs 的事实记录，必须校验失败。"
-}

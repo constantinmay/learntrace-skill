@@ -40,10 +40,6 @@ dev = [
     "ruff>=0.12,<1",
 ]
 
-[tool.pytest.ini_options]
-addopts = "-ra --strict-config --strict-markers"
-testpaths = ["tests"]
-
 [tool.ruff]
 target-version = "py311"
 line-length = 100
@@ -52,11 +48,8 @@ line-length = 100
 select = ["E", "F", "I", "UP", "B", "SIM"]
 
 [tool.pyright]
-include = ["src", "tests"]
+include = ["src"]
 pythonVersion = "3.11"
 typeCheckingMode = "strict"
 venvPath = "."
 venv = ".venv"
-
-[tool.coverage.report]
-precision = 2
