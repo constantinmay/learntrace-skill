@@ -23,6 +23,13 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: |
+            web/package-lock.json
+            agent/package-lock.json
       - uses: astral-sh/setup-uv@v6
         with:
           enable-cache: true
@@ -30,6 +37,12 @@ jobs:
         run: uv lock --check
       - name: Install development environment
         run: uv sync --locked --group dev
+      - name: Install frontend dependencies
+        working-directory: web
+        run: npm ci
+      - name: Install Agent service dependencies
+        working-directory: agent
+        run: npm ci
       - name: Ensure wheel tests have pip
         run: uv pip install pip
       - name: Ruff
@@ -40,6 +53,18 @@ jobs:
         run: uv run pyright
       - name: Full test suite
         run: uv run pytest
+      - name: Frontend lint, test and build
+        working-directory: web
+        run: npm run lint && npm test && npm run build
+      - name: Agent typecheck, test and build
+        working-directory: agent
+        run: npm run typecheck && npm test && npm run build
+      - name: Verify packaged frontend is current
+        run: git diff --exit-code -- src/learntrace/ui/static
+      - name: Verify packaged Agent service is current
+        run: git diff --exit-code -- src/learntrace/ui/agent-service.mjs
+      - name: Verify packaged Skill is unchanged
+        run: uv run python scripts/sync_ui_skill.py --check
       - name: Task 2 coverage gate
         run: >-
           uv run pytest tests/unit/parsers tests/integration/test_static_parser_flow.py

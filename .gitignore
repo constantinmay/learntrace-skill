@@ -12,6 +12,9 @@ __pycache__/
 # Test and analysis caches
 .pytest_cache/
 .pytest-tmp/
+.pytest-*/
+.tmp-pytest-*/
+tests/.pytest-*/
 .ruff_cache/
 .mypy_cache/
 .coverage
@@ -21,8 +24,18 @@ htmlcov/
 # Build outputs
 build/
 dist/
+.verify-wheel-*/
 *.egg-info/
 examples/task4-demo/out/
+web/node_modules/
+agent/node_modules/
+agent/dist/
+web/coverage/
+web/playwright-report/
+web/test-results/
+web/*.tsbuildinfo
+web/vite.config.js
+web/vite.config.d.ts
 
 # Environment and secrets
 .env

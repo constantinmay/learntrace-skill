@@ -67,6 +67,7 @@ _COMMANDS = frozenset(
         "parse",
         "render-narrative",
         "run",
+        "ui",
         "verify-narrative",
     }
 )
@@ -139,6 +140,16 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     subparsers = parser.add_subparsers(dest="command", required=True)
+
+    ui_parser = subparsers.add_parser("ui", help="Open the local LearnTrace Agent workspace.")
+    ui_parser.add_argument("project_dir", nargs="?", type=Path, default=Path.cwd())
+    ui_parser.add_argument("--host", default="127.0.0.1", help="Loopback address only.")
+    ui_parser.add_argument(
+        "--port", type=int, default=0, help="Local port (0 selects a free port)."
+    )
+    ui_parser.add_argument(
+        "--no-open", action="store_true", help="Do not open a browser automatically."
+    )
 
     parse_parser = subparsers.add_parser("parse", help="Produce Task 2 events JSON.")
     _add_parse_options(parse_parser)
@@ -526,6 +537,15 @@ def _merge_trace_results(
 
 def _run_command(args: argparse.Namespace, parser: argparse.ArgumentParser) -> int:
     try:
+        if args.command == "ui":
+            from learntrace.ui.server import run_ui
+
+            return run_ui(
+                args.project_dir,
+                host=args.host,
+                port=args.port,
+                open_browser=not args.no_open,
+            )
         if args.command == "discover":
             discovered = discover_static_materials(args.project_dir.resolve())
             inventory = discovered.inventory

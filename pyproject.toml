@@ -5,8 +5,14 @@ description = "Build traceable learning portfolios from AI-assisted course proje
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
+    "fastapi>=0.115,<1",
+    "httpx>=0.28,<1",
     "jsonschema>=4.23,<5",
+    "keyring>=25.6,<26",
+    "platformdirs>=4.3,<5",
     "rfc3339-validator>=0.1.4,<1",
+    "uvicorn>=0.30,<1",
+    "watchfiles>=1.0,<2",
 ]
 
 [project.scripts]
