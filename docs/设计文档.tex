@@ -520,7 +520,21 @@ learntrace discover <project-dir>
 learntrace run <project-dir>
 \end{lstlisting}
 
-作为宿主 Skill 使用时，将 Skill 安装到宿主支持的目录，并确保 \texttt{learntrace} CLI 可执行。宿主负责模型登录与会话权限，LearnTrace 不要求用户为 CLI 配置远程模型。
+\subsection{在 Claude Code 中直接使用}
+
+LearnTrace 可以直接安装为 Claude Code Skill，不需要经过自带 Web 工作区。首先确保 \texttt{learntrace} CLI 已安装并在 \texttt{PATH} 中，再将完整的 \texttt{skills/learntrace/} 目录（包括 \texttt{references/}）复制到项目级 \texttt{.claude/skills/learntrace/}，或用户级 \texttt{\textasciitilde/.claude/skills/learntrace/}。项目级安装只对当前项目生效，用户级安装可供本机所有 Claude Code 项目发现。首次创建 Skill 根目录后若未立即识别，重启一次 Claude Code 即可。
+
+进入待分析项目后，用户可以直接调用：
+
+\begin{lstlisting}
+/learntrace 请分析当前项目中的开发证据，生成可追溯学习档案。
+\end{lstlisting}
+
+Claude Code 提供模型连接、对话和工具审批，LearnTrace CLI 承担本地材料发现、解析、脱敏、候选生成、契约校验和档案落盘。两者之间没有第二套远程模型调用，因此仅使用宿主 Skill 时无需为 LearnTrace CLI 配置 API Key，也无需安装 Node.js。
+
+需要特别区分“运行 Skill”和“导入 Claude Code 历史会话”。调用 \texttt{/learntrace} 不会授权系统读取历史目录；只有在学生希望把 AI 协作过程纳入档案时，才需要自行复制指定会话 JSONL，并通过 \texttt{--claude-code-export} 和 \texttt{--authorize-claude-code-export} 对同一文件显式授权。未提供或未授权时，系统仍可仅依据 Git、项目文档和已有测试日志生成档案。
+
+OpenCode 的安装逻辑相同，但使用项目级 \texttt{.opencode/skills/learntrace/} 或用户级 \texttt{\textasciitilde/.config/opencode/skills/learntrace/}，并通过 \texttt{\$learntrace} 调用。宿主始终负责模型登录、会话权限和最终工具审批；Skill 是可审阅的工作流约束，不替代宿主权限系统或操作系统沙箱。
 
 \subsection{开发构建}
 

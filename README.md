@@ -38,17 +38,48 @@ uv tool install .
 learntrace --version
 ```
 
-然后将 `skills/learntrace/` 放入 OpenCode 的项目级
-`.opencode/skills/learntrace/` 或全局 `~/.config/opencode/skills/learntrace/`。
-只复制 Skill 目录不会自动安装 Python CLI。OpenCode 当前的 Skill 发现路径参见
-[官方 Agent Skills 文档](https://opencode.ai/docs/skills)。
+然后将完整的 `skills/learntrace/` 目录放入所用宿主的 Skill 发现目录。只复制
+`SKILL.md` 或只安装 Skill 都不会自动安装 Python CLI。
+
+| 宿主 | 项目级目录 | 用户级目录 | 调用方式 |
+| --- | --- | --- | --- |
+| Claude Code | `.claude/skills/learntrace/` | `~/.claude/skills/learntrace/` | `/learntrace` |
+| OpenCode | `.opencode/skills/learntrace/` | `~/.config/opencode/skills/learntrace/` | `$learntrace` |
+
+Claude Code 和 OpenCode 当前的发现规则分别参见
+[Claude Code Skills 文档](https://code.claude.com/docs/en/skills)与
+[OpenCode Agent Skills 文档](https://opencode.ai/docs/skills)。
 
 LearnTrace 有两种并列入口。把 Skill 安装到 Codex、Claude Code、OpenCode 等宿主
 Agent 时，模型登录、API 和交互界面均由宿主 Agent 管理，只需要 Python 3.11+
 和 LearnTrace CLI，不需要 LearnTrace UI、Pi CLI 或 Node.js。`learntrace ui` 是可选的
 本地 Web 产品入口，供希望直接使用 LearnTrace 自带交互界面的用户选择。
 
-## 推荐使用方式
+## 在 Claude Code 中直接使用
+
+Windows 用户可以把 Skill 安装到个人目录，使所有项目都能调用：
+
+```powershell
+New-Item -ItemType Directory -Force "$env:USERPROFILE\.claude\skills\learntrace"
+Copy-Item ".\skills\learntrace\*" `
+  "$env:USERPROFILE\.claude\skills\learntrace" -Recurse -Force
+```
+
+也可以只复制到待分析项目的 `.claude/skills/learntrace/`，把 Skill 限定在该项目。
+首次创建 `.claude/skills/` 后若 Claude Code 没有立即发现 Skill，重新启动一次
+Claude Code。随后在待分析项目中直接输入：
+
+```text
+/learntrace 请分析当前项目中的开发证据，生成可追溯学习档案。
+```
+
+Claude Code 负责模型连接、自然语言交互和工具审批；`learntrace` CLI 负责本地的
+发现、解析、脱敏、候选生成、校验和档案落盘。正常调用 Skill 不会自动读取
+Claude Code 的历史会话。若要把某个会话作为学习证据，必须另行复制对应 JSONL
+文件，并通过 `--authorize-claude-code-export` 对该文件显式授权；详见
+[Claude Code 轨迹适配器说明](docs/claude-code-adapter.md)。
+
+## 在 OpenCode 中直接使用
 
 在待分析项目中启动 OpenCode，并要求它使用 `$learntrace`。Skill 会先检查 CLI，
 再用一次 `learntrace discover` 展示候选 Git、文档和测试日志范围；学生确认前，

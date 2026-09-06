@@ -1,5 +1,19 @@
 # Claude Code 轨迹适配器交接说明
 
+## 两种能力不要混淆
+
+LearnTrace 可以作为 Claude Code Skill 直接运行，也可以在用户授权后把 Claude Code
+历史会话作为学习证据导入。这是两种相互独立的能力：
+
+- 直接运行：把 `skills/learntrace/` 安装到项目级
+  `.claude/skills/learntrace/` 或个人级 `~/.claude/skills/learntrace/`，确保
+  `learntrace` CLI 在 `PATH` 中，然后在项目内输入 `/learntrace`；
+- 导入历史：仅当用户希望档案反映 AI 协作过程时，才提供会话 JSONL，并对每个
+  文件单独授权。
+
+调用 `/learntrace` 本身不构成历史会话授权，Skill 也不会自动扫描 Claude Code
+的历史目录。完整安装和直用步骤见根目录 [README](../README.md)。
+
 ## 输入方式
 
 Claude Code 会把每个会话保存为本地 JSONL 文件（通常位于

@@ -364,6 +364,14 @@ learntrace discover <project-dir>
 learntrace run <project-dir>
 \end{lstlisting}
 
+作品也可直接安装到 Claude Code：在安装 CLI 后，将完整的 \texttt{skills/learntrace/} 目录复制到项目内的 \texttt{.claude/skills/learntrace/}，或个人目录 \texttt{\textasciitilde/.claude/skills/learntrace/}，随后在待分析项目中输入：
+
+\begin{lstlisting}
+/learntrace 请分析当前项目并生成可追溯学习档案。
+\end{lstlisting}
+
+此时模型、对话与工具审批由 Claude Code 提供，LearnTrace 只调用本地确定性 CLI，不要求另配模型 API，也不需要 Node.js。直接调用 Skill 不会读取 Claude Code 历史；只有学生希望把 AI 协作过程作为证据时，才需自行复制指定会话 JSONL，并对该文件显式授权。未授权会话不影响 Git、项目文档和已有测试日志的正常分析。
+
 \section{数据安全、适用边界与已知限制}
 
 添加 AI 会话轨迹时必须逐份授权；LearnTrace 不主动扫描 Claude Code、Codex 或 OpenCode 历史目录，也不自动运行目标项目测试。机器审计档案可能包含本地来源索引，应被视为敏感产物；对外分享前应检查经过脱敏的主档案，不应直接上传原始会话或未经检查的机器归档。
