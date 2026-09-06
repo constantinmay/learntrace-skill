@@ -1,9 +1,0 @@
-{
-  "schema_version": "v0",
-  "id": "conf-0001",
-  "evidence_level": "student_confirmation",
-  "candidate_id": "cand-0001",
-  "decision": "confirmed",
-  "student_statement": "是的，我先看到空行用例失败，再给解析函数加了空行跳过逻辑。",
-  "confirmed_at": "2026-03-02T20:41:00+08:00"
-}

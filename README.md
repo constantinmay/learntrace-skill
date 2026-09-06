@@ -7,27 +7,7 @@ LearnTrace 是一个面向 AI 辅助课程项目的学习档案 Skill。它从�
 ## 当前状态
 
 项目已完成统一 CLI 与 OpenCode Skill 的隔离端到端联调：可以从项目仓库
-生成 Task 2 证据、可选接入经授权的 Task 3 轨迹，并产出学习档案。详细范围
-参见 [项目陈述](docs/project-statement.md) 和 [团队工作计划](docs/team-workplan.md)。
-
-## 开发环境
-
-- Python 3.11
-- `uv`：Python 版本、虚拟环境、依赖与锁文件管理
-- Ruff：代码检查与格式化
-- Pyright：静态类型检查
-- Pytest：测试
-- pre-commit：提交前质量检查
-
-安装依赖并运行检查：
-
-```powershell
-uv sync --dev --locked
-uv run ruff check .
-uv run ruff format --check .
-uv run pyright
-uv run pytest
-```
+生成 Task 2 证据、可选接入经授权的 Task 3 轨迹，并产出学习档案。
 
 ## 用户安装
 
@@ -76,8 +56,7 @@ Claude Code。随后在待分析项目中直接输入：
 Claude Code 负责模型连接、自然语言交互和工具审批；`learntrace` CLI 负责本地的
 发现、解析、脱敏、候选生成、校验和档案落盘。正常调用 Skill 不会自动读取
 Claude Code 的历史会话。若要把某个会话作为学习证据，必须另行复制对应 JSONL
-文件，并通过 `--authorize-claude-code-export` 对该文件显式授权；详见
-[Claude Code 轨迹适配器说明](docs/claude-code-adapter.md)。
+文件，并通过 `--authorize-claude-code-export` 对该文件显式授权。
 
 ## 在 OpenCode 中直接使用
 
@@ -176,33 +155,6 @@ Pi 会话记录，而不是用几条网页消息伪造上下文。Task 4 的项�
 learntrace ui <project-dir> --no-open
 ```
 
-### 从源码启动与验收
-
-在 LearnTrace 仓库内开发或验收 Web 界面时，先准备 Python 与前端依赖：
-
-```powershell
-uv sync --locked
-cd web; npm ci; npm run build
-cd ..; cd agent; npm ci; npm run build
-```
-
-`web` 的构建把页面写入 `src/learntrace/ui/static/`，`agent` 的构建重新打包
-`src/learntrace/ui/agent-service.mjs`；两者都是随 Python 包分发的产物，改动
-`web/src` 或 `agent/src` 后需要重新构建，只改源码不会反映到界面。从源码启动：
-
-```powershell
-uv run python -m learntrace ui <project-dir>
-```
-
-需要 Node.js 22.22.2 或更高版本；启动行为与安装版 `learntrace ui` 一致。
-前后端热更新联调时，让后端固定监听 `8765`，再启动 `vite` 开发服务器（其把
-`/api`、`/auth` 代理到 `http://127.0.0.1:8765`）：
-
-```powershell
-uv run python -m learntrace ui <project-dir> --port 8765 --no-open
-cd web; npm run dev
-```
-
 ### 模型服务偏慢时的判断
 
 分析中感觉“慢”时，先区分慢在模型服务还是本地产品：点击「测试连接」发起一次
@@ -289,8 +241,7 @@ Agent 一次读入全部内容；Agent 应先检索索引，再按提交和文�
 - `.learntrace/learning-questions.md`：只保存需要学生本人确认、补充或否认
   的问题。
 
-授权轨迹如何按工作过程确定性分段、怎样归类命令，见
-[AI 轨迹分段说明](docs/trace-segmentation.md)。
+授权轨迹会按工作过程确定性分段，并按命令归类。
 
 如需纳入 OpenCode 轨迹，首次运行时显式提供导出与授权：
 
@@ -326,8 +277,7 @@ learntrace run <project-dir> `
 
 三个宿主可以在同一次 `run` 中组合，事件合并进同一份机器档案并按稳定 ID 去重。
 JSONL 会话采用逐行流式解析：单文件上限 256 MiB、单行 16 MiB、单会话事件 2000 条、
-合并总量 10000 条，超出部分按时间保留最早事件并记录截断警告。详见
-[Claude Code 适配器](docs/claude-code-adapter.md)和[Codex 适配器](docs/codex-adapter.md)。
+合并总量 10000 条，超出部分按时间保留最早事件并记录截断警告。
 
 学生填写独立确认文件后，第二次运行直接使用首次保存的事实和候选快照，
 不会重新解析轨迹或调用 LLM：
@@ -389,32 +339,11 @@ SHA-256 指纹的审计清单，CLI 同时输出该指纹与记录数量。
 ## 目录结构
 
 ```text
-src/learntrace/        Python 包与 CLI
-src/learntrace/schemas/v0/  随 Python 包发布的 schema v0 数据契约
-skills/learntrace/     可安装 Skill
-tests/unit/            单元测试
-tests/contract/        Schema 与金标样例回归
-tests/integration/     跨模块联调测试
-tests/fixtures/        脱敏测试材料
-examples/              可公开演示项目
-docs/                  项目说明与架构文档
-local/                 不进入 Git 的本地材料
+src/learntrace/             Python 包与 CLI（含随包发布的 UI 静态资源）
+src/learntrace/schemas/v0/  schema v0 数据契约
+skills/learntrace/          可安装 Skill
 ```
 
-开始编写 Python 功能前，请先阅读 [`src/README.md`](src/README.md) 中的模块边界和开发示例。
-
-## 分支与协作
-
-`main` 是唯一长期分支，禁止直接推送。每项工作从最新 `main` 创建短分支，通过 PR 审核和测试后合并并删除。
-
-初始任务分支建议：
-
-- `feature/schema-v0`
-- `feature/static-parser`
-- `feature/opencode-adapter`
-- `feature/portfolio-skill`
-
-更多约定参见 [CONTRIBUTING.md](CONTRIBUTING.md)。
 
 ## 隐私
 
