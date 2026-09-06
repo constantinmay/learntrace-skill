@@ -33,6 +33,10 @@ HASH_ALGORITHM = "sha256"
 MAX_CANDIDATES = 10
 _MAX_CROSS_SESSION_GAP_SECONDS = 24 * 60 * 60
 _OPENCODE_SESSION_RE = re.compile(r"^trace://opencode/(?P<session>[^/]+)/")
+_TEST_FAILURE_COUNT_RE = re.compile(
+    r"(?:(?P<zh>\d+)\s*个(?:失败|错误)|(?P<en>\d+)\s+(?:failed|errors?)\b)",
+    re.IGNORECASE,
+)
 
 _CONSTRAINT_TERMS = (
     "等级制",
@@ -306,13 +310,25 @@ class StubCandidateInferencer:
                     continue
                 drafts.append(self._fix_failed_candidate(failing_log, commit))
 
-        # Added tests: a test-addition commit followed by a test log.
+        # Added tests: select at most one topically related successful log per
+        # test-addition commit. A generic later log is not evidence that the
+        # newly added cases ran, and a failing log cannot support "passed".
+        passing_logs = tuple(log for log in test_logs if _is_success(log.summary))
         for commit in commits:
             if not _looks_like_test_addition(commit):
                 continue
-            for test_log in test_logs:
-                if precedes(commit, test_log):
-                    drafts.append(self._add_tests_candidate(commit, test_log))
+            matches = (
+                (_test_log_match_score(commit.summary, test_log.summary), test_log)
+                for test_log in passing_logs
+                if precedes(commit, test_log)
+            )
+            best_score, best_log = max(
+                matches,
+                key=lambda item: (item[0], item[1].id),
+                default=(0, None),
+            )
+            if best_score > 0 and best_log is not None:
+                drafts.append(self._add_tests_candidate(commit, best_log))
 
         # Constraint/design changes: retain only the strongest topical document
         # match for each commit. Temporal plausibility alone is insufficient:
@@ -459,7 +475,10 @@ class StubCandidateInferencer:
                 node_type=NodeType.ADD_TESTS,
                 statement="学生可能主动补充了边界或缺失输入测试。",
                 basis_event_ids=(commit.id, test_log.id),
-                uncertainty="低：提交内容即为新测试文件且全部通过，意图明确。",
+                uncertainty=(
+                    "中：提交明确新增测试，后续成功日志与提交主题相关；"
+                    "日志是否覆盖这些新增用例仍需学生确认。"
+                ),
                 question_to_student="这些边界或缺失输入用例是你主动识别并补充的吗？",
             )
 
@@ -467,7 +486,10 @@ class StubCandidateInferencer:
             node_type=NodeType.ADD_TESTS,
             statement="学生可能在实现功能后补充了新的测试用例。",
             basis_event_ids=(commit.id, test_log.id),
-            uncertainty="低：测试新增与通过日志直接对应。",
+            uncertainty=(
+                "中：提交明确新增测试，后续成功日志与提交主题相关；"
+                "日志是否覆盖这些新增用例仍需学生确认。"
+            ),
             question_to_student="这些新增测试是否由你主动识别并补充？",
         )
 
@@ -590,8 +612,28 @@ def _event_sort_key(event: ObservableEvent) -> tuple[str, str]:
 
 
 def _is_failure(summary: str) -> bool:
+    counts = [
+        int(match.group("zh") or match.group("en"))
+        for match in _TEST_FAILURE_COUNT_RE.finditer(summary)
+    ]
+    if any(count > 0 for count in counts):
+        return True
 
-    return "失败" in summary or "error" in summary.lower()
+    # Remove explicit zero counts before looking for other failure signals, so
+    # "0 failed" remains successful while "0 failed, collection error" does not.
+    remainder = _TEST_FAILURE_COUNT_RE.sub("", summary)
+    lowered = remainder.casefold()
+    return (
+        "失败" in remainder
+        or "错误" in remainder
+        or re.search(r"\b(?:error|failure|failed)\b", lowered) is not None
+    )
+
+
+def _is_success(summary: str) -> bool:
+    if _is_failure(summary):
+        return False
+    return "通过" in summary or re.search(r"\bpassed\b", summary, re.IGNORECASE) is not None
 
 
 class TemporalPlausibility(Enum):
@@ -701,6 +743,24 @@ def _topic_match_score(first: str, second: str) -> int:
 
 def _topics_related(first: str, second: str) -> bool:
     return _topic_match_score(first, second) > 0
+
+
+def _test_log_match_score(commit_summary: str, log_summary: str) -> int:
+    """Score project-specific overlap without generic testing vocabulary."""
+
+    if "新增" in log_summary and "用例" in log_summary:
+        return 1
+    lowered_log = log_summary.casefold()
+    if re.search(r"\bnew\b.*\btests?\b.*\bpassed\b", lowered_log) is not None:
+        return 1
+    shared_families = (_semantic_topics(commit_summary) & _semantic_topics(log_summary)) - {
+        "testing"
+    }
+    generic_test_terms = {"test", "tests", "pytest", "passed", "passing"}
+    shared_terms = (
+        _lexical_topics(commit_summary) & _lexical_topics(log_summary)
+    ) - generic_test_terms
+    return len(shared_families) * 10 + len(shared_terms)
 
 
 def _contains_change_marker(summary: str) -> bool:

@@ -1,0 +1,549 @@
+\documentclass[UTF8,a4paper,12pt]{ctexart}
+
+\usepackage[a4paper,left=2.5cm,right=2.5cm,top=2.4cm,bottom=2.5cm]{geometry}
+\usepackage{booktabs}
+\usepackage{array}
+\usepackage{enumitem}
+\usepackage{xcolor}
+\usepackage{hyperref}
+\usepackage{fancyhdr}
+\usepackage{microtype}
+\usepackage{longtable}
+\usepackage{tabularx}
+\usepackage{listings}
+
+\definecolor{LearnTraceBlue}{RGB}{30,83,120}
+\definecolor{LearnTraceGray}{RGB}{90,98,108}
+\definecolor{LearnTraceLight}{RGB}{238,245,247}
+
+\hypersetup{
+  colorlinks=true,
+  linkcolor=LearnTraceBlue,
+  urlcolor=LearnTraceBlue,
+  pdfauthor={LearnTrace 项目组},
+  pdftitle={LearnTrace 设计文档}
+}
+
+\setlength{\parindent}{2em}
+\setlength{\parskip}{0.35em}
+\setlist[itemize]{leftmargin=2.2em,itemsep=0.25em,topsep=0.35em}
+\setlist[enumerate]{leftmargin=2.4em,itemsep=0.25em,topsep=0.35em}
+\renewcommand{\arraystretch}{1.35}
+\setcounter{tocdepth}{2}
+\lstset{
+  basicstyle=\ttfamily\small,
+  columns=fullflexible,
+  frame=single,
+  rulecolor=\color{LearnTraceGray!35},
+  backgroundcolor=\color{LearnTraceLight},
+  breaklines=true,
+  showstringspaces=false,
+  xleftmargin=0.5em,
+  xrightmargin=0.5em
+}
+
+\pagestyle{fancy}
+\fancyhf{}
+\fancyhead[L]{\small LearnTrace 设计文档}
+\fancyhead[R]{\small 可追溯学习档案智能体}
+\fancyfoot[C]{\thepage}
+\setlength{\headheight}{15pt}
+
+\title{\vspace{-1.4cm}\textbf{LearnTrace：面向 AI 辅助课程项目的\\可追溯学习档案智能体}\\[0.7em]
+\large 设计文档}
+\author{LearnTrace 项目组}
+\date{2026 年 9 月}
+
+\begin{document}
+
+\maketitle
+\thispagestyle{fancy}
+
+\begin{center}
+\small
+\begin{tabular}{rl}
+\textbf{项目版本：} & LearnTrace 0.1.0 \\
+\textbf{文档版本：} & 参赛提交版 \\
+\textbf{项目仓库：} & \url{https://github.com/constantinmay/learntrace-skill} \\
+\textbf{最后更新：} & 2026 年 9 月 6 日
+\end{tabular}
+\end{center}
+
+\begin{abstract}
+LearnTrace 是一套面向 AI 辅助课程项目的本地学习档案智能体。项目的出发点不是继续判断学生是否使用了 AI，而是帮助学生和教师看见使用 AI 过程中真实发生的学习：学生怎样提出问题、检查建议、调整方案、修复失败并验证结果。系统在用户授权后读取 Git、项目文档、已有测试日志以及可选的 AI 编码工具会话导出，将异构材料转换为带来源引用的事实，提出有依据但可被质疑的候选学习节点，再由学生确认、补充或否认，最终生成可阅读的 Markdown 学习档案和可审计的机器记录。
+
+本文说明作品的设计目标、系统架构、功能模块、数据契约、关键流程、模型与 API 边界、安全与隐私机制、工程验收方法及技术难点。设计的核心不是让模型自由撰写一份“看起来合理”的成长故事，而是让每项重要叙述都能够回到原始材料，并把关于个人学习的最终解释权交还给学生。
+\end{abstract}
+
+\noindent\textbf{关键词：}AI 辅助学习；学习档案；智能体；证据追溯；学生确认；隐私保护
+
+\clearpage
+\tableofcontents
+\clearpage
+
+\section{设计背景与核心理念}
+
+\subsection{问题背景}
+
+AI 编码工具已经能够参与需求理解、方案讨论、代码修改、调试和测试。学生是否使用 AI，越来越难通过最终代码可靠判断，也不应成为唯一的评价焦点。一个学生可能使用了大量 AI 输出却没有理解，也可能通过与 AI 的多轮讨论发现问题、拒绝错误建议并形成新的认识。仅用“使用”或“未使用”两个标签，无法表达这些差异。
+
+真实的学习过程通常散落在不同材料中：任务书说明最初目标，设计文档记录约束，Git 保存代码演进，测试日志记录失败与验证，Agent 会话则保留人机协作触点。课程结束时，学生往往需要重新翻找大量材料，教师则只能看到整理后的最终结果。LearnTrace 希望补上从“项目痕迹”到“学习说明”之间的这一层。
+
+\subsection{核心理念}
+
+本项目不执着于分辨学生是否使用 AI，而是关注学生\textbf{从使用 AI 的过程中学到了什么}。这一理念在系统中对应五项设计原则：
+
+\begin{enumerate}
+  \item \textbf{AI 使用透明化。} 不把 AI 参与视为需要隐藏的行为，允许学生如实说明它在项目中的作用。
+  \item \textbf{证据优先。} 先回答“发生了什么”，再讨论“为什么发生”和“学到了什么”。
+  \item \textbf{学生拥有解释权。} 系统只能提出候选学习节点，不能替学生宣布已经掌握某项知识。
+  \item \textbf{最小化收集。} 为完成复盘而读取必要材料，不以“分析更全面”为由默认收集完整聊天和源码。
+  \item \textbf{过程可核验。} 学习档案中的关键内容保留来源，读者可以回到提交、文档、日志或授权轨迹进行检查。
+\end{enumerate}
+
+\subsection{明确不做的事情}
+
+为避免产品目标在实现过程中偏移，LearnTrace 明确不承担以下任务：
+
+\begin{itemize}
+  \item 不检测作业是否由 AI 生成，不计算所谓“AI 含量”；
+  \item 不根据 Git 作者、聊天用户或文件修改推断个人贡献比例；
+  \item 不输出学习能力分数、贡献排名或自动评分；
+  \item 不执行待分析仓库中的代码、测试或日志命令；
+  \item 不把时间相邻或文件路径相同直接解释为因果关系；
+  \item 不把系统候选、模型总结或缺失信息写成学生的个人陈述。
+\end{itemize}
+
+\section{使用场景与需求分析}
+
+\subsection{目标用户}
+
+主要用户是使用 AI 编码工具完成课程项目、科研训练或个人开发项目的学生。次要读者包括教师、助教、导师和项目评审。学生负责选择材料、授权轨迹、确认候选和决定分享范围；教师或评审读取经过学生检查的学习档案，而不是直接接触全部本地会话和机器归档。
+
+\subsection{典型场景}
+
+\begin{enumerate}
+  \item \textbf{课程项目结束后的复盘。} 学生选择项目目录，系统整理项目目标、阶段变化、测试证据和待确认的学习节点。
+  \item \textbf{AI 协作过程说明。} 学生主动提供 OpenCode、Claude Code 或 Codex 会话文件，说明 AI 在哪些环节参与，以及自己如何处理建议。
+  \item \textbf{答辩材料准备。} 学生从档案中找到有来源支持的关键决策、失败修复和验证过程，用于报告与答辩。
+  \item \textbf{无轨迹降级使用。} 即使没有 AI 会话，系统仍可根据 Git、文档和已有测试日志生成普通项目复盘，并明确标注 AI 协作信息未记录。
+\end{enumerate}
+
+\subsection{功能需求}
+
+\begin{center}
+\small
+\begin{tabularx}{\textwidth}{>{\bfseries}p{0.17\textwidth}X p{0.25\textwidth}}
+\toprule
+需求类别 & 具体要求 & 验收结果 \\
+\midrule
+材料发现 & 在不读取正文的前提下列出候选仓库、文档和日志，等待用户确认范围 & 可通过 CLI 或 Web 完成发现与确认 \\
+静态解析 & 读取 Git、Markdown/文本和已有测试日志，生成统一事实 & 每条事实包含可回查来源 \\
+轨迹适配 & 支持三类编码 Agent 会话，逐文件授权并稳定去重 & 未授权文件不会被读取或隐式导入 \\
+候选生成 & 从失败修复、测试补充、约束调整等证据中提出候选 & 候选必须携带依据和不确定性 \\
+学生确认 & 支持确认、补充、否认和暂不回答 & 确认记录与系统候选分离保存 \\
+档案输出 & 同时生成阅读档案、问题清单和机器审计记录 & 人类叙事与完整审计信息分层 \\
+产品交互 & 提供 CLI、宿主 Skill 和本地 Web 工作区 & 普通用户无需启动多个开发服务 \\
+\bottomrule
+\end{tabularx}
+\end{center}
+
+\subsection{非功能需求}
+
+系统需要满足可追溯、可复现、隐私最小化、本地优先、跨平台和故障可见六类非功能需求。核心 CLI 在离线环境中仍能运行；同一输入应得到稳定结果；长历史和大文件必须有明确上限；所有截断、跳过和格式异常都应形成警告，不得静默伪造完整结果。
+
+\section{总体技术架构}
+
+\subsection{架构选择}
+
+LearnTrace 采用“\textbf{本地确定性证据工具链 + 单智能体交互层}”的组合架构。确定性程序负责可以被规则化和测试的工作，包括文件发现、解析、脱敏、索引、Schema 校验、候选约束和报告落盘；智能体负责理解自然语言、按 Skill 编排工具、解释结构化证据并提出追问。
+
+我们没有把所有步骤都交给大模型，也没有串联多个模型分别抽取、判断和写作。原因是学习档案涉及真实个人经历，模型链越长，事实来源越难追踪，错误也越容易在中间阶段被放大。单智能体与本地工具的边界更清楚：模型能够改善交互，但不能修改证据等级。
+
+\subsection{逻辑分层}
+
+\begin{center}
+\small
+\begin{tabularx}{\textwidth}{>{\bfseries\color{LearnTraceBlue}}p{0.17\textwidth}p{0.29\textwidth}X}
+\toprule
+层次 & 主要组件 & 职责 \\
+\midrule
+交互层 & React Web、宿主 Agent、CLI & 接收项目选择、授权、追问回答和模型设置，展示流式状态与档案 \\
+智能体编排层 & LearnTrace Skill、Pi SDK Agent 服务 & 理解用户请求，选择受控工具，组织证据和问题 \\
+应用服务层 & FastAPI、SSE、会话存储、产物监视 & 管理认证、会话生命周期、并发、恢复和产物快照 \\
+证据处理层 & parsers、adapters、privacy、evidence & 解析静态材料和授权轨迹，建立索引并完成脱敏 \\
+学习档案层 & reporting、archive、narrative & 生成候选、应用学生确认、校验叙事并渲染档案 \\
+契约层 & models、Schema v0、金标样例 & 约束跨模块数据结构和证据等级 \\
+存储层 & 项目目录、.learntrace、SQLite、系统凭据库 & 分离公开报告、机器记录、会话元数据与 API Key \\
+\bottomrule
+\end{tabularx}
+\end{center}
+
+\subsection{主数据流}
+
+\begin{center}
+\renewcommand{\arraystretch}{1.55}
+\small
+\colorbox{LearnTraceLight}{\parbox{0.16\textwidth}{\centering\textbf{授权输入}\\Git、文档、日志、会话}}
+$\Rightarrow$
+\colorbox{LearnTraceLight}{\parbox{0.16\textwidth}{\centering\textbf{统一事实}\\来源引用、状态、索引}}
+$\Rightarrow$
+\colorbox{LearnTraceLight}{\parbox{0.16\textwidth}{\centering\textbf{候选节点}\\依据、不确定性、类型}}
+$\Rightarrow$
+\colorbox{LearnTraceLight}{\parbox{0.16\textwidth}{\centering\textbf{学生确认}\\确认、补充、否认}}
+$\Rightarrow$
+\colorbox{LearnTraceLight}{\parbox{0.16\textwidth}{\centering\textbf{最终产物}\\阅读档案、问题、审计包}}
+\end{center}
+
+分析与确认被设计为两个阶段。首次分析固定事实和候选快照；学生回答后，确认阶段只读取该快照，不重新扫描项目，也不再次推断候选。这样可以避免同一个问题在两次运行中因仓库变化而悄悄更换依据。
+
+\section{核心模块设计}
+
+\subsection{命令行编排模块}
+
+\texttt{src/learntrace/cli.py} 是确定性工具链入口，负责参数解析、路径规范化、模块调用和错误呈现。主要命令包括材料发现、静态解析、轨迹适配、Git 证据索引、统一归档、叙事校验与报告渲染。CLI 不负责自由文本推理，也不读取模型环境变量；它可以在没有 API Key 的环境中独立工作。
+
+命令层的设计重点是显式失败。缺失记录、未授权轨迹、互相冲突的参数和不合法确认文件会返回清晰错误，而不是忽略参数继续生成看似成功的报告。确认阶段与证据采集参数互斥，避免把“复用旧快照”和“重新读取新材料”混在同一次调用中。
+
+\subsection{公共模型与 Schema v0}
+
+\texttt{models/} 与 \texttt{schemas/v0/} 定义跨模块契约。核心记录分为三类：
+
+\begin{itemize}
+  \item \textbf{ObservableEvent：}可观察事实，证据等级固定为 \texttt{observable\_fact}，必须含至少一个来源引用；
+  \item \textbf{LearningNodeCandidate：}系统候选，证据等级固定为 \texttt{candidate\_inference}，必须引用依据事件并标注不确定性；
+  \item \textbf{StudentConfirmation：}学生确认，证据等级固定为 \texttt{student\_confirmation}，单独记录确认、补充或否认。
+\end{itemize}
+
+候选类型包括追问、修改 AI 建议、修复失败方案、补充测试和调整约束。候选状态只描述生命周期，不承载学生决定；是否确认必须读取独立确认记录。Schema 使用版本号、格式检查与跨对象一致性校验，防止模块各自生成形状相似但语义不同的字典。
+
+\subsection{静态材料解析模块}
+
+\texttt{parsers/} 处理本地 Git、文件树、Markdown/纯文本和已有测试日志。发现阶段只报告候选路径与类型；确认范围后才读取正文。Git 解析不只返回最近几条提交，而是建立完整、轻量、可检索的历史索引。需要核验某项变化时，再按提交、文件、行范围或字节范围读取证据。
+
+解析器不执行项目代码。测试信息只能来自用户已有的日志，不能由 LearnTrace 临时运行测试制造。对于二进制对象、Git LFS 指针、子模块、非 UTF-8 文本和超长内容，模块保留对象信息和无法读取的原因，不强行转成自然语言。
+
+\subsection{AI 轨迹适配与隐私模块}
+
+\texttt{adapters/} 支持 OpenCode、Claude Code 和 Codex 会话导出。三个宿主格式不同，但最终被转换为统一事件：时间、工具类别、项目内相对路径、保守命令类别、执行状态、宿主和会话标识。适配器在仍掌握原始字段时完成最小化提取；完整提示词、隐藏推理、聊天正文、补丁正文、工具输出、密钥和个人绝对路径不进入公开档案。
+
+轨迹采用逐行流式解析。单文件上限为 256 MiB，单行上限为 16 MiB，单会话最多保留 2000 个事件，合并结果最多保留 10000 个事件。超出限制时按确定规则截断并记录警告。一个会话文件的授权不会自动扩展到其他文件，普通目录扫描也不能把外观类似轨迹的 JSON 当作已授权输入。
+
+\subsection{工作分段模块}
+
+轨迹分段把已授权、已脱敏的原子工具事件组织为连续工作段。它不调用模型，也不从自然语言摘要反推工具或路径。算法先按有效时间排序；相邻事件间隔严格大于 30 分钟时切段；当前工作段与下一事件的项目对象范围完全不相交时也切段。没有安全结构化路径时，系统不会凭摘要猜测对象范围。
+
+工作段只引用原事件，不新增事实。段 ID 由排序后的事件 ID 确定性计算；输入顺序变化不会改变结果。保存前，程序会使用安全元数据重新计算并逐字段比较，拒绝遗漏事件、重复引用、伪造时间、路径或工具类别的结果。
+
+\subsection{候选学习节点与归档模块}
+
+\texttt{reporting/} 和 \texttt{archive.py} 将事实整理为候选学习节点和最终档案。默认推断器是本地确定性规则，不调用远程模型。规则寻找有实际依据的过程关系，例如失败日志之后出现对应修复、某项功能变化伴随成功且主题相关的测试日志、文档约束与实现调整存在明确主题关联。补充测试规则至多为一次提交选择一条最佳匹配日志，并将“该日志是否覆盖新增用例”保留为待学生确认的不确定性。
+
+候选关系不能只靠时间接近建立。系统对主题关联、事件类型、先后顺序和来源质量进行约束，并设置候选总量上限，避免文档与提交形成笛卡尔积式重复。相同候选稳定去重，候选 ID 由内容和依据计算，不因无关候选加入而改变。
+
+学生确认通过独立 JSON 记录进入归档。确认、补充和否认均为正式结果；未提供学生原话时，系统写入结构化的“未记录”，不能代写个人反思。确认后的归档保留首次快照指纹，输入被修改或来源不一致时拒绝继续。
+
+\subsection{叙事与学习档案模块}
+
+机器事实不适合直接倾倒给教师或学生。叙事模块把项目目标、开发轨迹、AI 协作触点、验证情况和已确认学习内容组织为可阅读结构，同时保留证据链接。内部事件 ID、重复工具日志和未被选中的事实留在审计层，不进入主叙事制造噪声。
+
+若由智能体协助生成叙事，必须先形成满足 Schema 的叙事载荷，再通过 ContractValidator 检查后渲染 Markdown。校验器能够检查字段结构、计数、引用 ID、确认状态和公开边界，渲染时还会再次脱敏；但它不能仅凭一个合法引用判断每句自然语言是否真的被证据支持。因此，结构校验用于降低把候选当事实、把被否认内容写成收获等风险，语义正确性仍需根据证据和学生回答复核。
+
+\subsection{Skill 与宿主智能体}
+
+\texttt{skills/learntrace/} 描述宿主 Agent 应遵循的工作流：检查 CLI、发现材料、等待授权、调用确定性工具、展示候选、收集学生回答并生成档案。Skill 负责流程约束，不复制 Python 解析逻辑。这样同一套本地证据能力可以被 Codex、Claude Code、OpenCode 等不同宿主调用。
+
+宿主模型负责理解自然语言和组织交互，但模型登录、权限审批和可用工具仍由宿主管理。Skill 不是操作系统沙箱，因此 LearnTrace 同时在 CLI 与内置 Agent 命令层实施路径和参数约束，避免只依赖提示词保证安全。
+
+\subsection{本地 Web 智能体工作区}
+
+Web 产品由 React/TypeScript 前端、FastAPI 后端和随包分发的 Pi SDK Agent 服务组成。用户运行 \texttt{learntrace ui <project-dir>} 后，可在浏览器中完成模型设置、项目选择、会话轨迹选择、授权确认、结构化问答、停止分析和报告查看。
+
+后端只监听回环地址。启动时生成一次性访问令牌，浏览器使用该令牌换取 HttpOnly Cookie；服务同时校验回环 Host，避免局域网或恶意网页直接调用本机控制接口。消息、工具活动、授权请求和产物状态通过 SSE 流式传输。会话元数据保存在本地 SQLite 中，服务重启后仍能恢复原 Agent 会话，而不是只把几条网页消息拼成新上下文。
+
+Agent 的 \texttt{run\_command} 工具使用结构化的可执行文件和参数数组，不执行任意 shell 字符串。命令守卫按 CLI 语法解析子命令和路径，把核对过的 LearnTrace 命令绑定到会话项目，把写入范围绑定到 \texttt{.learntrace/} 和当前会话目录；涉及敏感授权、范围外操作或其他命令时请求用户批准。内置 Agent 还启用了 \texttt{read/grep/find/ls} 只读工具，它们不经过 \texttt{run\_command} 的命令守卫，而由 Skill 流程与底层工具行为共同约束。进程运行器另行提供超时、输出截断、取消和子进程树清理。
+
+\section{数据与存储设计}
+
+\subsection{三层证据模型}
+
+LearnTrace 将“事实”“推断”“个人解释”分开保存，是整个系统最重要的数据设计。
+
+\begin{center}
+\small
+\begin{tabularx}{\textwidth}{>{\bfseries}p{0.20\textwidth}X X}
+\toprule
+数据层 & 回答的问题 & 约束 \\
+\midrule
+可观察事实 & 项目中直接发生了什么 & 必须能定位到 Git、文件、日志或授权轨迹 \\
+系统候选 & 哪些事实可能构成学习节点 & 必须引用依据并说明不确定性，不得作为最终结论 \\
+学生确认 & 学生怎样理解当时的选择与收获 & 独立保存，可确认、补充或否认，不由系统代写 \\
+\bottomrule
+\end{tabularx}
+\end{center}
+
+这种分层避免了常见的语义污染：Git 提交是事实，但“学生因为理解了某个概念而提交”不是 Git 能直接证明的事实；一次 AI 编辑记录是事实，但“学生接受了 AI 建议”仍需要语义证据或本人确认。
+
+\subsection{产物布局}
+
+一次完整运行主要生成：
+
+\begin{itemize}
+  \item \texttt{learning-record.md}：学生可编辑、可检查、可分享的主档案；
+  \item \texttt{.learntrace/learning-questions.md}：仍需本人确认或补充的问题；
+  \item \texttt{.learntrace/archive-records.json}：事实、候选、确认、警告、来源索引和内容指纹；
+  \item \texttt{.learntrace/evidence/}：Git 历史、按需证据和其他本地索引；
+  \item \texttt{.learntrace/ui-sessions/}：Web 会话不可变阶段产物与叙事载荷。
+\end{itemize}
+
+主档案面向阅读，机器归档面向审计，两者不能互相替代。机器归档可能包含本地来源索引，应作为敏感文件保留在本机；对外分享前应检查主档案，而不是直接上传原始会话和完整归档。
+
+\subsection{会话与凭据分离}
+
+Web 会话元数据使用 SQLite 保存，项目产物写入目标项目，模型 API 地址、模型 ID、协议和思考强度保存在本地应用配置目录，API Key 则单独进入操作系统凭据库。浏览器存储、项目目录、SQLite 和普通 JSON 配置均不保存明文 Key。不同类型数据使用不同存储位置，降低一次文件泄露暴露全部信息的风险。
+
+\section{模型与 API 设计}
+
+\subsection{模型在系统中的职责}
+
+模型适合完成自然语言理解、工具编排、证据解释和追问组织；不适合根据工具次数评价能力、根据时间相邻断言因果关系、代写个人反思或在缺少日志时宣称测试通过。无论使用何种模型，模型输出都不能直接突破 Schema 和渲染器的证据约束。
+
+\subsection{三种运行路径}
+
+\begin{enumerate}
+  \item \textbf{纯 CLI：}所有处理均由本地 Python 确定性规则完成，无远程模型调用，不需要 API Key。
+  \item \textbf{宿主 Skill：}Codex、Claude Code 或 OpenCode 提供模型和对话环境，LearnTrace 只提供本地 CLI 与 Skill。
+  \item \textbf{内置 Web Agent：}用户在 LearnTrace 页面配置模型服务，随包分发的 Pi SDK Agent 通过兼容 API 调用模型。
+\end{enumerate}
+
+Web Agent 支持 Anthropic Messages、OpenAI Chat Completions 和 OpenAI Responses 三类协议。参赛演示记录的配置见表 \ref{tab:model-config}；其中模型名称是网关返回或接受的运行时标识，不等同于对服务端底层实现的证明。模型名称和 API 地址均不写死在业务代码中，API Key 只从本机配置界面进入系统凭据库，不进入源码和提交记录。
+
+\begin{table}[h]
+\centering
+\small
+\caption{参赛演示的非敏感模型配置记录}
+\label{tab:model-config}
+\begin{tabularx}{0.94\textwidth}{>{\bfseries}p{0.23\textwidth}X}
+\toprule
+项目 & 记录值 \\
+\midrule
+服务 & 中国科学技术大学兼容模型网关 \\
+API 基址 & \url{https://api.llm.ustc.edu.cn/v1} \\
+模型标识 & \texttt{qwen3.8-reasoner} \\
+调用协议 & Anthropic Messages（\texttt{/v1/messages}） \\
+验证口径 & 配置用于开发联调；现场是否可用仍取决于网关状态、账号权限和当时返回结果 \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+\subsection{调用链路}
+
+\begin{center}
+\small
+\texttt{浏览器}
+$\rightarrow$
+\texttt{FastAPI 会话服务}
+$\rightarrow$
+\texttt{Pi SDK Agent}
+$\rightarrow$
+\texttt{兼容模型 API}
+$\rightarrow$
+\texttt{受控 LearnTrace 工具}
+\end{center}
+
+模型只会直接收到 Agent 放入请求上下文的内容，但 Agent 可通过已启用工具读取材料；其中 \texttt{run\_command} 受本地命令守卫检查，内置只读文件工具并不经过同一守卫。选择远程 API 时，对话、必要的证据片段和工具结果可能发送到远程模型服务。“文件保存在本地”不等于“内容从不离开本机”；若用户不希望发送语义内容到远程服务，应选择纯 CLI 或符合协议的本地模型端点。
+
+\section{关键流程设计}
+
+\subsection{首次分析流程}
+
+\begin{enumerate}
+  \item 校验目标项目路径，建立本次分析上下文；
+  \item 只发现候选 Git、文档和日志，不提前读取正文；
+  \item 用户确认静态材料范围，可选添加并逐份授权 AI 会话；
+  \item 解析静态材料，适配授权轨迹，生成统一事件和来源索引；
+  \item 校验 Schema 与跨对象一致性，形成固定事实快照；
+  \item 以确定性规则生成有依据的候选学习节点；
+  \item 输出未确认版学习档案、问题清单和机器归档。
+\end{enumerate}
+
+\subsection{学生确认流程}
+
+学生针对候选选择确认、补充或否认，并可提供自己的原话。系统校验候选 ID、决定类型和确认时间，拒绝互相冲突或指向未知候选的记录。随后仅复用首次快照应用确认，不重新解析项目。确认完成后重新渲染学习档案，并在机器归档中保留候选与确认的独立记录。
+
+\subsection{Web 会话恢复流程}
+
+页面刷新只重新订阅会话快照与事件，不创建重复分析任务。服务重启后，用户可以查看旧消息和旧报告；选择“恢复并继续”时，后端恢复同一 Pi 会话标识。每次分析的阶段产物被复制到会话专属目录，后续重新分析同一项目不会篡改旧会话展示的报告。
+
+\subsection{取消与失败流程}
+
+用户停止分析时，前端立即进入停止状态，后端取消 Agent 请求和正在执行的本地命令，并尝试终止子进程树。若操作系统拒绝或无法确认进程树已经结束，系统以明确的受控降级状态告知用户，而不是把任务伪装成已停止。网络错误、模型进程退出和产品内部错误使用不同错误码与恢复提示，避免所有问题都显示为模糊的“请求失败”。
+
+\section{安全与隐私设计}
+
+\subsection{威胁边界}
+
+系统面对的主要风险包括：会话导出包含密钥和个人路径；目标仓库含不可信内容；大文件造成资源耗尽；模型试图读取未授权范围；浏览器中的其他页面调用本机接口；多个分析任务并发覆盖同一产物；取消任务后遗留子进程。
+
+\subsection{防护措施}
+
+\begin{center}
+\small
+\begin{tabularx}{\textwidth}{>{\bfseries}p{0.23\textwidth}X}
+\toprule
+风险 & 设计措施 \\
+\midrule
+未授权会话读取 & 逐文件显式授权；不扫描 Agent 历史目录；普通 JSON 扫描不接收轨迹 \\
+敏感信息进入报告 & 适配时最小化字段，写入与渲染边界再次脱敏 \\
+恶意或超大输入 & 流式解析、字节和事件上限、嵌套深度防护、结构化警告 \\
+目标代码执行 & 解析器只读材料；不运行仓库测试或日志命令 \\
+本机接口被滥用 & 仅监听回环地址，一次性启动令牌、HttpOnly Cookie、Host 校验 \\
+Agent 命令越界 & \texttt{run\_command} 使用白名单、参数语法解析和项目写入范围绑定；其他内置只读工具不共享该守卫 \\
+并发覆盖产物 & 项目级异步锁、会话级不可变快照、内容指纹 \\
+任务无法停止 & 超时、取消信号、输出上限、子进程树清理与失败显式呈现 \\
+API Key 泄露 & 操作系统凭据库存储，不进入项目、浏览器存储、SQLite 或普通配置 \\
+\bottomrule
+\end{tabularx}
+\end{center}
+
+\subsection{安全声明的边界}
+
+LearnTrace 的目标是限制自身确定性工具的读取、写入和模型调用范围，但它不是完整的操作系统沙箱。宿主 Agent 和内置 Agent 拥有哪些工具、只读工具如何解析路径、用户是否批准额外命令，仍由宿主配置和底层运行时共同决定。机器档案也不是数字签名：Schema 和重算可以证明内部结构一致，不能证明一个来源不可信的文件从未被整体替换。文档明确说明这些边界，避免把工程防护夸大为绝对安全。
+
+\section{技术难点与解决方案}
+
+\subsection{异构材料如何使用同一种语义}
+
+Git、文档、日志和 Agent 会话对“事件”的表达完全不同。如果每个模块直接输出自己的自然语言，归档层无法可靠判断证据等级。项目通过 Schema v0 和公共模型先统一事件、来源引用、缺失状态和候选生命周期，再让适配器只承担格式转换。跨模块信息因此可以被契约测试，而不是依靠约定俗成。
+
+\subsection{信息完整性与上下文规模的矛盾}
+
+完整历史有利于审计，但把全部差异和聊天交给模型会造成上下文爆炸。解决方案是“完整轻量索引 + 有界按需读取”：先保存提交、对象和文件角色等索引；需要核验时，再按提交和路径分页读取有限内容。轨迹使用流式解析与稳定截断，任何丢弃都有警告。
+
+\subsection{避免把相关性写成因果关系}
+
+早期候选生成容易把时间接近的 AI 操作和 Git 提交配对，也容易让文档与提交形成大量重复候选。最终实现删除了单纯时间邻近推断，增加主题、类型和顺序约束，限制候选总量，并以学生确认作为最终门槛。宁可少提出一个候选，也不把未经支持的关联写成学习经历。
+
+\subsection{自然语言质量与事实约束的平衡}
+
+纯规则报告稳定但机械，模型自由写作自然却可能越界。系统将二者分开：模型生成结构化叙事载荷，ContractValidator 检查结构、引用存在性、确认状态和公开边界，渲染器再生成 Markdown。该机制能够拦截一部分可判定的契约错误，却不能证明每句话与证据在语义上完全一致；模型负责表达，确定性程序提供可执行约束，最终叙述仍由人依据原始证据复核。
+
+\subsection{本地智能体的可恢复性}
+
+一次学习档案分析包含授权、工具运行、等待回答和再次渲染，无法用普通单轮聊天实现。系统通过 SQLite 状态、SSE 事件、持久 Agent 会话、项目锁和会话级产物快照保持一致性；同时区分等待授权、等待回答、运行、停止、失败和完成等状态，使刷新与重启不会轻易破坏流程。
+
+\subsection{Windows 与 Linux 的进程差异}
+
+本地 Agent 需要跨平台终止命令及其后代进程。Windows 的进程树、管道关闭和权限失败与 Linux 行为不同，简单取消父进程可能留下后代或让服务长期等待。实现中对超时、终止尝试和管道回收设定上限，并把无法确认终止作为可见状态；持续集成同时覆盖 Windows 和 Ubuntu。
+
+\section{可复查案例设计}
+
+\subsection{案例目的与材料}
+
+仓库中的 \texttt{examples/task4-demo} 是一组专门用于复现证据闭环的合成材料，不是真实学生数据，也不作为教学效果证明。案例围绕“名单 CSV 导入失败”展开，随附设计约束、失败测试日志、Git 补丁和合成 Agent 轨迹；\texttt{parse-result.json} 将这些材料整理为统一事件，运行脚本可据此生成候选、待回答问题和工作版档案。由于这份裸轨迹没有绑定 Task 3 授权对象，默认流程会明确忽略它，而不是为了演示效果绕过授权边界。
+
+\subsection{五步证据闭环}
+
+\begin{center}
+\small
+\begin{tabularx}{\textwidth}{>{\bfseries\color{LearnTraceBlue}}p{0.15\textwidth}X}
+\toprule
+环节 & 可检查内容 \\
+\midrule
+原始材料 & 设计文档要求支持引号字段；失败日志显示姓名 \texttt{Smith, Jr.} 被拆成两列；补丁展示解析器从单一正则表达式改为状态机并增加测试。 \\
+系统事实 & 解析结果保存约束事件、失败日志事件和提交事件，每项均引用 \texttt{source-materials} 下的具体文件。 \\
+候选问题 & 确定性规则根据失败日志与后续修复提出“失败方案后的修复”候选，同时保留“是否真正形成可迁移认识”的不确定性。 \\
+学生回答 & 演示确认文件可以记录确认、补充或否认；确认文字属于明确标注的合成演示数据，不伪装成真实学生访谈。 \\
+最终档案 & 阅读版呈现经确认的学习节点，机器归档保留事实、候选、引用和确认状态；未授权轨迹继续显示为缺失信息。 \\
+\bottomrule
+\end{tabularx}
+\end{center}
+
+该案例展示的重点不是“模型写出了一段漂亮总结”，而是任何评审者都能沿着“原始材料---统一事实---候选问题---学生回答---最终档案”逐层核对。真实教学有效性仍需要后续试用、访谈或课程评价数据支持。
+
+\section{部署与使用设计}
+
+\subsection{交付形态}
+
+项目以可安装 Python wheel 作为主要程序交付，包内包含 Schema、Web 静态资源、Agent 服务和 LearnTrace Skill。核心 CLI 需要 Python 3.11 或更高版本；使用内置 Web Agent 时还需要 Node.js 22.22.2 或更高版本。普通用户不需要分别安装前端依赖或启动开发服务器。
+
+\subsection{安装与启动}
+
+\begin{lstlisting}
+uv tool install .
+learntrace --version
+learntrace ui <project-dir>
+\end{lstlisting}
+
+若只使用本地确定性流程：
+
+\begin{lstlisting}
+learntrace discover <project-dir>
+learntrace run <project-dir>
+\end{lstlisting}
+
+作为宿主 Skill 使用时，将 Skill 安装到宿主支持的目录，并确保 \texttt{learntrace} CLI 可执行。宿主负责模型登录与会话权限，LearnTrace 不要求用户为 CLI 配置远程模型。
+
+\subsection{开发构建}
+
+\begin{lstlisting}
+uv sync --locked
+cd web && npm ci && npm run build
+cd ../agent && npm ci && npm run build
+cd .. && uv build
+\end{lstlisting}
+
+Web 构建结果写入 Python 包的静态资源目录，Agent 构建结果打包为随 wheel 分发的服务文件。持续集成检查源码与生成产物是否同步，防止只提交 TypeScript 源码却遗漏真正随包发布的内容。
+
+\section{测试与工程验收}
+
+\subsection{测试体系}
+
+最近一次公开持续集成基线 Git 提交 \texttt{8283589} 包含 Python、Web 和 Agent 三套测试。2026 年 9 月 6 日的 GitHub Actions 记录显示，Python 测试在 Ubuntu 和 Windows 上均为 \textbf{686 项通过、1 项跳过}，而不是仅以“成功收集测试”作为通过依据。本次材料定稿后的工作树在 Windows 本地全量复测为 \textbf{687 项通过、4 项因本机符号链接或环境条件跳过、0 项失败}，Ruff 与 Pyright 同样通过。公开基线和本地复测采用不同环境，以下分类描述两者共同覆盖的测试体系：
+
+\begin{itemize}
+  \item 单元测试：模型、解析器、适配器、脱敏、候选推断、存储和命令守卫；
+  \item 契约测试：Schema v0、跨记录一致性、合法与非法金标样例；
+  \item 集成测试：静态解析闭环、三类宿主适配、授权边界、归档与确认流程；
+  \item UI 测试：认证、会话恢复、模型配置、SSE、产物快照和并发控制；
+  \item 发布测试：wheel 构建、隔离安装、CLI 帮助与随包资源检查；
+  \item 前端与 Agent 测试：界面历史状态、协议校验、命令范围和进程取消。
+\end{itemize}
+
+\subsection{持续集成}
+
+GitHub Actions 在 Ubuntu 和 Windows 上执行 Ruff、格式检查、Pyright、Pytest、前后端类型检查与构建、生成资源同步以及 wheel 安装验证。上述基线的各项任务均通过，记录地址为 \url{https://github.com/constantinmay/learntrace-skill/actions/runs/34005218350}。双平台任务用于覆盖路径格式、文件锁、子进程和打包行为差异。公开测试样例均经过脱敏，不包含真实学生会话、密钥和私人项目材料。这些结果说明对应版本满足既定工程检查，但不能替代对真实教学价值的案例观察和用户评价。
+
+\subsection{验收清单}
+
+\begin{enumerate}
+  \item 每项可观察事实都能定位到来源；
+  \item 未授权轨迹不会被读取，缺失轨迹不会被解释为“没有使用 AI”；
+  \item 候选引用真实依据，并带有不确定性与数量上限；
+  \item 学生确认与候选分开保存，否认内容不进入学习结论；
+  \item 没有测试日志时，报告不会声称功能已经通过测试；
+  \item 公开档案不泄露密钥、个人绝对路径和完整聊天；
+  \item 刷新、重启、停止和重新分析不会破坏旧会话产物；
+  \item wheel 安装后可以直接运行 CLI 和本地 Web 产品；
+  \item Windows 与 Ubuntu 持续集成均通过。
+\end{enumerate}
+
+\section{设计取舍与后续方向}
+
+\subsection{当前取舍}
+
+第一版优先保证证据边界和完整闭环，因此文档正文主要支持 Markdown 与纯文本；对 PDF、Word 等复杂二进制材料不强行提取语义。系统不自动运行测试，牺牲了一部分便利性，却避免执行不可信项目。候选推断偏保守，可能漏掉缺乏证据的真实学习经历，但不会用模型猜测填满报告。
+
+\subsection{后续方向}
+
+后续可在不改变核心理念的前提下扩展更多文档格式和编码工具，增加团队项目视图、课程模板、脱敏分享模板和本地证据查看器。还可设计过程中的轻量检查点，让学生在关键转折刚发生时保存目标、选择与验证，减少事后回忆造成的信息缺失。
+
+扩展的优先级仍应遵循同一原则：先提高证据可用性和用户控制能力，再增加自动推断。LearnTrace 的目标不是掌握更多学生数据，而是用更少、更清楚的证据帮助学生讲明白自己的学习。
+
+\section*{总结}
+
+LearnTrace 将“是否使用 AI”的判断问题，转化为“怎样从 AI 协作中识别和呈现学习”的设计问题。围绕这一理念，系统建立了本地确定性证据管线、三层证据模型、学生确认机制、跨宿主轨迹适配、隐私最小化处理和可恢复 Web 智能体工作区。
+
+作品的技术重点并非简单调用大模型生成报告，而是让模型、程序和用户各自承担合适的责任：程序保存事实并执行约束，模型帮助理解和组织，学生决定哪些候选真正代表自己的学习。最终档案既能够阅读，也能够回查；既承认 AI 的参与，也保留学生作为学习主体的判断权。
+
+\end{document}

@@ -10,11 +10,25 @@ New-Item -ItemType Directory -Force -Path $out | Out-Null
 # required (or read) here.
 Push-Location $root
 try {
-    uv run --locked python -m learntrace.archive `
-        $demo `
-        --output (Join-Path $out "learning-record.md") `
-        --records-output (Join-Path $out "archive-records.json") `
-        --questions-output (Join-Path $out "learning-questions.md")
+    $uv = Get-Command uv -ErrorAction SilentlyContinue
+    $venvPython = Join-Path $root ".venv\Scripts\python.exe"
+    if ($uv) {
+        & $uv.Source run --locked python -m learntrace.archive `
+            $demo `
+            --output (Join-Path $out "learning-record.md") `
+            --records-output (Join-Path $out "archive-records.json") `
+            --questions-output (Join-Path $out "learning-questions.md")
+    }
+    elseif (Test-Path -LiteralPath $venvPython) {
+        & $venvPython -m learntrace.archive `
+            $demo `
+            --output (Join-Path $out "learning-record.md") `
+            --records-output (Join-Path $out "archive-records.json") `
+            --questions-output (Join-Path $out "learning-questions.md")
+    }
+    else {
+        throw "Neither uv nor the project .venv Python is available."
+    }
 }
 finally {
     Pop-Location

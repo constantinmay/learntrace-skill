@@ -20,7 +20,7 @@
       "source_refs": [
         {
           "type": "trace_record",
-          "ref": "traces/roster-import-ai.jsonl#turn-7",
+          "ref": "source-materials/traces/roster-import-ai.jsonl#turn-7",
           "note": "AI suggestion recorded with student authorization"
         }
       ]
@@ -35,7 +35,7 @@
       "source_refs": [
         {
           "type": "test_log",
-          "ref": "logs/pytest-roster-import.log",
+          "ref": "source-materials/logs/pytest-roster-import.log",
           "note": "Failure log captured before the parser rewrite"
         }
       ]
@@ -50,7 +50,7 @@
       "source_refs": [
         {
           "type": "document",
-          "ref": "docs/import-design.md#csv-quoted-fields",
+          "ref": "source-materials/docs/import-design.md#csv-quoted-fields",
           "note": "Documented import constraint"
         }
       ]
@@ -67,6 +67,11 @@
           "type": "git_commit",
           "ref": "7d3c9f1",
           "note": "Implementation change after failure and design-note evidence"
+        },
+        {
+          "type": "file",
+          "ref": "source-materials/git/7d3c9f1.patch",
+          "note": "脱敏演示补丁，用于在审阅包中核对修改内容"
         }
       ]
     }

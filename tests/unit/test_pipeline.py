@@ -248,6 +248,96 @@ def test_english_commit_overview_is_recognized() -> None:
 
     assert len(bundle.candidates) == 1
     assert bundle.candidates[0].node_type.value == "add_tests"
+    assert bundle.candidates[0].uncertainty.startswith("中：")
+    assert "仍需学生确认" in bundle.candidates[0].uncertainty
+
+
+def test_stub_does_not_claim_added_tests_passed_from_failing_log() -> None:
+    events = (
+        _event(
+            "evt-test-commit",
+            EventKind.GIT_COMMIT,
+            "Commit a1b2c3d: add tests/test_parser.py to cover CSV quoted fields.",
+            occurred_at="2026-05-02T10:00:00+08:00",
+        ),
+        _event(
+            "evt-failing-log",
+            EventKind.TEST_LOG,
+            "pytest reported an error in CSV parser tests.",
+            occurred_at="2026-05-02T10:05:00+08:00",
+        ),
+    )
+
+    bundle = build_archive_bundle(events, inferencer=StubCandidateInferencer())
+
+    assert not any(candidate.node_type == NodeType.ADD_TESTS for candidate in bundle.candidates)
+
+
+def test_stub_does_not_pair_added_tests_with_unrelated_passing_log() -> None:
+    events = (
+        _event(
+            "evt-test-commit",
+            EventKind.GIT_COMMIT,
+            "Commit a1b2c3d: add tests/test_parser.py to cover CSV quoted fields.",
+            occurred_at="2026-05-02T10:00:00+08:00",
+        ),
+        _event(
+            "evt-unrelated-log",
+            EventKind.TEST_LOG,
+            "pytest passed frontend authentication checks.",
+            occurred_at="2026-05-02T10:05:00+08:00",
+        ),
+    )
+
+    bundle = build_archive_bundle(events, inferencer=StubCandidateInferencer())
+
+    assert not any(candidate.node_type == NodeType.ADD_TESTS for candidate in bundle.candidates)
+
+
+def test_zero_failure_summary_is_successful_add_tests_evidence() -> None:
+    events = (
+        _event(
+            "evt-test-commit",
+            EventKind.GIT_COMMIT,
+            "Commit a1b2c3d: add CSV parser tests to cover quoted fields.",
+            occurred_at="2026-05-02T10:00:00+08:00",
+        ),
+        _event(
+            "evt-passing-log",
+            EventKind.TEST_LOG,
+            "已有测试日志记录：5 个通过，0 个失败；CSV parser quoted fields 已覆盖。",
+            occurred_at="2026-05-02T10:05:00+08:00",
+        ),
+    )
+
+    bundle = build_archive_bundle(events, inferencer=StubCandidateInferencer())
+
+    add_tests = [
+        candidate for candidate in bundle.candidates if candidate.node_type == NodeType.ADD_TESTS
+    ]
+    assert len(add_tests) == 1
+    assert add_tests[0].basis_event_ids == ("evt-test-commit", "evt-passing-log")
+
+
+def test_zero_failure_count_does_not_hide_another_log_error() -> None:
+    events = (
+        _event(
+            "evt-test-commit",
+            EventKind.GIT_COMMIT,
+            "Commit a1b2c3d: add CSV parser tests to cover quoted fields.",
+            occurred_at="2026-05-02T10:00:00+08:00",
+        ),
+        _event(
+            "evt-error-log",
+            EventKind.TEST_LOG,
+            "pytest reported 5 passed, 0 failed, but a collection error remained.",
+            occurred_at="2026-05-02T10:05:00+08:00",
+        ),
+    )
+
+    bundle = build_archive_bundle(events, inferencer=StubCandidateInferencer())
+
+    assert not any(candidate.node_type == NodeType.ADD_TESTS for candidate in bundle.candidates)
 
 
 class SingleCommitInferencer:
