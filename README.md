@@ -1,43 +1,39 @@
-# LearnTrace Skill
+# LearnTrace
 
-LearnTrace 是一个面向 AI 辅助课程项目的学习档案 Skill。它从本地 Git 仓库、项目文档、既有测试日志和用户授权的 AI 轨迹中整理可追溯证据，经学生确认后生成可编辑的 Markdown 学习档案。
+从本地 Git、项目文档、既有测试日志，以及**明确授权**的 AI 会话中，整理可追溯的学习档案。
 
-项目不执行被分析仓库中的代码，不做作弊检测、作者归因、贡献排名或自动评分。
+学生确认后，生成可编辑的 Markdown 阅读稿。工具不执行被分析仓库里的代码，也不做作弊检测、作者归因、贡献排名或自动评分。
 
-## 当前状态
+需要：Python 3.11+ 和 [`uv`](https://docs.astral.sh/uv/)。
 
-项目已完成统一 CLI 与 OpenCode Skill 的隔离端到端联调：可以从项目仓库
-生成 Task 2 证据、可选接入经授权的 Task 3 轨迹，并产出学习档案。
+## 安装
 
-## 用户安装
-
-克隆发布版本后，在 LearnTrace 仓库中安装独立 CLI：
+在本仓库根目录安装 CLI：
 
 ```powershell
 uv tool install .
 learntrace --version
 ```
 
-然后将完整的 `skills/learntrace/` 目录放入所用宿主的 Skill 发现目录。只复制
-`SKILL.md` 或只安装 Skill 都不会自动安装 Python CLI。
+更新时在新的发布目录再执行 `uv tool install --reinstall .`。
 
-| 宿主 | 项目级目录 | 用户级目录 | 调用方式 |
+然后把完整的 `skills/learntrace/`（含 `references/`）放到所用宿主的 Skill 目录。只复制 `SKILL.md`，或只安装 Skill，都不会带上 CLI。
+
+| 宿主 | 项目级 | 用户级 | 调用 |
 | --- | --- | --- | --- |
 | Claude Code | `.claude/skills/learntrace/` | `~/.claude/skills/learntrace/` | `/learntrace` |
 | OpenCode | `.opencode/skills/learntrace/` | `~/.config/opencode/skills/learntrace/` | `$learntrace` |
 
-Claude Code 和 OpenCode 当前的发现规则分别参见
-[Claude Code Skills 文档](https://code.claude.com/docs/en/skills)与
-[OpenCode Agent Skills 文档](https://opencode.ai/docs/skills)。
+发现规则见 [Claude Code Skills](https://code.claude.com/docs/en/skills) 与 [OpenCode Agent Skills](https://opencode.ai/docs/skills)。
 
-LearnTrace 有两种并列入口。把 Skill 安装到 Codex、Claude Code、OpenCode 等宿主
-Agent 时，模型登录、API 和交互界面均由宿主 Agent 管理，只需要 Python 3.11+
-和 LearnTrace CLI，不需要 LearnTrace UI、Pi CLI 或 Node.js。`learntrace ui` 是可选的
-本地 Web 产品入口，供希望直接使用 LearnTrace 自带交互界面的用户选择。
+两种入口：
 
-## 在 Claude Code 中直接使用
+1. **宿主 Agent + Skill + CLI**。模型、登录和审批由 Claude Code / OpenCode / Codex 负责。只要 Python 3.11+ 和 `learntrace`，不需要本仓库的 Web 界面、Pi CLI 或 Node.js。
+2. **`learntrace ui`**。可选的本机网页。需要 Node.js 22.22.2 或更高版本；页面和 Agent 服务已打进 Python 包，不必再 `npm install`。
 
-Windows 用户可以把 Skill 安装到个人目录，使所有项目都能调用：
+## Claude Code
+
+Windows 上安装到个人目录（所有项目可用）：
 
 ```powershell
 New-Item -ItemType Directory -Force "$env:USERPROFILE\.claude\skills\learntrace"
@@ -45,306 +41,122 @@ Copy-Item ".\skills\learntrace\*" `
   "$env:USERPROFILE\.claude\skills\learntrace" -Recurse -Force
 ```
 
-也可以只复制到待分析项目的 `.claude/skills/learntrace/`，把 Skill 限定在该项目。
-首次创建 `.claude/skills/` 后若 Claude Code 没有立即发现 Skill，重新启动一次
-Claude Code。随后在待分析项目中直接输入：
+也可以只复制到待分析项目的 `.claude/skills/learntrace/`。新建 `.claude/skills/` 后若没有立刻出现 Skill，重启一次 Claude Code。
+
+在待分析项目里：
 
 ```text
 /learntrace 请分析当前项目中的开发证据，生成可追溯学习档案。
 ```
 
-Claude Code 负责模型连接、自然语言交互和工具审批；`learntrace` CLI 负责本地的
-发现、解析、脱敏、候选生成、校验和档案落盘。正常调用 Skill 不会自动读取
-Claude Code 的历史会话。若要把某个会话作为学习证据，必须另行复制对应 JSONL
-文件，并通过 `--authorize-claude-code-export` 对该文件显式授权。
+调用 Skill **不会**自动读取 Claude Code 历史会话。要把某次会话当作证据，必须先复制对应 JSONL，再用 `--authorize-claude-code-export` 对该文件单独授权。
 
-## 在 OpenCode 中直接使用
+## OpenCode
 
-在待分析项目中启动 OpenCode，并要求它使用 `$learntrace`。Skill 会先检查 CLI，
-再用一次 `learntrace discover` 展示候选 Git、文档和测试日志范围；学生确认前，
-不应读取这些内容。若需要使用 OpenCode 会话导出，还必须单独提供文件并明确
-授权。
+在待分析项目里启动 OpenCode，使用 `$learntrace`。Skill 会先检查 CLI，再跑一次 `learntrace discover`，只列出候选范围、不读文件。学生确认前不要读取这些材料。OpenCode 会话导出同样必须单独提供并授权。
 
-OpenCode 使用的模型负责遵循 Skill 和调用本地 CLI。CLI 只使用本地确定性规则，
-不调用远程模型，也不读取任何 `LEARNTRACE_*` 环境变量；更深入的语义理解由
-宿主 Agent 承担（单 LLM 原则）。使用 `$learntrace` 不会自动授权上传
-OpenCode 轨迹。
+CLI 只用本地确定性规则，不调用远程模型，也不读 `LEARNTRACE_*`。更细的语义理解由宿主模型承担。Skill 是工作流约束，不是操作系统沙箱；工具权限仍由宿主配置和用户审批决定。
 
-Skill 是宿主 Agent 的工作流约束，不是操作系统沙箱。实际联调已验证授权前
-停止、单次归档和归档后优先提问；宿主模型仍可能产生多余的元数据查询，最终
-的工具权限边界应由 OpenCode 配置和用户审批共同保证。
-
-## 项目开发期间的证据保留建议
-
-LearnTrace 可以在项目完成后直接使用，并不要求学生预先改变开发方式。不过，
-下面这些自然、真实的工程习惯能够让最终档案更完整，也让教师更容易回查依据：
-
-- 项目开始时初始化 Git，并在真实阶段边界提交；不要等项目结束后一次性提交，
-  也不要为了生成档案补造提交或改写历史。
-- 提交信息应简要说明实际变化，例如“修复 CSV 空行解析”或“补充权限边界测试”，
-  避免只有“更新”“修改”等无法定位意图的表述。
-- 保留任务书、需求说明和设计文档。约束或方案发生变化时，在文档中记录变化
-  内容；动机和学习结论仍由学生在最终确认时说明，不应伪装成 Git 能证明的事实。
-- 保存真实的测试日志，尤其是失败、修复和再次验证形成的连续记录。日志应包含
-  执行时间、工具名称、通过/失败状态和必要的用例信息；LearnTrace 不会替学生
-  自动执行目标项目测试，也不会在缺少日志时声称测试已经通过。
-- 在关键决策、失败修复或方案调整后，可以留下简短阶段记录，说明“遇到了什么、
-  为什么这样选择、怎样验证”。不需要记录每一步操作，更不应事后虚构反思。
-- 如需呈现 AI 协作过程，应保留确有学习价值的会话，并在归档时自行选择和逐文件
-  授权。不要把 API Key、私人聊天、原始会话导出或未经检查的工具输出提交到 Git。
-- 团队项目应提前明确本人负责的模块、目录、分支或时间范围。LearnTrace 不根据
-  提交数量判断贡献，也不会把整个团队仓库自动归为某位学生的个人成果。
-- 将 `.learntrace/` 和临时会话导出加入项目忽略规则。对外只分享人工检查过的
-  脱敏学习档案，不直接公开机器审计档案或原始材料。
-
-这些建议用于提高证据质量，而不是增加“打卡”负担。即使项目缺少部分材料，
-LearnTrace 仍会基于已经存在且获得授权的 Git、文档和测试日志工作，并明确标注
-证据缺失；学生不应为了让报告更漂亮而补写不存在的经历。
-
-## 本地 Web 界面
-
-安装 LearnTrace 后，可以在需要分析的项目上启动本地界面：
+## 本机网页（可选）
 
 ```powershell
 learntrace ui <project-dir>
 ```
 
-界面只监听本机回环地址，不对局域网或公网提供服务。
-每次启动都会生成一次性访问令牌并写入 HttpOnly 会话 Cookie；界面仅接受本机回环 Host，页面刷新后仍可继续访问。
-LearnTrace
-直接启动产品内的 Pi SDK Agent，不扫描本机的 Agent，也不要求用户另行安装
-或登录 Pi CLI。使用这一入口需要本机安装 Node.js 22.22.2 或更高版本；Pi Agent
-服务和网页静态资源随 LearnTrace Python 包提供，不需要用户运行 `npm install`
-或单独启动前后端。该 Agent 使用仓库中未经改写的 LearnTrace Skill 调查当前项目。
-开始分析前，用户在网页中配置模型服务：
+只监听本机回环地址。启动时写入一次性访问令牌（HttpOnly Cookie），只接受本机 Host。不扫描本机其它 Agent，也不要求安装 Pi CLI。
 
-- API 地址；
-- 模型 ID；
-- Anthropic Messages、OpenAI Chat Completions 或 OpenAI Responses 协议；
-- API Key；
-- 思考强度。
+开始分析前在页面配置：API 地址、模型 ID、协议（Anthropic Messages / OpenAI Chat Completions / OpenAI Responses）、API Key、思考强度。API Key 进操作系统凭据库，不写进目标项目、浏览器存储或普通 JSON。
 
-配置保存在 LearnTrace 的本地应用数据目录，API Key 单独保存到操作系统
-凭据库，不写入目标项目、浏览器存储、SQLite 会话库或普通 JSON 配置文件。
-下次打开时会恢复 API 地址、模型、协议和思考强度；API Key 输入框保持空白，
-但可继续使用系统凭据库中已保存的 Key。
+产物仍落在目标项目的 `.learntrace/`。隐藏推理和未授权会话正文不进 UI 数据库。同一项目同一时间只允许一项分析写入。
 
-对话、工具活动、授权请求、用户确认和报告状态会流式显示。会话元数据保存在
-系统应用数据目录的 SQLite 中，分析产物仍保存在目标项目的 `.learntrace/` 下；
-隐藏推理和未授权的历史会话正文不会写入 UI 数据库。Python 后端只负责
-HTTP/SSE、本地会话和产物管理；内置 Node 服务使用 Pi SDK 运行实际 Agent，
-Windows 与 Linux 使用同一套交互协议。网页中的“保存设置”只校验配置格式，
-“测试连接”会通过 Pi SDK 发起一次极小模型请求，实际检查 API 地址、协议、
-API Key 和模型 ID；不需要全局安装 Pi CLI。
-
-本地服务重启后，历史消息和报告仍可查看；选择“恢复并继续”会重新打开同一份
-Pi 会话记录，而不是用几条网页消息伪造上下文。Task 4 的项目级中间产物会在
-每次会话中保存不可变快照，因此后续再次分析同一项目不会篡改旧会话所展示的
-报告或审计引用。同一项目同一时间只允许一项分析写入产物。
-
-分析过程中，Agent 发起的澄清和反思问题会显示为网页中的结构化问题卡片，
-用户回答会返回同一个 Agent 会话。工具执行区只保留当前调查活动，不在对话里堆叠命令。
-运行时会区分模型处理、工具执行和等待回答；“停止分析”可中断当前请求和命令，
-并撤销尚未回答的问题。模型设置、思考强度和删除会话放在“更多”中。
-首页选择项目目录后即进入普通对话，第一条用户消息
-才会触发 Skill 调查；生成的报告在可展开或收起的右侧阅读面板中渲染。
-
-如果没有自动打开浏览器，可复制终端打印的本地地址；服务器不应监听公网地址：
+浏览器没自动打开时：
 
 ```powershell
 learntrace ui <project-dir> --no-open
 ```
 
-### 模型服务偏慢时的判断
+「测试连接」会发一次极小模型请求。若这一步就很慢，问题在 API 或网络，不是页面。
 
-分析中感觉“慢”时，先区分慢在模型服务还是本地产品：点击「测试连接」发起一次
-极小模型请求，若该请求本身明显耗时或超时，说明慢在 API 服务或网络，与界面无关。
-正常分析的首字延迟与思考强度、模型排队和流式速度直接相关——思考强度越高、工具
-调用越多，整体耗时越长，这并不代表页面失去响应。若「测试连接」瞬时完成，但页面
-出现布局错乱、按钮无响应或流式中断，才属于本地产品缺陷，请附带浏览器控制台与
-后端输出一起反馈。
-
-## 本地 CLI
-
-从项目仓库运行完整本地流程：
+## 命令行
 
 ```powershell
 learntrace discover <project-dir>
 learntrace run <project-dir>
 ```
 
-`discover` 只列出候选文档、测试日志和 Git 是否可用，不读取文件内容。宿主
-Agent 应先向学生展示该范围，确认后再运行完整解析。
+`discover` 只列候选路径。完整解析应在学生确认范围之后。Git 只读本地仓库，不访问远程。
 
-Task 2 只使用本地 Git，不访问或依赖远程仓库。先生成完整、逐行可检索的轻量索引：
+常用回读：
 
 ```powershell
 learntrace git-index <project-dir>
-```
-
-历史索引中的每条提交包含 `tree_id`、版本文件数、顶层目录摘要、变更文件角色，
-以及源码和测试是否在同一提交中出现的非因果关系。需要查看一个版本的完整文件
-布局时再按需读取：
-
-```powershell
 learntrace git-tree <project-dir> <revision>
-```
-
-需要理解某次关键修改时，宿主 Agent 再按需导出本地原始证据：
-
-```powershell
 learntrace git-evidence <project-dir> <commit-hash> --path src/example.py
-```
-
-需要回读准确代码行，或检查尚未提交的开发过程时使用：
-
-```powershell
 learntrace git-file <project-dir> <revision> src/example.py --lines 120:180
-learntrace git-file <project-dir> <revision> src/generated.txt --bytes 0:65535
-learntrace git-file <project-dir> index src/example.py --lines 120:180
-learntrace git-file <project-dir> worktree src/example.py --lines 120:180
 learntrace git-worktree <project-dir>
 ```
 
-`git-file` 每次最多读取 200 行或 1,000,000 字节，并记录 revision、路径、Git
-object ID、实际范围、`reached_eof` 和下一页 continuation。限制的是单次返回量，
-不是文件可访问范围；超长单行可改用 `--bytes` 继续读取。`index` 读取暂存区版本，
-`worktree` 读取当前工作区版本。`git-worktree` 记录 staged、unstaged、untracked、删除、重命名和冲突，
-但不会自动读取未跟踪文件内容；需要时仍由宿主 Agent 通过 `git-file ... worktree`
-按范围读取。LearnTrace 自己生成的 `.learntrace/` 和 `learning-record.md` 不进入
-工作区证据，避免工具输出被误当成用户开发过程。
+`git-file` 每次最多 200 行或 1,000,000 字节。`.learntrace/` 和 `learning-record.md` 不作为用户开发证据。把 `.learntrace/` 加入目标项目的忽略规则，不要提交或直接分享。
 
-命令在 `<project-dir>/.learntrace/evidence/git/<commit-hash>/` 写入 `index.json`
-和有界 diff 预览。`index.json` 完整记录变更文件、对象 ID、diff hunk、前后 revision
-和回读命令；源码正文由 `git-file` 按需读取，不再为每个文件复制完整前后版本。
-该目录属于用户已授权的本地项目证据，不执行面向
-公开分享的脱敏；应将 `.learntrace/` 加入目标项目的忽略规则，不要提交或直接分享。
-二进制、非 UTF-8、Git LFS 指针和 submodule 不会被伪装成普通源码，索引会保留
-路径、对象、大小和不可用原因，供最终档案如实说明证据缺口。
+### 产物
 
-Git 历史默认完整读取，不使用任意条数上限。`--max-commits` 仅是调用方显式启用
-的侧支细节预算；first-parent 主线和所有 merge commit 始终保留，被省略内容会
-形成聚合事实和结构化统计。此时 `parse` 不会隐式生成完整历史索引；warning 中的
-`history_index_status=requires_generation` 表示必须先执行其中给出的
-`learntrace git-index <project>`，并核对索引 metadata 的 `head` 后再回读。
-完整历史会随仓库提交数量增加运行时间和本地 `history.jsonl` 体积，但不会要求
-Agent 一次读入全部内容；Agent 应先检索索引，再按提交和文件分页回读。
+| 文件 | 用途 |
+| --- | --- |
+| `learning-record.md` | 给学生和老师看的阅读稿 |
+| `.learntrace/archive-records.json` | 机器审计档案（来源、候选、告警、指纹） |
+| `.learntrace/learning-questions.md` | 需要学生本人确认、补充或否认的问题 |
 
-首次运行会生成 `learning-record.md`，并在 `<project-dir>/.learntrace/`
-写入 Task 2、Task 3、机器可读档案和待确认问题。
+对外只分享检查过的阅读稿，不要上传机器档案或原始会话。
 
-三个主要输出用途不同：
+### 授权轨迹
 
-- `learning-record.md`：供学生和老师阅读的精简档案，不倾倒全部工具日志。
-- `.learntrace/archive-records.json`：保留完整事实、来源索引、候选关系、告警
-  和内容指纹的机器审计档案。
-- `.learntrace/learning-questions.md`：只保存需要学生本人确认、补充或否认
-  的问题。
-
-授权轨迹会按工作过程确定性分段，并按命令归类。
-
-如需纳入 OpenCode 轨迹，首次运行时显式提供导出与授权：
+未逐文件授权的导出不会被读取。LearnTrace 不会扫描 `~/.claude/projects/` 或 `~/.codex/sessions/`。
 
 ```powershell
 learntrace run <project-dir> `
-  --opencode-export <opencode-export.json> --authorized
-```
-
-项目跨越多个 OpenCode 会话时，每个导出文件都必须分别提供并授权：
-
-```powershell
-learntrace run <project-dir> `
-  --opencode-export <session-1.json> `
-  --opencode-export <session-2.json> `
-  --authorize-opencode-export <session-1.json> `
-  --authorize-opencode-export <session-2.json>
-```
-
-多会话结果会合并并按事件去重，来源仍保留各自的 session 标识。未逐个授权
-的导出不会被读取。旧的 `--authorized` 仅用于单个导出文件。
-
-除 OpenCode 外，也支持经授权的 Claude Code 和 Codex 会话文件。使用者先从
-`~/.claude/projects/` 或 `~/.codex/sessions/` 复制会话 JSONL（LearnTrace 不会扫描
-这些目录），再逐个授权：
-
-```powershell
-learntrace run <project-dir> `
+  --opencode-export <session.json> `
+  --authorize-opencode-export <session.json> `
   --claude-code-export <session.jsonl> `
   --authorize-claude-code-export <session.jsonl> `
   --codex-export <rollout-session.jsonl> `
   --authorize-codex-export <rollout-session.jsonl>
 ```
 
-三个宿主可以在同一次 `run` 中组合，事件合并进同一份机器档案并按稳定 ID 去重。
-JSONL 会话采用逐行流式解析：单文件上限 256 MiB、单行 16 MiB、单会话事件 2000 条、
-合并总量 10000 条，超出部分按时间保留最早事件并记录截断警告。
+单个 OpenCode 导出仍可用 `--authorized`。多个导出必须各自授权；结果按稳定 ID 去重，来源保留各自 session。JSONL：单文件 256 MiB、单行 16 MiB、单会话 2000 条事件、合并总量 10000 条；超出则保留最早事件并记截断警告。
 
-学生填写独立确认文件后，第二次运行直接使用首次保存的事实和候选快照，
-不会重新解析轨迹或调用 LLM：
+### 学生确认
+
+第二次运行复用首次快照，不再解析轨迹：
 
 ```powershell
 learntrace run <project-dir> `
   --confirmations student-confirmations.json
 ```
 
-`--confirmations` 可重复传入；文件需包含非空 `confirmations` 列表。每条简写
-记录需要 `candidate_id`、`decision` 和 RFC 3339 格式的 `confirmed_at`。
-`student_statement` 只能填写学生原话；未提供原话时应省略，LearnTrace 会记录
-显式的 `not_recorded`，不会替学生生成陈述。
-确认阶段只复用首次分析生成的快照，不能同时传入 `--document`、`--test-log`、
-Git 范围或 OpenCode 导出参数；这些组合会被 CLI 明确拒绝，而不会静默忽略。
-候选状态 `resolved` 只表示用户已经处理该问题，具体结果仍由确认记录中的
-`confirmed`、`supplemented` 或 `denied` 表示。
+每条记录需要 `candidate_id`、`decision` 和 RFC 3339 的 `confirmed_at`。`student_statement` 只能是学生原话；没有原话就省略，工具会记 `not_recorded`，不会代写。确认阶段不能同时再传文档、测试日志、Git 范围或会话导出。
 
-`.learntrace/archive-records.json` 包含用于审计的来源索引，应视为本地敏感产物；
-对外分享前应检查已脱敏的 `learning-record.md`，不要直接上传机器归档。
-`learning-record.md` 只展示项目目标、阶段进展、测试日志和候选直接引用的证据；
-未被选中的文档事实不会为了显示脱敏占位符而进入主报告，完整记录仍保留在机器归档中。
-OpenCode 原始导出还可能包含完整聊天和工具内容，也不得提交；隐私优先时可先用
-`opencode export <sessionID> --sanitize` 生成脱敏导出，但其项目路径证据会相应减少。
-Markdown 的路径识别采用隐私优先策略：明确的 `/api` 和版本化 `/v1` 一类接口路由
-会保留，其他以 `/` 开头且无法可靠区分用途的文本（例如 `/health`、`/docs/x`）
-可能按绝对路径脱敏。完整来源只保存在本地机器归档中。
+`parse`、`adapt`、`archive` 可以分步跑。读会话时，`adapt` / `run` 必须带授权参数。已有结果文件时，`archive --trace-result` 必须指向本轮授权生成的文件；目录扫描不会把裸轨迹当成已授权输入。
 
-`parse`、`adapt` 和 `archive` 也可以分别运行。读取 OpenCode 导出时必须对
-`adapt` 或 `run` 同时传入 `--authorized`；LearnTrace 不会执行目标项目代码、
-测试或日志中的命令。分阶段确认时，应对 `archive` 同时传入首次生成的
-`--snapshot archive-records.json`，避免重新推断候选。
+## 证据怎么留
 
-已有 Task 2、Task 3 JSON 时，不需要复制或重新解析输入。从项目根目录运行：
+不必为了本工具改开发习惯。下面这些做法会让档案更好查：
 
-```powershell
-New-Item -ItemType Directory -Force .learntrace | Out-Null
-learntrace archive <records-dir> `
-  --trace-result .learntrace/task3-result.json `
-  --output learning-record.md `
-  --records-output .learntrace/archive-records.json `
-  --questions-output .learntrace/learning-questions.md
-```
+- 在真实阶段边界提交，不要事后补造历史。
+- 提交说明写清实际变化，避免只有「更新」。
+- 保留任务书、设计和真实测试日志（含失败与再验证）。
+- 需要呈现 AI 协作时，自行挑选会话并逐文件授权；不要把 API Key、私人聊天或原始导出提交到 Git。
+- 团队项目先划清本人负责的范围。工具不按提交数量算贡献。
 
-`--trace-result` 必须明确指向本轮逐来源授权后生成的 Task 3 文件；普通目录扫描不会把
-裸 `trace_record` 或恰好位于目录中的 Task 3 文件自动视为已授权输入。
+缺材料时会标「未记录」，不要为了报告好看补写不存在的经历。
 
-命令成功后直接读取 `.learntrace/learning-questions.md`，不要重复执行首次归档。
-确认阶段对同一个 `records-dir` 使用 `.learntrace/archive-records.json` 快照。
-
-CLI 默认使用确定性候选推断器。归档扫描会跳过 `.opencode`、`.venv`、`.git`
-和 `node_modules` 等噪音目录；只有确认输入树中的每个 JSON 都应是 LearnTrace
-产物时，才对 `archive` 使用 `--strict-inputs`。机器可读档案包含带稳定
-SHA-256 指纹的审计清单，CLI 同时输出该指纹与记录数量。
-候选推断是本地确定性规则：CLI 不调用远程 LLM，也不读取任何 `LEARNTRACE_*`
-环境变量；更深入的语义理解由宿主 Agent 承担（单 LLM 原则）。即使没有形成
-候选，待确认问题文件也会提供基于证据缺口的学生复盘问题，而不会编造候选。
-
-## 目录结构
+## 布局
 
 ```text
-src/learntrace/             Python 包与 CLI（含随包发布的 UI 静态资源）
-src/learntrace/schemas/v0/  schema v0 数据契约
+src/learntrace/             Python 包与 CLI（含随包 UI）
+src/learntrace/schemas/v0/  数据契约
 skills/learntrace/          可安装 Skill
 ```
 
-
 ## 隐私
 
-公开内容只能使用脱敏样例。密钥、个人信息、真实学生材料、完整 AI 对话和本地基础设施文档不得提交。`local/` 目录始终由 Git 忽略。
+公开内容只用脱敏样例。密钥、个人信息、真实学生材料、完整 AI 对话不得提交。`local/` 始终被 Git 忽略。Markdown 里明确的 `/api`、`/v1` 一类接口路径会保留；其它以 `/` 开头、用途不清的文本可能按绝对路径脱敏。完整来源只在本机审计档案里。
